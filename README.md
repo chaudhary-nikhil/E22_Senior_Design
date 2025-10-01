@@ -1,19 +1,6 @@
-# ESP32-WROOM Hello World Project
+# Senior Designn
 
-A simple ESP32-WROOM project boilerplate using ESP-IDF framework with FreeRTOS, optimized for ESP32-WROOM development boards.
-
-## Project Structure
-
-```
-.
-├── CMakeLists.txt         # ESP-IDF project configuration
-├── main/
-│   ├── CMakeLists.txt     # Main component configuration
-│   └── main.c             # Main application source
-├── Makefile              # ESP-IDF convenience commands
-├── sdkconfig.defaults    # Default ESP32 configuration
-└── README.md             # This file
-```
+Currently: A simple ESP32-WROOM project boilerplate using ESP-IDF framework with FreeRTOS, optimized for ESP32-WROOM development boards.
 
 ## Prerequisites
 
@@ -32,13 +19,10 @@ A simple ESP32-WROOM project boilerplate using ESP-IDF framework with FreeRTOS, 
 ```bash
 # Build the project
 make build
-
 # Flash to ESP32
 make flash
-
 # Monitor serial output
 make monitor
-
 # Build, flash and monitor in one command
 make all-in-one
 ```
@@ -110,13 +94,10 @@ I (30005) ESP32_WROOM:   - 34 GPIO pins available
 ```bash
 # For ESP32
 idf.py set-target esp32
-
 # For ESP32-S2
 idf.py set-target esp32s2
-
 # For ESP32-S3
 idf.py set-target esp32s3
-
 # For ESP32-C3
 idf.py set-target esp32c3
 ```
@@ -151,18 +132,8 @@ This boilerplate can be extended with:
 ```bash
 # Check ESP-IDF installation
 idf.py --version
-
 # List available serial ports
 ls /dev/ttyUSB* /dev/ttyACM* /dev/cu.*
-
 # Monitor with specific baud rate
 idf.py monitor -b 115200
 ```
-
-## Next Steps
-
-- Add WiFi connectivity
-- Implement sensor reading
-- Create web interface
-- Add OTA update capability
-- Implement power management
