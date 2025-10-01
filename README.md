@@ -1,4 +1,4 @@
-# Senior Designn
+# Senior Design
 
 Currently: A simple ESP32-WROOM project boilerplate using ESP-IDF framework with FreeRTOS, optimized for ESP32-WROOM development boards.
 
