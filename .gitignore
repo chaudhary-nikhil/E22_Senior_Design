@@ -1,0 +1,41 @@
+# ESP32-IDF Build Artifacts
+build/
+sdkconfig
+sdkconfig.old
+*.swp
+*.swo
+*~
+
+# Dependencies and managed components
+dependencies.lock
+managed_components/
+
+# Python
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# Editor and IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+
+# ESP-IDF specific
+.esp-idf/
+*.bin
+*.elf
+*.map
+
+# Logs and temporary files
+*.log
+*.tmp
+.cache/
+
+# Flash download tool config
+flash_project_args
+
+# Component manager
+components/.component_hash
