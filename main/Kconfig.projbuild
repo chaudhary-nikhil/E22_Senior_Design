@@ -1,0 +1,25 @@
+menu "FormSync Firmware"
+config FORMSYNC_SAMPLE_HZ
+    int "IMU sample rate (Hz)"
+    range 25 1000
+    default 200
+
+choice
+    prompt "Fusion algorithm"
+    default FORMSYNC_FUSION_MADGWICK
+    help
+        Select the default orientation fusion algorithm.
+config FORMSYNC_FUSION_MADGWICK
+    bool "Madgwick (fast, good default)"
+config FORMSYNC_FUSION_MAHONY
+    bool "Mahony"
+endchoice
+
+config FORMSYNC_ENABLE_BLE
+    bool "Enable BLE services (stubs)"
+    default n
+
+config FORMSYNC_ENABLE_STORAGE
+    bool "Enable storage (stubs)"
+    default n
+endmenu
