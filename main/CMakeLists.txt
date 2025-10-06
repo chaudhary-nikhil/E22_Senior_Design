@@ -1,6 +1,6 @@
 # # ESP32 main component CMakeLists.txt
 # idf_component_register(
-#     SRCS "main.c"
+#     SRCS
 #     INCLUDE_DIRS "."
 #     REQUIRES bus_i2c imu_mpu6050 fusion logging
 # )

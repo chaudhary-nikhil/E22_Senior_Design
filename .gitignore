@@ -1,6 +1,5 @@
 # ESP32-IDF Build Artifacts
 build/
-sdkconfig
 sdkconfig.old
 *.swp
 *.swo
