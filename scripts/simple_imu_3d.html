@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live IMU 3D Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            overflow: hidden;
+        }
+        
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        .visualization {
+            flex: 1;
+            position: relative;
+        }
+        
+        .controls {
+            width: 300px;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 10px;
+            margin-left: 20px;
+        }
+        
+        .metric {
+            margin: 10px 0;
+            padding: 8px;
+            background: #333;
+            border-radius: 5px;
+            font-family: monospace;
+        }
+        
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            text-align: center;
+            font-weight: bold;
+        }
+        
+        .connected {
+            background: #2d5a2d;
+            color: #90ee90;
+        }
+        
+        .disconnected {
+            background: #5a2d2d;
+            color: #ee9090;
+        }
+        
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        #canvas {
+            border: 1px solid #555;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="visualization">
+            <canvas id="canvas" width="800" height="600"></canvas>
+        </div>
+        
+        <div class="controls">
+            <h3>Live IMU Data</h3>
+            
+            <div id="status" class="status disconnected">
+                Disconnected
+            </div>
+            
+            <div class="metric">
+                <strong>Acceleration (m/s²)</strong><br>
+                X: <span id="ax">0.000</span><br>
+                Y: <span id="ay">0.000</span><br>
+                Z: <span id="az">0.000</span>
+            </div>
+            
+            <div class="metric">
+                <strong>Angular Velocity (rad/s)</strong><br>
+                X: <span id="gx">0.000</span><br>
+                Y: <span id="gy">0.000</span><br>
+                Z: <span id="gz">0.000</span>
+            </div>
+            
+            <div class="metric">
+                <strong>Position (m)</strong><br>
+                X: <span id="px">0.000</span><br>
+                Y: <span id="py">0.000</span><br>
+                Z: <span id="pz">0.000</span>
+            </div>
+            
+            <div class="metric">
+                <strong>Quaternion</strong><br>
+                W: <span id="qw">1.000</span><br>
+                X: <span id="qx">0.000</span><br>
+                Y: <span id="qy">0.000</span><br>
+                Z: <span id="qz">0.000</span>
+            </div>
+            
+            <div class="metric">
+                <strong>Timestamp</strong><br>
+                <span id="timestamp">0</span>
+            </div>
+            
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+            <button onclick="resetView()">Reset View</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Global variables
+        let scene, camera, renderer, imuCube, trail = [];
+        let eventSource = null;
+        let isConnected = false;
+        
+        // Initialize 3D scene
+        function initScene() {
+            const canvas = document.getElementById('canvas');
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, canvas.width / canvas.height, 0.1, 1000);
+            camera.position.set(3, 3, 3);
+            camera.lookAt(0, 0, 0);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(canvas.width, canvas.height);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Add grid
+            const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+            scene.add(gridHelper);
+            
+            // Add axes
+            const axesHelper = new THREE.AxesHelper(2);
+            scene.add(axesHelper);
+            
+            // Create IMU cube
+            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+            const material = new THREE.MeshLambertMaterial({ color: 0xff4444 });
+            imuCube = new THREE.Mesh(geometry, material);
+            imuCube.castShadow = true;
+            scene.add(imuCube);
+            
+            // Add lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 5, 5);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Start render loop
+            animate();
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        
+        // Connect to Server-Sent Events
+        function connect() {
+            if (eventSource) {
+                eventSource.close();
+            }
+            
+            eventSource = new EventSource('http://localhost:8003/events');
+            
+            eventSource.onopen = function() {
+                isConnected = true;
+                updateStatus('Connected', true);
+                console.log('Connected to ESP32');
+            };
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateDisplay(data);
+                    updateIMUVisualization(data);
+                    console.log('Received data:', data);
+                } catch (e) {
+                    console.error('Error parsing data:', e);
+                }
+            };
+            
+            eventSource.onerror = function(error) {
+                console.error('SSE error:', error);
+                updateStatus('Error', false);
+            };
+        }
+        
+        // Disconnect from Server-Sent Events
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            isConnected = false;
+            updateStatus('Disconnected', false);
+        }
+        
+        // Update status display
+        function updateStatus(message, connected) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = connected ? 'status connected' : 'status disconnected';
+        }
+        
+        // Update data display
+        function updateDisplay(data) {
+            // Acceleration
+            document.getElementById('ax').textContent = data.acceleration.ax.toFixed(3);
+            document.getElementById('ay').textContent = data.acceleration.ay.toFixed(3);
+            document.getElementById('az').textContent = data.acceleration.az.toFixed(3);
+            
+            // Angular velocity
+            document.getElementById('gx').textContent = data.angular_velocity.gx.toFixed(3);
+            document.getElementById('gy').textContent = data.angular_velocity.gy.toFixed(3);
+            document.getElementById('gz').textContent = data.angular_velocity.gz.toFixed(3);
+            
+            // Position
+            document.getElementById('px').textContent = data.position.px.toFixed(3);
+            document.getElementById('py').textContent = data.position.py.toFixed(3);
+            document.getElementById('pz').textContent = data.position.pz.toFixed(3);
+            
+            // Quaternion
+            document.getElementById('qw').textContent = data.quaternion.qw.toFixed(3);
+            document.getElementById('qx').textContent = data.quaternion.qx.toFixed(3);
+            document.getElementById('qy').textContent = data.quaternion.qy.toFixed(3);
+            document.getElementById('qz').textContent = data.quaternion.qz.toFixed(3);
+            
+            // Timestamp
+            document.getElementById('timestamp').textContent = data.timestamp;
+        }
+        
+        // Update 3D visualization
+        function updateIMUVisualization(data) {
+            // Update position
+            imuCube.position.set(
+                data.position.px,
+                data.position.py,
+                data.position.pz
+            );
+            
+            // Update rotation using quaternion
+            const quaternion = new THREE.Quaternion(
+                data.quaternion.qx,
+                data.quaternion.qy,
+                data.quaternion.qz,
+                data.quaternion.qw
+            );
+            imuCube.setRotationFromQuaternion(quaternion);
+            
+            // Add to trail
+            trail.push({
+                position: data.position,
+                timestamp: data.timestamp
+            });
+            
+            // Keep trail length manageable
+            if (trail.length > 100) {
+                trail.shift();
+            }
+        }
+        
+        // Reset camera view
+        function resetView() {
+            camera.position.set(3, 3, 3);
+            camera.lookAt(0, 0, 0);
+        }
+        
+        // Initialize when page loads
+        window.addEventListener('load', function() {
+            initScene();
+            // Auto-connect
+            setTimeout(connect, 1000);
+        });
+        
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            const canvas = document.getElementById('canvas');
+            camera.aspect = canvas.width / canvas.height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(canvas.width, canvas.height);
+        });
+    </script>
+</body>
+</html>
