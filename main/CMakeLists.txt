@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "app_main.c"
+    SRCS "app_main_ble.c"
     INCLUDE_DIRS "."
-    REQUIRES bus_i2c imu_mpu6050 serial_stream
+    REQUIRES ble nvs_flash
 )
