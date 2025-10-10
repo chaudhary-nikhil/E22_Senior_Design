@@ -76,7 +76,7 @@ def broadcast_data(data):
         try:
             client.wfile.write(f"data: {data}\n\n".encode())
             client.wfile.flush()
-        except:
+        except (BrokenPipeError, ConnectionResetError, OSError):
             clients.remove(client)
 
 def process_imu_data(ax, ay, az, gx, gy, gz, timestamp):
