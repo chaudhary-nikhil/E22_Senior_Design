@@ -29,9 +29,7 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            # Get the directory where this script is located
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            html_path = os.path.join(script_dir, 'simple_imu_3d.html')
+            html_path = os.path.join(os.path.dirname(__file__), 'simple_imu_3d.html')
             with open(html_path, 'r') as f:
                 self.wfile.write(f.read().encode())
         else:
@@ -78,7 +76,7 @@ def broadcast_data(data):
         try:
             client.wfile.write(f"data: {data}\n\n".encode())
             client.wfile.flush()
-        except:
+        except (BrokenPipeError, ConnectionResetError, OSError):
             clients.remove(client)
 
 def process_imu_data(ax, ay, az, gx, gy, gz, timestamp):
@@ -204,19 +202,29 @@ def serial_receiver():
             print(f"Serial read error: {e}")
             time.sleep(0.1)
 
-def start_web_server():
+def start_web_server(port):
     """Start the web server"""
-    server = HTTPServer(('localhost', 8003), SSEHandler)
-    print("Web server started on http://localhost:8003")
+    server = HTTPServer(('localhost', port), SSEHandler)
+    print(f"Web server started on http://localhost:{port}")
     server.serve_forever()
 
 if __name__ == "__main__":
     print("ESP32 Simple IMU 3D Visualizer")
     print("===============================")
     
+    # Determine port from command-line argument or environment variable
+    default_port = 8003
+    port = int(os.environ.get("PORT", default_port))
+    # Check for command-line argument (after script name)
+    if len(sys.argv) > 1:
+        try:
+            port = int(sys.argv[1])
+        except ValueError:
+            print(f"Invalid port argument '{sys.argv[1]}', using port {port}")
+    
     # Start serial receiver in background
     receiver_thread = threading.Thread(target=serial_receiver, daemon=True)
     receiver_thread.start()
     
     # Start web server
-    start_web_server()
+    start_web_server(port)
