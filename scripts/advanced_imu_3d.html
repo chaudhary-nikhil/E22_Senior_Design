@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced IMU 3D Visualization - Comprehensive Sensor Fusion</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #ffffff;
+            overflow: hidden;
+        }
+        
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 12px;
+            z-index: 100;
+            min-width: 300px;
+        }
+        
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 100;
+        }
+        
+        .control-group {
+            margin-bottom: 10px;
+        }
+        
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+        
+        .control-group input, .control-group button {
+            width: 100%;
+            padding: 5px;
+            font-size: 12px;
+        }
+        
+        .status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        
+        .status.connected {
+            background: #00ff00;
+        }
+        
+        .status.disconnected {
+            background: #ff0000;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            margin: 2px 0;
+        }
+        
+        .metric-label {
+            color: #cccccc;
+        }
+        
+        .metric-value {
+            color: #ffffff;
+            font-weight: bold;
+        }
+        
+        #trail {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 11px;
+            max-width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="info">
+            <h3>Advanced IMU 3D Visualization</h3>
+            <div class="metric">
+                <span class="metric-label">Status:</span>
+                <span><span class="status disconnected" id="status"></span><span id="status-text">Disconnected</span></span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Session:</span>
+                <span class="metric-value" id="session-id">-</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Logging:</span>
+                <span><span class="status disconnected" id="logging-status"></span><span id="logging-status-text">Stopped</span></span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Connection:</span>
+                <span class="metric-value" id="connection-status">Checking...</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Timestamp:</span>
+                <span class="metric-value" id="timestamp">0.0s</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Accel X:</span>
+                <span class="metric-value" id="accel-x">0.0 m/s²</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Accel Y:</span>
+                <span class="metric-value" id="accel-y">0.0 m/s²</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Accel Z:</span>
+                <span class="metric-value" id="accel-z">0.0 m/s²</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Gyro X:</span>
+                <span class="metric-value" id="gyro-x">0.0 rad/s</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Gyro Y:</span>
+                <span class="metric-value" id="gyro-y">0.0 rad/s</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Gyro Z:</span>
+                <span class="metric-value" id="gyro-z">0.0 rad/s</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Mag X:</span>
+                <span class="metric-value" id="mag-x">0.0 μT</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Mag Y:</span>
+                <span class="metric-value" id="mag-y">0.0 μT</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Mag Z:</span>
+                <span class="metric-value" id="mag-z">0.0 μT</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">BNO055 Roll:</span>
+                <span class="metric-value" id="bno055-roll">0.0°</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">BNO055 Pitch:</span>
+                <span class="metric-value" id="bno055-pitch">0.0°</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">BNO055 Yaw:</span>
+                <span class="metric-value" id="bno055-yaw">0.0°</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Temperature:</span>
+                <span class="metric-value" id="temperature">0.0°C</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Calibration:</span>
+                <span class="metric-value" id="calibration">0/0/0/0</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Quaternion W:</span>
+                <span class="metric-value" id="quat-w">1.0000</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Quaternion X:</span>
+                <span class="metric-value" id="quat-x">0.0000</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Quaternion Y:</span>
+                <span class="metric-value" id="quat-y">0.0000</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Quaternion Z:</span>
+                <span class="metric-value" id="quat-z">0.0000</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Movement:</span>
+                <span class="metric-value" id="movement">Stationary</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Movement Confidence:</span>
+                <span class="metric-value" id="movement-confidence">0.0</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Quaternion Source:</span>
+                <span class="metric-value" id="quaternion-source">BNO055</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Accel Magnitude:</span>
+                <span class="metric-value" id="accel-mag">0.0 m/s²</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Linear Accel:</span>
+                <span class="metric-value" id="linear-accel">0.0 m/s²</span>
+            </div>
+        </div>
+        
+        <div id="controls">
+            <div class="control-group">
+                <button onclick="resetCamera()">Reset Camera</button>
+            </div>
+            <div class="control-group">
+                <button onclick="toggleWireframe()">Toggle Wireframe</button>
+            </div>
+            <div class="control-group" style="border-top: 2px solid #333; padding-top: 15px; margin-top: 15px;">
+                <button id="logging-btn" onclick="toggleLogging()" style="background-color: #4CAF50; color: white; font-size: 18px; padding: 12px 24px; border-radius: 8px; font-weight: bold;">Start Logging</button>
+                <p style="margin: 8px 0 0 0; font-size: 12px; color: #888;">Click to start/stop data logging. Each start creates a fresh JSON file from t=0.</p>
+            </div>
+        </div>
+        
+    </div>
+    
+    <script>
+        // Global variables
+        let scene, camera, renderer, imuCube;
+        let showWireframe = false;
+        let serverConnected = false;
+        let statusCheckInterval;
+        
+        // Adafruit-style direct quaternion handling (no smoothing)
+        let previousQuaternion = new THREE.Quaternion();
+        let quaternionSmoothingFactor = 0.0; // No smoothing for maximum responsiveness
+        
+        // Check server status
+        function checkServerStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    serverConnected = data.status === 'running';
+                    updateConnectionStatus();
+                })
+                .catch(error => {
+                    serverConnected = false;
+                    updateConnectionStatus();
+                });
+        }
+        
+        // Update connection status display
+        function updateConnectionStatus() {
+            const statusElement = document.getElementById('connection-status');
+            if (statusElement) {
+                statusElement.textContent = serverConnected ? 'Connected' : 'Disconnected';
+                statusElement.style.color = serverConnected ? '#4CAF50' : '#f44336';
+            }
+        }
+        
+        // Initialize Three.js scene
+        function initScene() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+            
+            // Camera (closer for better visibility)
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 8);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('container').appendChild(renderer.domElement);
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 10, 5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            scene.add(directionalLight);
+            
+            // Create IMU model (scaled up for better visibility: 2.0 x 2.0 x 0.5)
+            const imuGeometry = new THREE.BoxGeometry(2.0, 2.0, 0.5);
+            const imuMaterials = [
+                new THREE.MeshLambertMaterial({ color: 0xff0000 }), // +X (Red)
+                new THREE.MeshLambertMaterial({ color: 0x00ff00 }), // -X (Green)
+                new THREE.MeshLambertMaterial({ color: 0x0000ff }), // +Y (Blue)
+                new THREE.MeshLambertMaterial({ color: 0xffff00 }), // -Y (Yellow)
+                new THREE.MeshLambertMaterial({ color: 0xff00ff }), // +Z (Magenta)
+                new THREE.MeshLambertMaterial({ color: 0x00ffff })  // -Z (Cyan)
+            ];
+            
+            imuCube = new THREE.Mesh(imuGeometry, imuMaterials);
+            imuCube.castShadow = true;
+            imuCube.receiveShadow = true;
+            scene.add(imuCube);
+            
+            // Add wireframe
+            const wireframe = new THREE.WireframeGeometry(imuGeometry);
+            const line = new THREE.LineSegments(wireframe, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3 }));
+            imuCube.add(line);
+            
+            // Add coordinate system (larger for better visibility)
+            const axesHelper = new THREE.AxesHelper(2.0);
+            scene.add(axesHelper);
+            
+            // Mouse controls
+            let mouseDown = false;
+            let mouseX = 0;
+            let mouseY = 0;
+            
+            renderer.domElement.addEventListener('mousedown', (event) => {
+                mouseDown = true;
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+            
+            renderer.domElement.addEventListener('mousemove', (event) => {
+                if (!mouseDown) return;
+                
+                const deltaX = event.clientX - mouseX;
+                const deltaY = event.clientY - mouseY;
+                
+                camera.position.x += deltaX * 0.01;
+                camera.position.y -= deltaY * 0.01;
+                
+                mouseX = event.clientX;
+                mouseY = event.clientY;
+            });
+            
+            renderer.domElement.addEventListener('mouseup', () => {
+                mouseDown = false;
+            });
+            
+            // Zoom controls (better range for visibility)
+            renderer.domElement.addEventListener('wheel', (event) => {
+                camera.position.z += event.deltaY * 0.01;
+                camera.position.z = Math.max(3, Math.min(15, camera.position.z));  // Better zoom range
+            });
+            
+            // Start render loop
+            animate();
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        
+        // Update 3D visualization
+        // Adafruit-style direct quaternion handling
+        function smoothQuaternion(newQuat) {
+            // Direct quaternion application (no smoothing for maximum responsiveness)
+            previousQuaternion.copy(newQuat);
+            return newQuat;
+        }
+        
+        function updateIMUVisualization(data) {
+            if (!data) return;
+            
+            // Keep IMU at origin (position tracking disabled - GPS will be added later)
+            imuCube.position.x = 0;
+            imuCube.position.y = 0;
+            imuCube.position.z = 0;
+            
+            // Adafruit-style direct quaternion approach
+            // Use BNO055 quaternion directly (it's already fused by the sensor)
+            let quat;
+            let quatSource = "BNO055";
+            
+            if (data.orientation && data.orientation.quaternion) {
+                // Always use BNO055 quaternion (it's the sensor's fused output)
+                quat = data.orientation.quaternion;
+                quatSource = "BNO055";
+            } else if (data.orientation && data.orientation.ekf_quaternion) {
+                // Fallback to EKF if BNO055 not available
+                quat = data.orientation.ekf_quaternion;
+                quatSource = "EKF";
+            } else {
+                // Default quaternion (identity)
+                quat = {w: 1, x: 0, y: 0, z: 0};
+                quatSource = "Identity";
+            }
+            
+            // Update quaternion source display
+            document.getElementById('quaternion-source').textContent = quatSource;
+            
+            // Create and normalize quaternion for accurate rotation (Adafruit style)
+            const threeQuat = new THREE.Quaternion(quat.x, quat.y, quat.z, quat.w);
+            threeQuat.normalize(); // Ensure quaternion is normalized for accurate rotation
+            
+            // Apply minimal smoothing for responsiveness (like Adafruit viewer)
+            const smoothedQuat = smoothQuaternion(threeQuat);
+            
+            // Apply the quaternion directly to the IMU cube (Adafruit approach)
+            imuCube.setRotationFromQuaternion(smoothedQuat);
+            
+            // Trail disabled - position tracking will be added with GPS later
+        }
+        
+        
+        // Update UI
+        function updateUI(data) {
+            if (!data) return;
+            
+            // Always update timestamp - it reflects the actual data timestamp
+            const relativeTime = data.timestamp / 1000.0;
+            document.getElementById('timestamp').textContent = relativeTime.toFixed(2) + 's';
+            lastTimestamp = relativeTime;
+            
+            // Display all 9-axis sensor data
+            const accel = data.raw_sensors.accelerometer;
+            document.getElementById('accel-x').textContent = accel.x.toFixed(3) + ' m/s²';
+            document.getElementById('accel-y').textContent = accel.y.toFixed(3) + ' m/s²';
+            document.getElementById('accel-z').textContent = accel.z.toFixed(3) + ' m/s²';
+            
+            const gyro = data.raw_sensors.gyroscope;
+            document.getElementById('gyro-x').textContent = gyro.x.toFixed(3) + ' rad/s';
+            document.getElementById('gyro-y').textContent = gyro.y.toFixed(3) + ' rad/s';
+            document.getElementById('gyro-z').textContent = gyro.z.toFixed(3) + ' rad/s';
+            
+            const mag = data.raw_sensors.magnetometer;
+            document.getElementById('mag-x').textContent = mag.x.toFixed(1) + ' μT';
+            document.getElementById('mag-y').textContent = mag.y.toFixed(1) + ' μT';
+            document.getElementById('mag-z').textContent = mag.z.toFixed(1) + ' μT';
+            
+            // Display BNO055 Euler angles
+            const euler = data.orientation.euler;
+            document.getElementById('bno055-roll').textContent = euler.roll.toFixed(1) + '°';
+            document.getElementById('bno055-pitch').textContent = euler.pitch.toFixed(1) + '°';
+            document.getElementById('bno055-yaw').textContent = euler.yaw.toFixed(1) + '°';
+            
+            // Display BNO055 quaternion values directly (Adafruit style)
+            const quat = data.orientation.quaternion || {w: 1, x: 0, y: 0, z: 0};
+            document.getElementById('quat-w').textContent = quat.w.toFixed(4);
+            document.getElementById('quat-x').textContent = quat.x.toFixed(4);
+            document.getElementById('quat-y').textContent = quat.y.toFixed(4);
+            document.getElementById('quat-z').textContent = quat.z.toFixed(4);
+            
+            // Display temperature
+            document.getElementById('temperature').textContent = data.temperature.toFixed(1) + '°C';
+            
+            // Display calibration status
+            const cal = data.calibration;
+            document.getElementById('calibration').textContent = `${cal.sys}/${cal.gyro}/${cal.accel}/${cal.mag}`;
+            
+            document.getElementById('movement').textContent = data.movement.is_moving ? 'Moving' : 'Stationary';
+            document.getElementById('movement-confidence').textContent = data.movement.movement_confidence.toFixed(3);
+            document.getElementById('accel-mag').textContent = data.raw_sensors.accelerometer.magnitude.toFixed(2) + ' m/s²';
+            
+            const linearAccel = data.movement.linear_acceleration;
+            const linearAccelMag = Math.sqrt(linearAccel.x**2 + linearAccel.y**2 + linearAccel.z**2);
+            document.getElementById('linear-accel').textContent = linearAccelMag.toFixed(2) + ' m/s²';
+        }
+        
+        // Control functions
+        
+        function resetCamera() {
+            camera.position.set(0, 0, 8);
+            camera.lookAt(0, 0, 0);
+        }
+        
+        
+        function toggleWireframe() {
+            showWireframe = !showWireframe;
+            imuCube.children[0].material.opacity = showWireframe ? 0.8 : 0.3;
+        }
+        
+        
+        // Event Source for real-time data
+        let eventSource;
+        
+        function connectToDataStream() {
+            eventSource = new EventSource('/events');
+            
+            eventSource.onopen = function() {
+                document.getElementById('status').className = 'status connected';
+                document.getElementById('status-text').textContent = 'Connected';
+                serverConnected = true;
+                updateConnectionStatus();
+            };
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateIMUVisualization(data);
+                    updateUI(data);
+                } catch (e) {
+                    console.error('Error parsing data:', e);
+                }
+            };
+            
+            eventSource.onerror = function() {
+                document.getElementById('status').className = 'status disconnected';
+                document.getElementById('status-text').textContent = 'Disconnected';
+                serverConnected = false;
+                updateConnectionStatus();
+            };
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            initScene();
+            connectToDataStream();
+            
+            // Start status checking (less frequent to reduce noise)
+            checkServerStatus();
+            statusCheckInterval = setInterval(checkServerStatus, 10000); // Check every 10 seconds
+            
+            // Check logging status on page load
+            checkLoggingStatus();
+        });
+        
+        // Logging control functions
+        let loggingEnabled = false;
+        let sessionStartTime = null;
+        let lastTimestamp = 0;
+        
+        function toggleLogging() {
+            const btn = document.getElementById('logging-btn');
+            const statusEl = document.getElementById('logging-status');
+            const statusText = document.getElementById('logging-status-text');
+            
+            if (loggingEnabled) {
+                // Currently logging, so stop it
+                fetch('/stop_logging')
+                    .then(response => response.json())
+                    .then(data => {
+                        loggingEnabled = false;
+                        sessionStartTime = null;
+                        lastTimestamp = 0;
+                        btn.textContent = 'Start Logging';
+                        btn.style.backgroundColor = '#4CAF50';
+                        statusEl.className = 'status disconnected';
+                        statusText.textContent = 'Stopped';
+                        // Reset timestamp display
+                        document.getElementById('timestamp').textContent = '0.00s';
+                    })
+                    .catch(error => console.error('Error stopping logging:', error));
+            } else {
+                // Not logging, so start it (this will clear the JSON file and start from t=0)
+                fetch('/start_logging')
+                    .then(response => response.json())
+                    .then(data => {
+                        loggingEnabled = true;
+                        sessionStartTime = Date.now();
+                        lastTimestamp = 0;
+                        btn.textContent = 'Stop Logging';
+                        btn.style.backgroundColor = '#f44336';
+                        statusEl.className = 'status connected';
+                        statusText.textContent = 'Active';
+                        // Reset timestamp display
+                        document.getElementById('timestamp').textContent = '0.00s';
+                    })
+                    .catch(error => console.error('Error starting logging:', error));
+            }
+        }
+        
+        // Check logging status from server
+        function checkLoggingStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    // Update UI based on server status
+                    const btn = document.getElementById('logging-btn');
+                    const statusEl = document.getElementById('logging-status');
+                    const statusText = document.getElementById('logging-status-text');
+                    
+                    if (data.logging_active) {
+                        loggingEnabled = true;
+                        btn.textContent = 'Stop Logging';
+                        btn.style.backgroundColor = '#f44336';
+                        statusEl.className = 'status connected';
+                        statusText.textContent = 'Active';
+                    } else {
+                        loggingEnabled = false;
+                        btn.textContent = 'Start Logging';
+                        btn.style.backgroundColor = '#4CAF50';
+                        statusEl.className = 'status disconnected';
+                        statusText.textContent = 'Stopped';
+                    }
+                })
+                .catch(error => console.error('Error checking logging status:', error));
+        }
+        
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', function() {
+            if (eventSource) {
+                eventSource.close();
+            }
+        });
+    </script>
+</body>
+</html>
