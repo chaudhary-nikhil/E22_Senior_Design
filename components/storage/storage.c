@@ -12,6 +12,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <inttypes.h>
+#include <stdlib.h>   // malloc, free
+#include <unistd.h>   // unlink
+
 
 static const char *TAG = "STORAGE";
 
