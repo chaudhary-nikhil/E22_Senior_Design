@@ -34,7 +34,7 @@ void app_main(void) {
     ESP_LOGI(TAG, "All systems initialized, starting real-time IMU streaming via serial");
 
     TickType_t t0 = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(20); // 50Hz sampling (reduced for BNO055 stability)
+    const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ); // Configurable sampling rate
 
     while (1) {
         if (bno_err == ESP_OK) {

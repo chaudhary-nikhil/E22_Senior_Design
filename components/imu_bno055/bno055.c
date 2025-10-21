@@ -222,10 +222,10 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
         return ESP_ERR_INVALID_RESPONSE;
     }
     
-    // Convert to m/s² (LSB = 1 m/s²)
-    out->ax = (float)ax_raw;
-    out->ay = (float)ay_raw;
-    out->az = (float)az_raw;
+    // Convert to m/s² (LSB = 1 mg = 0.001 m/s²)
+    out->ax = (float)ax_raw / 1000.0f;
+    out->ay = (float)ay_raw / 1000.0f;
+    out->az = (float)az_raw / 1000.0f;
     
     // Read gyroscope data
     int16_t gx_raw, gy_raw, gz_raw;
@@ -235,10 +235,10 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
         return ESP_ERR_INVALID_RESPONSE;
     }
     
-    // Convert to rad/s (LSB = 1/900 rad/s)
-    out->gx = (float)gx_raw / 900.0f;
-    out->gy = (float)gy_raw / 900.0f;
-    out->gz = (float)gz_raw / 900.0f;
+    // Convert to rad/s (LSB = 1/900 dps, convert dps to rad/s)
+    out->gx = (float)gx_raw / 900.0f * (3.14159265359f / 180.0f);
+    out->gy = (float)gy_raw / 900.0f * (3.14159265359f / 180.0f);
+    out->gz = (float)gz_raw / 900.0f * (3.14159265359f / 180.0f);
     
     // Read magnetometer data
     int16_t mx_raw, my_raw, mz_raw;

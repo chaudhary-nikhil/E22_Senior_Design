@@ -14,6 +14,7 @@ logging_active = False
 session_data = []
 session_start_time = None
 current_session_id = None
+data_lock = threading.Lock()  # Thread safety for session data
 
 class SessionHandler(BaseHTTPRequestHandler):
     def do_GET(self):

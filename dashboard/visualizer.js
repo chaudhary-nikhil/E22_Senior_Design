@@ -653,28 +653,47 @@ class SessionVisualizer {
         document.getElementById('play-btn').disabled = true;
         document.getElementById('pause-btn').disabled = false;
         
-        // Calculate optimal playback speed based on data density
-        const totalTime = this.sessionData[this.sessionData.length - 1]?.session_time || 0;
-        const playbackSpeed = Math.max(5, Math.min(50, totalTime / this.sessionData.length * 1000)); // 5-50ms intervals
+        // Start playback with accurate timing based on session_time differences
+        this.currentPlaybackIndex = 0;
+        this._playbackStep();
         
-        this.playbackInterval = setInterval(() => {
-            if (this.currentPlaybackIndex < this.sessionData.length) {
-                this.updateVisualization(this.sessionData[this.currentPlaybackIndex]);
-                this.updateProgress();
-                this.currentPlaybackIndex++;
-            } else {
-                this.pauseSession();
-            }
-        }, playbackSpeed);
-        
-        console.log(`🎬 Playback started: ${playbackSpeed}ms intervals for realistic motion`);
+        console.log(`🎬 Playback started with realistic motion timing`);
     }
 
     pauseSession() {
         this.isPlaying = false;
-        clearInterval(this.playbackInterval);
+        if (this.playbackInterval) {
+            clearInterval(this.playbackInterval);
+            clearTimeout(this.playbackInterval);
+        }
         document.getElementById('play-btn').disabled = false;
         document.getElementById('pause-btn').disabled = true;
+    }
+
+    // Helper method for accurate playback timing
+    _playbackStep() {
+        if (!this.isPlaying || this.currentPlaybackIndex >= this.sessionData.length) {
+            this.pauseSession();
+            return;
+        }
+        
+        this.updateVisualization(this.sessionData[this.currentPlaybackIndex]);
+        this.updateProgress();
+        this.currentPlaybackIndex++;
+        
+        if (this.currentPlaybackIndex < this.sessionData.length) {
+            // Calculate delay based on session_time difference
+            const prevTime = this.sessionData[this.currentPlaybackIndex - 1]?.session_time || 0;
+            const nextTime = this.sessionData[this.currentPlaybackIndex]?.session_time || prevTime;
+            let delay = (nextTime - prevTime) * 1000; // Convert to milliseconds
+            
+            // Clamp delay to reasonable bounds (5-50ms)
+            delay = Math.max(5, Math.min(50, delay));
+            
+            this.playbackInterval = setTimeout(() => this._playbackStep(), delay);
+        } else {
+            this.pauseSession();
+        }
     }
 
     resetPlayback() {
