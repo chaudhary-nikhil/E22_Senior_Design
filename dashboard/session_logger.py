@@ -13,6 +13,7 @@ serial_port = None
 logging_active = False
 session_data = []
 session_start_time = None
+session_start_monotonic = None  # Monotonic time for accurate session timing
 current_session_id = None
 data_lock = threading.Lock()  # Thread safety for session data
 
@@ -56,12 +57,13 @@ class SessionHandler(BaseHTTPRequestHandler):
             self.end_headers()
     
     def start_logging(self):
-        global logging_active, session_data, session_start_time, current_session_id
+        global logging_active, session_data, session_start_time, session_start_monotonic, current_session_id
         
         if not logging_active:
             logging_active = True
             session_data = []
             session_start_time = datetime.now()
+            session_start_monotonic = time.monotonic()  # Monotonic time for accurate timing
             current_session_id = session_start_time.strftime("%Y%m%d_%H%M%S")
             
             self.send_response(200)
@@ -206,8 +208,8 @@ def serial_logger():
                     
                     # Only log during active sessions
                     if logging_active:
-                        # Add timestamp relative to session start
-                        session_timestamp = time.time() - session_start_time.timestamp()
+                        # Add timestamp relative to session start using monotonic time
+                        session_timestamp = time.monotonic() - session_start_monotonic
                         data['session_time'] = round(session_timestamp, 3)
                         session_data.append(data)
                         

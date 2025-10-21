@@ -731,8 +731,14 @@ class SessionVisualizer {
             const nextTime = this.sessionData[this.currentPlaybackIndex]?.session_time || prevTime;
             let delay = (nextTime - prevTime) * 1000; // Convert to milliseconds
             
-            // Clamp delay to reasonable bounds (5-50ms)
-            delay = Math.max(5, Math.min(50, delay));
+            // Calculate reasonable bounds based on data characteristics
+            const totalTime = this.sessionData[this.sessionData.length - 1]?.session_time || 1;
+            const avgSampleRate = this.sessionData.length / totalTime; // samples per second
+            const minDelay = Math.max(1, 1000 / (avgSampleRate * 2)); // Half the sample rate
+            const maxDelay = Math.min(200, 1000 / (avgSampleRate / 2)); // Double the sample rate
+            
+            // Clamp delay to calculated bounds
+            delay = Math.max(minDelay, Math.min(maxDelay, delay));
             
             this.playbackInterval = setTimeout(() => this._playbackStep(), delay);
         } else {

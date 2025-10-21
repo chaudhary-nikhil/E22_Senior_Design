@@ -208,7 +208,6 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     }
     
     // Use relative timestamp starting from 0 for this session
-    static uint32_t session_start_time = 0;
     if (session_start_time == 0) {
         session_start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
     }
@@ -294,3 +293,6 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     
     return ESP_OK;
 }
+
+// Session start time - resets to 0 on each boot
+static uint32_t session_start_time = 0;
