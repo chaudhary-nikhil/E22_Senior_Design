@@ -221,8 +221,11 @@ def serial_logger():
 
         except serial.SerialException as e:
             print(f"⚠️  Serial connection lost: {e}")
-            if serial_port:
-                serial_port.close()
+            try:
+                if serial_port and serial_port.is_open:
+                    serial_port.close()
+            except Exception as close_error:
+                print(f"⚠️  Serial port close warning: {close_error}")
             serial_port = None
             connected_once = False  # Reset connection flag for reconnection
             time.sleep(1)
@@ -269,18 +272,28 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n🛑 Shutting down...")
-        if serial_port:
-            serial_port.close()
+        
+        # Safely close serial port
+        try:
+            if serial_port and serial_port.is_open:
+                serial_port.close()
+        except Exception as e:
+            print(f"⚠️  Serial port cleanup warning: {e}")
         
         # Only emergency save if actively logging (not already stopped)
-        with data_lock:
-            if logging_active and session_data:
-                os.makedirs('sessions', exist_ok=True)  # Ensure sessions directory exists
-                filename = f"sessions/swim_session_emergency_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                with open(filename, 'w') as f:
-                    json.dump(session_data, f, indent=2)
-                print(f"💾 Emergency save: {len(session_data)} samples to {filename}")
-            elif session_data:
-                print(f"📊 Session data already saved ({len(session_data)} samples)")
-            else:
-                print("📊 No session data to save")
+        try:
+            with data_lock:
+                if logging_active and session_data:
+                    os.makedirs('sessions', exist_ok=True)  # Ensure sessions directory exists
+                    filename = f"sessions/swim_session_emergency_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(filename, 'w') as f:
+                        json.dump(session_data, f, indent=2)
+                    print(f"💾 Emergency save: {len(session_data)} samples to {filename}")
+                elif session_data:
+                    print(f"📊 Session data already saved ({len(session_data)} samples)")
+                else:
+                    print("📊 No session data to save")
+        except Exception as e:
+            print(f"⚠️  Emergency save warning: {e}")
+        
+        print("✅ Shutdown complete")
