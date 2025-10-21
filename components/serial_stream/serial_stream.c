@@ -16,10 +16,7 @@ esp_err_t serial_stream_init(void)
 // Send JSON data via serial (using printf)
 esp_err_t serial_stream_send_data(const char* data)
 {
-    // Send data with newline for easy parsing
     printf("%s\n", data);
-    fflush(stdout);  // Ensure data is sent immediately
-    
-    ESP_LOGI(TAG, "Sent: %s", data);
+    fflush(stdout);
     return ESP_OK;
 }

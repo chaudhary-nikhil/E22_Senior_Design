@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BNO055 Session Logger & Visualizer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="visualizer.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            color: white;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        #control-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 100;
+            min-width: 320px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .section {
+            margin: 15px 0;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+        }
+
+        .section h3 {
+            margin: 0 0 10px 0;
+            color: #00ff00;
+            font-size: 16px;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        .metric {
+            margin: 8px 0;
+            padding: 8px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 5px;
+            font-family: monospace;
+        }
+
+        .metric-label {
+            color: #ccc;
+            display: inline-block;
+            width: 80px;
+        }
+
+        .metric-value {
+            color: #00ff00;
+            font-weight: bold;
+        }
+
+        select {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 4px;
+        }
+
+        #imu-model-info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="imu-model-info">
+            IMU Model: +X (Red), +Y (Green), +Z (Blue)
+        </div>
+    </div>
+
+    <div id="control-panel">
+        <h3>🏊 BNO055 Session Logger</h3>
+        
+        <div class="section">
+            <h3>📝 Session Control</h3>
+            <button id="start-btn" onclick="startLogging()">Start Logging</button>
+            <button id="stop-btn" onclick="stopLogging()" disabled>Stop Logging</button>
+            
+            <div class="metric">
+                <span class="metric-label">Status:</span>
+                <span class="metric-value" id="logging-status">Inactive</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Session:</span>
+                <span class="metric-value" id="session-file">None</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>🎬 Playback</h3>
+            <label for="session-select">Load Session:</label>
+            <select id="session-select" onchange="loadSelectedSession()">
+                <option value="">-- Select a session --</option>
+            </select>
+            
+            <div class="metric">
+                <span class="metric-label">Loaded:</span>
+                <span class="metric-value" id="loaded-file">None</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Samples:</span>
+                <span class="metric-value" id="sample-count">0</span>
+            </div>
+            
+            <button id="play-btn" onclick="playSession()" disabled>Play</button>
+            <button id="pause-btn" onclick="pauseSession()" disabled>Pause</button>
+            <button id="reset-btn" onclick="resetPlayback()" disabled>Reset</button>
+            
+            <div class="metric">
+                <span class="metric-label">Time:</span>
+                <span class="metric-value" id="playback-time">0.0s / 0.0s</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>📊 Current Data</h3>
+            <div class="metric">
+                <span class="metric-label">Roll:</span>
+                <span class="metric-value" id="roll">0.0°</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Pitch:</span>
+                <span class="metric-value" id="pitch">0.0°</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Yaw:</span>
+                <span class="metric-value" id="yaw">0.0°</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Cal:</span>
+                <span class="metric-value" id="cal">0/0/0/0</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Temp:</span>
+                <span class="metric-value" id="temp">0.0°C</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Accel:</span>
+                <span class="metric-value" id="accel">0.0/0.0/0.0</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Gyro:</span>
+                <span class="metric-value" id="gyro">0.0/0.0/0.0</span>
+            </div>
+                    <div class="metric">
+                        <span class="metric-label">Mag:</span>
+                        <span class="metric-value" id="mag">0.0/0.0/0.0</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Strokes:</span>
+                        <span class="metric-value" id="strokes">0</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Stroke Rate:</span>
+                        <span class="metric-value" id="stroke-rate">0.0/min</span>
+                    </div>
+        </div>
+
+        <div class="section" id="charts-section" style="display: none;">
+            <h3>📈 Session Charts</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div style="background: #333; padding: 10px; border-radius: 5px;">
+                    <h4 style="margin: 0 0 10px 0; color: #fff; text-align: center; font-size: 12px;">Acceleration (m/s²)</h4>
+                    <canvas id="accelChart" style="max-height: 150px;"></canvas>
+                </div>
+                <div style="background: #333; padding: 10px; border-radius: 5px;">
+                    <h4 style="margin: 0 0 10px 0; color: #fff; text-align: center; font-size: 12px;">Gyroscope (rad/s)</h4>
+                    <canvas id="gyroChart" style="max-height: 150px;"></canvas>
+                </div>
+            </div>
+            <div style="background: #333; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                <h4 style="margin: 0 0 10px 0; color: #fff; text-align: center; font-size: 12px;">Magnetometer (µT)</h4>
+                <canvas id="magChart" style="max-height: 150px;"></canvas>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
