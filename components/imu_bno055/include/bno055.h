@@ -188,7 +188,6 @@ esp_err_t bno055_init(int port, uint8_t addr);
 esp_err_t bno055_set_operation_mode(int port, uint8_t addr, bno055_opmode_t mode);
 esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys, uint8_t *gyro, uint8_t *accel, uint8_t *mag);
 esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out);
-esp_err_t bno055_reset_session_timestamp(void);
 esp_err_t bno055_reset(int port, uint8_t addr);
 esp_err_t bno055_start_calibration(int port, uint8_t addr);
 esp_err_t bno055_save_calibration_data(int port, uint8_t addr, uint8_t *cal_data);
