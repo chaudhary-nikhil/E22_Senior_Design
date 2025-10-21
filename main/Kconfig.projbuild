@@ -1,18 +1,40 @@
 menu "FormSync Firmware"
 config FORMSYNC_SAMPLE_HZ
-    int "IMU sample rate (Hz)"
-    range 25 1000
-    default 200
+    int "BNO055 sample rate (Hz)"
+    range 25 100
+    default 50
+    help
+        BNO055 optimal sample rate for stable sensor fusion
+
+choice
+    prompt "IMU sensor"
+    default FORMSYNC_IMU_BNO055
+    help
+        Select the IMU sensor type
+config FORMSYNC_IMU_BNO055
+    bool "BNO055 (9-axis with fusion)"
+    help
+        Bosch BNO055 with internal sensor fusion
+config FORMSYNC_IMU_MPU6050
+    bool "MPU6050 (6-axis)"
+    help
+        InvenSense MPU6050 6-axis IMU
+endchoice
 
 choice
     prompt "Fusion algorithm"
-    default FORMSYNC_FUSION_MADGWICK
+    default FORMSYNC_FUSION_BNO055_INTERNAL
     help
-        Select the default orientation fusion algorithm.
+        Select the orientation fusion algorithm
+config FORMSYNC_FUSION_BNO055_INTERNAL
+    bool "BNO055 internal fusion (recommended)"
+    depends on FORMSYNC_IMU_BNO055
 config FORMSYNC_FUSION_MADGWICK
     bool "Madgwick (fast, good default)"
+    depends on FORMSYNC_IMU_MPU6050
 config FORMSYNC_FUSION_MAHONY
     bool "Mahony"
+    depends on FORMSYNC_IMU_MPU6050
 endchoice
 
 config FORMSYNC_ENABLE_BLE

@@ -7,34 +7,80 @@
 
 static const char *TAG = "BNO055";
 
-// Helper function to read 8-bit register
+// Helper function to read 8-bit register with retry for clock stretching
 static esp_err_t bno055_read8(int port, uint8_t addr, uint8_t reg, uint8_t *data) {
-    return bus_i2c_wrrd(port, addr, reg, data, 1, pdMS_TO_TICKS(1000)); // Increased timeout for BNO055
+    esp_err_t err;
+    int retries = 3;
+    
+    do {
+        err = bus_i2c_wrrd(port, addr, reg, data, 1, pdMS_TO_TICKS(1000));
+        if (err == ESP_OK) break;
+        
+        // If I2C error, wait and retry (clock stretching issue)
+        if (err == ESP_ERR_TIMEOUT || err == ESP_FAIL) {
+            vTaskDelay(pdMS_TO_TICKS(1)); // Small delay for clock stretching
+            retries--;
+        } else {
+            break; // Other errors don't retry
+        }
+    } while (retries > 0);
+    
+    return err;
 }
 
-// Helper function to write 8-bit register
+// Helper function to write 8-bit register with retry for clock stretching
 static esp_err_t bno055_write8(int port, uint8_t addr, uint8_t reg, uint8_t data) {
-    return bus_i2c_wr8(port, addr, reg, data, pdMS_TO_TICKS(1000)); // Increased timeout for BNO055
+    esp_err_t err;
+    int retries = 3;
+    
+    do {
+        err = bus_i2c_wr8(port, addr, reg, data, pdMS_TO_TICKS(1000));
+        if (err == ESP_OK) break;
+        
+        // If I2C error, wait and retry (clock stretching issue)
+        if (err == ESP_ERR_TIMEOUT || err == ESP_FAIL) {
+            vTaskDelay(pdMS_TO_TICKS(1)); // Small delay for clock stretching
+            retries--;
+        } else {
+            break; // Other errors don't retry
+        }
+    } while (retries > 0);
+    
+    return err;
 }
 
-// Helper function to read 16-bit register (little endian)
+// Helper function to read 16-bit register with retry for clock stretching
 static esp_err_t bno055_read16(int port, uint8_t addr, uint8_t reg, int16_t *data) {
     uint8_t buffer[2];
-    esp_err_t err = bus_i2c_wrrd(port, addr, reg, buffer, 2, pdMS_TO_TICKS(1000)); // Increased timeout for BNO055
-    if (err == ESP_OK) {
-        *data = (int16_t)((buffer[1] << 8) | buffer[0]);
-    }
+    esp_err_t err;
+    int retries = 3;
+    
+    do {
+        err = bus_i2c_wrrd(port, addr, reg, buffer, 2, pdMS_TO_TICKS(1000));
+        if (err == ESP_OK) {
+            *data = (int16_t)((buffer[1] << 8) | buffer[0]);
+            break;
+        }
+        
+        // If I2C error, wait and retry (clock stretching issue)
+        if (err == ESP_ERR_TIMEOUT || err == ESP_FAIL) {
+            vTaskDelay(pdMS_TO_TICKS(1)); // Small delay for clock stretching
+            retries--;
+        } else {
+            break; // Other errors don't retry
+        }
+    } while (retries > 0);
+    
     return err;
 }
 
 esp_err_t bno055_init(int port, uint8_t addr) {
     ESP_LOGI(TAG, "Initializing BNO055 at address 0x%02X", addr);
     
-    // Wait for BNO055 to boot up (critical for proper initialization)
-    ESP_LOGI(TAG, "Waiting for BNO055 to boot up...");
-    vTaskDelay(pdMS_TO_TICKS(650)); // BNO055 needs ~650ms to boot
+    // Wait for BNO055 to boot up
+    vTaskDelay(pdMS_TO_TICKS(650));
     
-    // Try both I2C addresses if the first one fails
+    // Try both I2C addresses
     uint8_t addresses[] = {addr, (addr == BNO055_ADDR_A) ? BNO055_ADDR_B : BNO055_ADDR_A};
     uint8_t working_addr = 0;
     uint8_t chip_id;
@@ -42,23 +88,21 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     
     for (int addr_idx = 0; addr_idx < 2; addr_idx++) {
         uint8_t test_addr = addresses[addr_idx];
-        ESP_LOGI(TAG, "Trying BNO055 at address 0x%02X", test_addr);
         
         int retry_count = 0;
-        const int max_retries = 20; // Increased retries
+        const int max_retries = 20;
         
         do {
             err = bno055_read8(port, test_addr, BNO055_CHIP_ID_ADDR, &chip_id);
             if (err == ESP_OK && chip_id == BNO055_ID) {
                 working_addr = test_addr;
-                ESP_LOGI(TAG, "BNO055 found at address 0x%02X (after %d retries)", test_addr, retry_count);
+                ESP_LOGI(TAG, "BNO055 found at address 0x%02X", test_addr);
                 break;
             }
             
             retry_count++;
             if (retry_count < max_retries) {
-                ESP_LOGW(TAG, "BNO055 not ready at 0x%02X, retry %d/%d (waiting 200ms)", test_addr, retry_count, max_retries);
-                vTaskDelay(pdMS_TO_TICKS(200)); // Increased delay between retries
+                vTaskDelay(pdMS_TO_TICKS(200));
             }
         } while (retry_count < max_retries);
         
@@ -68,66 +112,69 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     }
     
     if (err != ESP_OK || chip_id != BNO055_ID) {
-        ESP_LOGE(TAG, "Failed to find BNO055 at both addresses 0x28 and 0x29");
-        ESP_LOGE(TAG, "Check wiring: SDA=21, SCL=22, VCC=3.3V, GND=GND, pull-ups=4.7kΩ");
-        ESP_LOGE(TAG, "Check power supply and I2C connections");
+        ESP_LOGE(TAG, "Failed to find BNO055");
         return ESP_ERR_NOT_FOUND;
     }
     
-    // Update the address to the working one
     addr = working_addr;
     
-    // Reset the device
+    // Reset and configure
+    ESP_LOGI(TAG, "Resetting BNO055...");
     err = bno055_reset(port, addr);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to reset BNO055: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "BNO055 reset failed: %s", esp_err_to_name(err));
         return err;
     }
     
-    // Wait for reset to complete (BNO055 needs time after reset)
-    ESP_LOGI(TAG, "Waiting for BNO055 reset to complete...");
-    vTaskDelay(pdMS_TO_TICKS(650));
+    ESP_LOGI(TAG, "Waiting for BNO055 to stabilize after reset...");
+    vTaskDelay(pdMS_TO_TICKS(2000)); // Much longer delay after reset
     
     // Set to config mode
+    ESP_LOGI(TAG, "Setting BNO055 to config mode...");
     err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set config mode: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "BNO055 set config mode failed: %s", esp_err_to_name(err));
         return err;
     }
     
-    // Set power mode to normal
+    vTaskDelay(pdMS_TO_TICKS(100)); // Wait for mode change
+    
+    // Configure device
+    ESP_LOGI(TAG, "Configuring BNO055 power mode...");
     err = bno055_write8(port, addr, BNO055_PWR_MODE_ADDR, BNO055_POWER_MODE_NORMAL);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set power mode: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "BNO055 set power mode failed: %s", esp_err_to_name(err));
         return err;
     }
     
-    // Set page to 0
+    ESP_LOGI(TAG, "Setting BNO055 page ID...");
     err = bno055_write8(port, addr, BNO055_PAGE_ID_ADDR, 0);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set page: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "BNO055 set page ID failed: %s", esp_err_to_name(err));
         return err;
     }
     
-    // Set units (m/s², rad/s, μT, degrees)
+    ESP_LOGI(TAG, "Setting BNO055 unit selection...");
     err = bno055_write8(port, addr, BNO055_UNIT_SEL_ADDR, 0x00);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set units: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "BNO055 set unit selection failed: %s", esp_err_to_name(err));
         return err;
     }
     
-    // Set to NDOF mode (fusion mode using all sensors)
+    // Set to NDOF mode
+    ESP_LOGI(TAG, "Setting BNO055 to NDOF mode...");
     err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set NDOF mode: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "BNO055 set NDOF mode failed: %s", esp_err_to_name(err));
         return err;
     }
     
-    // Wait for mode change (BNO055 needs time to switch modes)
-    ESP_LOGI(TAG, "Waiting for NDOF mode to activate...");
+    ESP_LOGI(TAG, "Waiting for BNO055 fusion to start...");
+    vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for fusion to start
+    
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    ESP_LOGI(TAG, "BNO055 initialized successfully in NDOF mode");
+    ESP_LOGI(TAG, "BNO055 initialized successfully");
     return ESP_OK;
 }
 
@@ -138,178 +185,6 @@ esp_err_t bno055_set_operation_mode(int port, uint8_t addr, bno055_opmode_t mode
 esp_err_t bno055_reset(int port, uint8_t addr) {
     // Write reset command to SYS_TRIGGER register
     return bno055_write8(port, addr, BNO055_SYS_TRIGGER_ADDR, 0x20);
-}
-
-esp_err_t bno055_start_calibration(int port, uint8_t addr) {
-    ESP_LOGI(TAG, "Starting BNO055 calibration process...");
-    
-    // Set to config mode for calibration
-    esp_err_t err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set config mode for calibration: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Wait for mode change
-    vTaskDelay(pdMS_TO_TICKS(25));
-    
-    // Set to NDOF mode to start calibration
-    err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set NDOF mode for calibration: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Wait for mode change
-    vTaskDelay(pdMS_TO_TICKS(25));
-    
-    ESP_LOGI(TAG, "BNO055 calibration started - perform calibration movements");
-    return ESP_OK;
-}
-
-esp_err_t bno055_save_calibration_data(int port, uint8_t addr, uint8_t *cal_data) {
-    ESP_LOGI(TAG, "Saving BNO055 calibration data...");
-    
-    // Set to config mode to access calibration registers
-    esp_err_t err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set config mode for saving calibration: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Wait for mode change
-    vTaskDelay(pdMS_TO_TICKS(25));
-    
-    // Read calibration data (22 bytes total)
-    // Accelerometer offsets (6 bytes): 0x55-0x5A
-    // Magnetometer offsets (6 bytes): 0x5B-0x60  
-    // Gyroscope offsets (6 bytes): 0x61-0x66
-    // Accelerometer radius (2 bytes): 0x67-0x68
-    // Magnetometer radius (2 bytes): 0x69-0x6A
-    
-    uint8_t *offset = cal_data;
-    
-    // Read accelerometer offsets
-    for (int i = 0; i < 6; i++) {
-        err = bno055_read8(port, addr, 0x55 + i, &offset[i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read accel offset %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Read magnetometer offsets
-    for (int i = 0; i < 6; i++) {
-        err = bno055_read8(port, addr, 0x5B + i, &offset[6 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read mag offset %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Read gyroscope offsets
-    for (int i = 0; i < 6; i++) {
-        err = bno055_read8(port, addr, 0x61 + i, &offset[12 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read gyro offset %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Read accelerometer radius
-    for (int i = 0; i < 2; i++) {
-        err = bno055_read8(port, addr, 0x67 + i, &offset[18 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read accel radius %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Read magnetometer radius
-    for (int i = 0; i < 2; i++) {
-        err = bno055_read8(port, addr, 0x69 + i, &offset[20 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to read mag radius %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    ESP_LOGI(TAG, "Calibration data saved successfully");
-    return ESP_OK;
-}
-
-esp_err_t bno055_load_calibration_data(int port, uint8_t addr, const uint8_t *cal_data) {
-    ESP_LOGI(TAG, "Loading BNO055 calibration data...");
-    
-    // Set to config mode to write calibration registers
-    esp_err_t err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set config mode for loading calibration: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Wait for mode change
-    vTaskDelay(pdMS_TO_TICKS(25));
-    
-    const uint8_t *offset = cal_data;
-    
-    // Write accelerometer offsets
-    for (int i = 0; i < 6; i++) {
-        err = bno055_write8(port, addr, 0x55 + i, offset[i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write accel offset %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Write magnetometer offsets
-    for (int i = 0; i < 6; i++) {
-        err = bno055_write8(port, addr, 0x5B + i, offset[6 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write mag offset %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Write gyroscope offsets
-    for (int i = 0; i < 6; i++) {
-        err = bno055_write8(port, addr, 0x61 + i, offset[12 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write gyro offset %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Write accelerometer radius
-    for (int i = 0; i < 2; i++) {
-        err = bno055_write8(port, addr, 0x67 + i, offset[18 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write accel radius %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Write magnetometer radius
-    for (int i = 0; i < 2; i++) {
-        err = bno055_write8(port, addr, 0x69 + i, offset[20 + i]);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to write mag radius %d: %s", i, esp_err_to_name(err));
-            return err;
-        }
-    }
-    
-    // Set back to NDOF mode
-    err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set NDOF mode after loading calibration: %s", esp_err_to_name(err));
-        return err;
-    }
-    
-    // Wait for mode change
-    vTaskDelay(pdMS_TO_TICKS(25));
-    
-    ESP_LOGI(TAG, "Calibration data loaded successfully");
-    return ESP_OK;
 }
 
 esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys, uint8_t *gyro, uint8_t *accel, uint8_t *mag) {
