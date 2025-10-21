@@ -1,3 +1,3 @@
-idf_component_register(SRCS "storage.c"
+idf_component_register(SRCS "storage_packets.c" "storage.c"
                        INCLUDE_DIRS "include"
                        REQUIRES fatfs sdmmc driver esp_timer)
