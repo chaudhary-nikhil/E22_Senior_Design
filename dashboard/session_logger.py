@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-BNO055 Session Logger & Playback Visualizer
-Logs IMU session data to JSON, then plays back visualization
-Perfect for swim analysis - log session, analyze afterward
-"""
 
 import serial
 import json
@@ -91,8 +86,9 @@ class SessionHandler(BaseHTTPRequestHandler):
         if logging_active:
             logging_active = False
             
-            # Save session data to JSON file
-            filename = f"swim_session_{current_session_id}.json"
+            # Save session data to JSON file in sessions directory
+            os.makedirs('sessions', exist_ok=True)  # Ensure sessions directory exists
+            filename = f"sessions/swim_session_{current_session_id}.json"
             with open(filename, 'w') as f:
                 json.dump(session_data, f, indent=2)
             
@@ -113,10 +109,24 @@ class SessionHandler(BaseHTTPRequestHandler):
                 "status": "not_logging"
             }).encode())
 
+    def get_session_status(self):
+        """Get current session status"""
+        global logging_active, session_data, current_session_id, session_start_time
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            "logging_active": logging_active,
+            "session_id": current_session_id,
+            "samples": len(session_data),
+            "start_time": session_start_time.isoformat() if session_start_time else None
+        }).encode())
+
     def list_sessions(self):
         """List available session files"""
         import glob
-        json_files = glob.glob("swim_session_*.json")
+        json_files = glob.glob("sessions/swim_session_*.json")
         sessions = [os.path.basename(f) for f in json_files]
         
         self.send_response(200)
@@ -126,7 +136,7 @@ class SessionHandler(BaseHTTPRequestHandler):
         
     def get_session_data(self):
         """Get data for a specific session file"""
-        filename = self.path[6:]  # Remove '/data/' prefix
+        filename = f"sessions/{self.path[6:]}"  # Remove '/data/' prefix and add sessions/ path
         if os.path.exists(filename):
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -170,6 +180,8 @@ def serial_logger():
                 else:
                     if not connected_once:
                         print("⚠️  No ESP32 found - waiting for connection...")
+                        print("   Make sure ESP32 is connected and BNO055 is properly wired")
+                        print("   Expected: SDA=21, SCL=22, VCC=3.3V, GND=GND")
                     time.sleep(2)
                     continue
 
@@ -203,16 +215,18 @@ def serial_logger():
                         print(f"📊 Logging: t={session_timestamp:.1f}s Roll={data.get('roll', 0):.1f}° Cal={cal.get('sys', 0)}/{cal.get('gyro', 0)}/{cal.get('accel', 0)}/{cal.get('mag', 0)}")
 
                 except json.JSONDecodeError:
+                    # Ignore non-JSON lines (boot messages, debug output, etc.)
                     pass
 
-        except serial.SerialException:
+        except serial.SerialException as e:
+            print(f"⚠️  Serial connection lost: {e}")
             if serial_port:
                 serial_port.close()
             serial_port = None
             connected_once = False  # Reset connection flag for reconnection
             time.sleep(1)
         except Exception as e:
-            print(f"Serial error: {e}")
+            print(f"⚠️  Unexpected error in serial logger: {e}")
             time.sleep(0.1)
 
 def start_web_server():
@@ -256,8 +270,16 @@ if __name__ == "__main__":
         print("\n🛑 Shutting down...")
         if serial_port:
             serial_port.close()
-        if session_data:
-            filename = f"swim_session_emergency_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(filename, 'w') as f:
-                json.dump(session_data, f, indent=2)
-            print(f"💾 Emergency save: {len(session_data)} samples to {filename}")
+        
+        # Only emergency save if actively logging (not already stopped)
+        with data_lock:
+            if logging_active and session_data:
+                os.makedirs('sessions', exist_ok=True)  # Ensure sessions directory exists
+                filename = f"sessions/swim_session_emergency_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                with open(filename, 'w') as f:
+                    json.dump(session_data, f, indent=2)
+                print(f"💾 Emergency save: {len(session_data)} samples to {filename}")
+            elif session_data:
+                print(f"📊 Session data already saved ({len(session_data)} samples)")
+            else:
+                print("📊 No session data to save")

@@ -24,9 +24,10 @@ A clean, minimal ESP32 + BNO055 IMU system for swim session logging and playback
 - `components/serial_stream/` - Serial JSON output
 
 ### Python Session Logger
-- `dashboard/session_logger.py` - Web server + serial reader (249 lines)
-- `dashboard/session_visualizer.html` - Clean HTML interface (219 lines)
-- `dashboard/visualizer.js` - Optimized JavaScript for fast JSON processing (622 lines)
+- `dashboard/session_logger.py` - Web server + serial reader (284 lines)
+- `dashboard/session_visualizer.html` - Clean HTML interface (228 lines)
+- `dashboard/visualizer.js` - Optimized JavaScript for fast JSON processing (813 lines)
+- `dashboard/sessions/` - Directory for JSON session files (organized storage)
 
 ## Usage
 
@@ -46,7 +47,7 @@ python3 session_logger.py
 - Navigate to: http://localhost:8016
 - Click "Start Logging" to begin session
 - Swim with ESP32 attached
-- Click "Stop Logging" to save session
+- Click "Stop Logging" to save session to `dashboard/sessions/`
 - Load saved session and click "Play" for visualization
 
 ## Features
@@ -55,7 +56,8 @@ python3 session_logger.py
 - **Session Management**: Start/stop logging with timestamps from t=0
 - **Complete Data**: All 9-axis BNO055 data logged and visualized
 - **Professional Charts**: Acceleration, gyroscope, magnetometer charts
-- **3D Rotation Visualization**: Quaternion-based rotation using logged data (no position tracking)
+- **Dynamic Orientation Analysis**: Automatically determines IMU starting orientation from acceleration data
+- **Accurate Coordinate Mapping**: Maps BNO055 coordinate system to Three.js visualization correctly
 - **Stroke Detection**: Automatic swimming stroke detection and analysis
 - **Future GPS Integration**: Position tracking will be added via GPS module later
 - **Clean Codebase**: Minimal, easy-to-understand code
@@ -67,8 +69,8 @@ python3 session_logger.py
 Each logged data point contains:
 ```json
 {
-  "t": 12345,
-  "session_time": 1.234,
+  "t": 158229,
+  "session_time": 0.0,
   "ax": 0.1, "ay": 0.2, "az": 9.8,
   "gx": 0.01, "gy": 0.02, "gz": 0.03,
   "mx": 20.1, "my": -5.2, "mz": -10.3,
@@ -78,6 +80,17 @@ Each logged data point contains:
   "cal": {"sys": 3, "gyro": 3, "accel": 3, "mag": 3}
 }
 ```
+
+**Field Explanations:**
+- `t`: ESP32 system uptime in milliseconds (raw FreeRTOS tick count)
+- `session_time`: Time relative to session start (starts at 0.0 seconds)
+- `ax/ay/az`: Acceleration in m/s²
+- `gx/gy/gz`: Gyroscope in rad/s  
+- `mx/my/mz`: Magnetometer in µT
+- `roll/pitch/yaw`: Euler angles in degrees
+- `qw/qx/qy/qz`: Quaternion components for 3D rotation
+- `temp`: Temperature in °C
+- `cal`: Calibration status (0-3 for each sensor)
 
 ## Requirements
 

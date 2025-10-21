@@ -1,5 +1,4 @@
-// BNO055 Session Visualizer - Fast JSON Data Processing
-// Optimized for real-time playback of logged IMU data
+
 
 class SessionVisualizer {
     constructor() {
@@ -27,6 +26,14 @@ class SessionVisualizer {
             strokeFrequency: 0
         };
         
+        // Coordinate system transformation (determined from initial data)
+        this.coordinateTransform = {
+            upAxis: 'z',
+            rotationX: Math.PI / 2, // Default: Z-up to Y-up mapping
+            rotationY: 0,
+            rotationZ: 0
+        };
+        
         this.init();
     }
 
@@ -51,6 +58,68 @@ class SessionVisualizer {
         }
     }
     
+    // Analyze initial orientation from acceleration data to determine coordinate system mapping
+    analyzeInitialOrientation(firstSample) {
+        const ax = firstSample.ax || 0;
+        const ay = firstSample.ay || 0;
+        const az = firstSample.az || 0;
+        
+        // Find which axis has the largest magnitude (closest to gravity ~9.8 m/s²)
+        const absAx = Math.abs(ax);
+        const absAy = Math.abs(ay);
+        const absAz = Math.abs(az);
+        
+        // Determine which axis is pointing "up" (towards gravity)
+        let upAxis = 'z'; // Default assumption
+        let rotationX = 0;
+        let rotationY = 0;
+        let rotationZ = 0;
+        
+        if (absAx > absAy && absAx > absAz) {
+            // X-axis is pointing up/down
+            upAxis = 'x';
+            if (ax > 0) {
+                // X+ is up, rotate 90° around Z-axis to map X+ to Y+
+                rotationZ = Math.PI / 2;
+            } else {
+                // X- is up, rotate -90° around Z-axis to map X- to Y+
+                rotationZ = -Math.PI / 2;
+            }
+        } else if (absAy > absAx && absAy > absAz) {
+            // Y-axis is pointing up/down
+            upAxis = 'y';
+            if (ay > 0) {
+                // Y+ is up, no rotation needed (already aligned with Three.js Y+)
+                rotationX = 0;
+            } else {
+                // Y- is up, rotate 180° around Z-axis to map Y- to Y+
+                rotationZ = Math.PI;
+            }
+        } else {
+            // Z-axis is pointing up/down (most common case)
+            upAxis = 'z';
+            if (az > 0) {
+                // Z+ is up, rotate 90° around X-axis to map Z+ to Y+
+                rotationX = Math.PI / 2;
+            } else {
+                // Z- is up, rotate -90° around X-axis to map Z- to Y+
+                rotationX = -Math.PI / 2;
+            }
+        }
+        
+        // Store the coordinate system transformation
+        this.coordinateTransform = {
+            upAxis: upAxis,
+            rotationX: rotationX,
+            rotationY: rotationY,
+            rotationZ: rotationZ
+        };
+        
+        console.log(`🧭 Initial orientation analysis:`);
+        console.log(`   Up axis: ${upAxis.toUpperCase()} (${upAxis === 'x' ? ax : upAxis === 'y' ? ay : az} m/s²)`);
+        console.log(`   Transform: X=${(rotationX * 180 / Math.PI).toFixed(1)}°, Y=${(rotationY * 180 / Math.PI).toFixed(1)}°, Z=${(rotationZ * 180 / Math.PI).toFixed(1)}°`);
+    }
+
     // Create axis labels for better orientation understanding
     createAxisLabels() {
         const group = new THREE.Group();
@@ -316,6 +385,13 @@ class SessionVisualizer {
         this.imuCube.castShadow = true;
         this.imuCube.receiveShadow = true;
         this.imuCube.position.set(0, 0, 0);
+        
+        // Apply initial coordinate system transformation
+        // This will be updated when session data is loaded
+        this.imuCube.rotation.x = this.coordinateTransform.rotationX;
+        this.imuCube.rotation.y = this.coordinateTransform.rotationY;
+        this.imuCube.rotation.z = this.coordinateTransform.rotationZ;
+        
         this.scene.add(this.imuCube);
 
         // Add wireframe for better visibility
@@ -490,6 +566,10 @@ class SessionVisualizer {
                     }
                     
                     this.sessionData = data;
+                    
+                    // Analyze initial orientation from acceleration data
+                    this.analyzeInitialOrientation(data[0]);
+                    
                     document.getElementById('loaded-file').textContent = this.selectedFile;
                     document.getElementById('sample-count').textContent = this.sessionData.length;
                     document.getElementById('charts-section').style.display = 'block';
@@ -603,7 +683,11 @@ class SessionVisualizer {
         document.getElementById('playback-time').textContent = '0.0s / 0.0s';
         
         // Reset IMU visualization to initial state
+        // Reset to identity quaternion, but maintain the coordinate system transformation
         this.imuCube.setRotationFromQuaternion(new THREE.Quaternion(0, 0, 0, 1));
+        this.imuCube.rotation.x = this.coordinateTransform.rotationX;
+        this.imuCube.rotation.y = this.coordinateTransform.rotationY;
+        this.imuCube.rotation.z = this.coordinateTransform.rotationZ;
         
         // Reset stroke detection
         this.strokeDetection = {
@@ -651,8 +735,12 @@ class SessionVisualizer {
         }
         
         // Create quaternion and apply to cube for realistic motion
+        // Apply the BNO055 quaternion, then maintain the coordinate system transformation
         const quaternion = new THREE.Quaternion(qx, qy, qz, qw);
         this.imuCube.setRotationFromQuaternion(quaternion);
+        this.imuCube.rotation.x += this.coordinateTransform.rotationX;
+        this.imuCube.rotation.y += this.coordinateTransform.rotationY;
+        this.imuCube.rotation.z += this.coordinateTransform.rotationZ;
 
         // Detect swimming strokes
         this.detectStroke(data);
