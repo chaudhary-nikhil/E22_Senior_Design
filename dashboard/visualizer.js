@@ -613,32 +613,76 @@ class SessionVisualizer {
         this.magChart.data.labels = [];
         this.magChart.data.datasets.forEach(dataset => dataset.data = []);
 
-        // Optimized sampling for fast rendering
-        const sampleRate = Math.max(1, Math.floor(data.length / 200)); // Max 200 points
-        
-        for (let i = 0; i < data.length; i += sampleRate) {
-            const sample = data[i];
-            const timeLabel = sample.session_time ? `${sample.session_time.toFixed(1)}s` : `${i}`;
-            
-            // Add labels
-            this.accelChart.data.labels.push(timeLabel);
-            this.gyroChart.data.labels.push(timeLabel);
-            this.magChart.data.labels.push(timeLabel);
-            
-            // Add raw data directly from logged JSON
+        // Min-max downsampling for fast rendering and feature preservation
+        const maxPoints = 200;
+        const bins = Math.min(maxPoints, data.length);
+        const binSize = Math.ceil(data.length / bins);
+
+        // Helper to push data for a sample
+        const pushSample = (sample, label) => {
+            this.accelChart.data.labels.push(label);
+            this.gyroChart.data.labels.push(label);
+            this.magChart.data.labels.push(label);
+
             this.accelChart.data.datasets[0].data.push(sample.ax || 0);
             this.accelChart.data.datasets[1].data.push(sample.ay || 0);
             this.accelChart.data.datasets[2].data.push(sample.az || 0);
-            
+
             this.gyroChart.data.datasets[0].data.push(sample.gx || 0);
             this.gyroChart.data.datasets[1].data.push(sample.gy || 0);
             this.gyroChart.data.datasets[2].data.push(sample.gz || 0);
-            
+
             this.magChart.data.datasets[0].data.push(sample.mx || 0);
             this.magChart.data.datasets[1].data.push(sample.my || 0);
             this.magChart.data.datasets[2].data.push(sample.mz || 0);
+        };
+
+        for (let b = 0; b < bins; b++) {
+            const start = b * binSize;
+            const end = Math.min(start + binSize, data.length);
+            if (start >= end) continue;
+            // Find min and max for each axis in this bin
+            let minSample = data[start];
+            let maxSample = data[start];
+            let minAx = data[start].ax, maxAx = data[start].ax;
+            let minAy = data[start].ay, maxAy = data[start].ay;
+            let minAz = data[start].az, maxAz = data[start].az;
+            let minGx = data[start].gx, maxGx = data[start].gx;
+            let minGy = data[start].gy, maxGy = data[start].gy;
+            let minGz = data[start].gz, maxGz = data[start].gz;
+            let minMx = data[start].mx, maxMx = data[start].mx;
+            let minMy = data[start].my, maxMy = data[start].my;
+            let minMz = data[start].mz, maxMz = data[start].mz;
+            let minIdx = start, maxIdx = start;
+            for (let i = start + 1; i < end; i++) {
+                const s = data[i];
+                if (s.ax < minAx) { minAx = s.ax; minSample = s; minIdx = i; }
+                if (s.ax > maxAx) { maxAx = s.ax; maxSample = s; maxIdx = i; }
+                if (s.ay < minAy) { minAy = s.ay; }
+                if (s.ay > maxAy) { maxAy = s.ay; }
+                if (s.az < minAz) { minAz = s.az; }
+                if (s.az > maxAz) { maxAz = s.az; }
+                if (s.gx < minGx) { minGx = s.gx; }
+                if (s.gx > maxGx) { maxGx = s.gx; }
+                if (s.gy < minGy) { minGy = s.gy; }
+                if (s.gy > maxGy) { maxGy = s.gy; }
+                if (s.gz < minGz) { minGz = s.gz; }
+                if (s.gz > maxGz) { maxGz = s.gz; }
+                if (s.mx < minMx) { minMx = s.mx; }
+                if (s.mx > maxMx) { maxMx = s.mx; }
+                if (s.my < minMy) { minMy = s.my; }
+                if (s.my > maxMy) { maxMy = s.my; }
+                if (s.mz < minMz) { minMz = s.mz; }
+                if (s.mz > maxMz) { maxMz = s.mz; }
+            }
+            // Add min and max samples for this bin (if different)
+            const minLabel = data[minIdx].session_time ? `${data[minIdx].session_time.toFixed(1)}s` : `${minIdx}`;
+            const maxLabel = data[maxIdx].session_time ? `${data[maxIdx].session_time.toFixed(1)}s` : `${maxIdx}`;
+            pushSample(data[minIdx], minLabel);
+            if (minIdx !== maxIdx) {
+                pushSample(data[maxIdx], maxLabel);
+            }
         }
-        
         // Update charts without animation for speed
         this.accelChart.update('none');
         this.gyroChart.update('none');
