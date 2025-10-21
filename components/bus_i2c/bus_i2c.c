@@ -19,7 +19,7 @@ esp_err_t bus_i2c_init(i2c_port_t port, int sda, int scl, uint32_t hz) {
     // Based on GitHub discussion: BNO055 can stretch clock up to 500μs
     if (err == ESP_OK) {
         i2c_set_timeout(port, 500000); // Timeout for BNO055 clock stretching: 500,000 APB cycles (~500μs at 80MHz APB clock)
-        ESP_LOGI("BUS_I2C", "I2C initialized with 500ms timeout for BNO055 compatibility");
+        ESP_LOGI("BUS_I2C", "I2C initialized with 500μs timeout for BNO055 compatibility");
     }
     
     return err;
