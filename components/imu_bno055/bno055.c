@@ -7,6 +7,9 @@
 
 static const char *TAG = "BNO055";
 
+// Session start time - resets to 0 on each boot
+static uint32_t session_start_time = 0;
+
 // Helper function to read 8-bit register with retry for clock stretching
 static esp_err_t bno055_read8(int port, uint8_t addr, uint8_t reg, uint8_t *data) {
     esp_err_t err;
@@ -293,6 +296,3 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     
     return ESP_OK;
 }
-
-// Session start time - resets to 0 on each boot
-static uint32_t session_start_time = 0;
