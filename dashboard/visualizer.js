@@ -642,45 +642,54 @@ class SessionVisualizer {
             const end = Math.min(start + binSize, data.length);
             if (start >= end) continue;
             // Find min and max for each axis in this bin
-            let minSample = data[start];
-            let maxSample = data[start];
-            let minAx = data[start].ax, maxAx = data[start].ax;
-            let minAy = data[start].ay, maxAy = data[start].ay;
-            let minAz = data[start].az, maxAz = data[start].az;
-            let minGx = data[start].gx, maxGx = data[start].gx;
-            let minGy = data[start].gy, maxGy = data[start].gy;
-            let minGz = data[start].gz, maxGz = data[start].gz;
-            let minMx = data[start].mx, maxMx = data[start].mx;
-            let minMy = data[start].my, maxMy = data[start].my;
-            let minMz = data[start].mz, maxMz = data[start].mz;
-            let minIdx = start, maxIdx = start;
+            // Track min/max values and their indices for all axes
+            let minAx = data[start].ax, maxAx = data[start].ax, minAxIdx = start, maxAxIdx = start;
+            let minAy = data[start].ay, maxAy = data[start].ay, minAyIdx = start, maxAyIdx = start;
+            let minAz = data[start].az, maxAz = data[start].az, minAzIdx = start, maxAzIdx = start;
+            let minGx = data[start].gx, maxGx = data[start].gx, minGxIdx = start, maxGxIdx = start;
+            let minGy = data[start].gy, maxGy = data[start].gy, minGyIdx = start, maxGyIdx = start;
+            let minGz = data[start].gz, maxGz = data[start].gz, minGzIdx = start, maxGzIdx = start;
+            let minMx = data[start].mx, maxMx = data[start].mx, minMxIdx = start, maxMxIdx = start;
+            let minMy = data[start].my, maxMy = data[start].my, minMyIdx = start, maxMyIdx = start;
+            let minMz = data[start].mz, maxMz = data[start].mz, minMzIdx = start, maxMzIdx = start;
+
             for (let i = start + 1; i < end; i++) {
                 const s = data[i];
-                if (s.ax < minAx) { minAx = s.ax; minSample = s; minIdx = i; }
-                if (s.ax > maxAx) { maxAx = s.ax; maxSample = s; maxIdx = i; }
-                if (s.ay < minAy) { minAy = s.ay; }
-                if (s.ay > maxAy) { maxAy = s.ay; }
-                if (s.az < minAz) { minAz = s.az; }
-                if (s.az > maxAz) { maxAz = s.az; }
-                if (s.gx < minGx) { minGx = s.gx; }
-                if (s.gx > maxGx) { maxGx = s.gx; }
-                if (s.gy < minGy) { minGy = s.gy; }
-                if (s.gy > maxGy) { maxGy = s.gy; }
-                if (s.gz < minGz) { minGz = s.gz; }
-                if (s.gz > maxGz) { maxGz = s.gz; }
-                if (s.mx < minMx) { minMx = s.mx; }
-                if (s.mx > maxMx) { maxMx = s.mx; }
-                if (s.my < minMy) { minMy = s.my; }
-                if (s.my > maxMy) { maxMy = s.my; }
-                if (s.mz < minMz) { minMz = s.mz; }
-                if (s.mz > maxMz) { maxMz = s.mz; }
+                if (s.ax < minAx) { minAx = s.ax; minAxIdx = i; }
+                if (s.ax > maxAx) { maxAx = s.ax; maxAxIdx = i; }
+                if (s.ay < minAy) { minAy = s.ay; minAyIdx = i; }
+                if (s.ay > maxAy) { maxAy = s.ay; maxAyIdx = i; }
+                if (s.az < minAz) { minAz = s.az; minAzIdx = i; }
+                if (s.az > maxAz) { maxAz = s.az; maxAzIdx = i; }
+                if (s.gx < minGx) { minGx = s.gx; minGxIdx = i; }
+                if (s.gx > maxGx) { maxGx = s.gx; maxGxIdx = i; }
+                if (s.gy < minGy) { minGy = s.gy; minGyIdx = i; }
+                if (s.gy > maxGy) { maxGy = s.gy; maxGyIdx = i; }
+                if (s.gz < minGz) { minGz = s.gz; minGzIdx = i; }
+                if (s.gz > maxGz) { maxGz = s.gz; maxGzIdx = i; }
+                if (s.mx < minMx) { minMx = s.mx; minMxIdx = i; }
+                if (s.mx > maxMx) { maxMx = s.mx; maxMxIdx = i; }
+                if (s.my < minMy) { minMy = s.my; minMyIdx = i; }
+                if (s.my > maxMy) { maxMy = s.my; maxMyIdx = i; }
+                if (s.mz < minMz) { minMz = s.mz; minMzIdx = i; }
+                if (s.mz > maxMz) { maxMz = s.mz; maxMzIdx = i; }
             }
-            // Add min and max samples for this bin (if different)
-            const minLabel = data[minIdx].session_time ? `${data[minIdx].session_time.toFixed(1)}s` : `${minIdx}`;
-            const maxLabel = data[maxIdx].session_time ? `${data[maxIdx].session_time.toFixed(1)}s` : `${maxIdx}`;
-            pushSample(data[minIdx], minLabel);
-            if (minIdx !== maxIdx) {
-                pushSample(data[maxIdx], maxLabel);
+            // Collect all unique indices for min/max of all axes in this bin
+            const uniqueIdxs = new Set([
+                minAxIdx, maxAxIdx,
+                minAyIdx, maxAyIdx,
+                minAzIdx, maxAzIdx,
+                minGxIdx, maxGxIdx,
+                minGyIdx, maxGyIdx,
+                minGzIdx, maxGzIdx,
+                minMxIdx, maxMxIdx,
+                minMyIdx, maxMyIdx,
+                minMzIdx, maxMzIdx
+            ]);
+            // Add samples for all unique min/max indices in this bin
+            for (const idx of uniqueIdxs) {
+                const label = data[idx].session_time ? `${data[idx].session_time.toFixed(1)}s` : `${idx}`;
+                pushSample(data[idx], label);
             }
         }
         // Update charts without animation for speed
