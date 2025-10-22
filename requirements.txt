@@ -1,0 +1,19 @@
+# Python dependencies for GoldenForm
+# Install with: pip install -r requirements.txt
+
+# Bluetooth Low Energy communication
+bleak>=0.21.0
+
+# Optional: For better performance and additional features
+# asyncio-mqtt>=0.13.0  # If you want MQTT support later
+# numpy>=1.21.0         # If you want data processing
+# matplotlib>=3.5.0      # If you want plotting capabilities
+
+# Note: The following are included with Python standard library:
+# - json
+# - threading  
+# - time
+# - http.server
+# - os
+# - datetime
+# - asyncio

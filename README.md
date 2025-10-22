@@ -1,8 +1,8 @@
-# FormSync Firmware - ESP32 IMU Systems
+# GoldenForm Firmware - ESP32 IMU Systems
 
 Modular ESP-IDF firmware supporting both **MPU6050** (6-axis) and **BNO055** (9-axis) IMU sensors with comprehensive visualization systems.
 
-## 🏊 BNO055 Swim Session Logger & Visualizer
+## 🏊 GoldenForm Session Logger & Visualizer
 
 A complete swim analysis system using BNO055 9-axis IMU with session logging and playback visualization.
 

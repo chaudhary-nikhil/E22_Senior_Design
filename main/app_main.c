@@ -7,12 +7,29 @@
 
 #include "bus_i2c.h"
 #include "bno055.h"
-#include "serial_stream.h"
+#include "ble_service.h"
 
 static const char *TAG = "APP";
 
+// Bluetooth connection callback
+static void bluetooth_connection_callback(ble_stream_state_t state) {
+    switch (state) {
+        case BLE_STREAM_STATE_ADVERTISING:
+            ESP_LOGI(TAG, "Bluetooth: Advertising for connections");
+            break;
+        case BLE_STREAM_STATE_CONNECTED:
+            ESP_LOGI(TAG, "Bluetooth: Client connected - data streaming active");
+            break;
+        case BLE_STREAM_STATE_DISCONNECTED:
+            ESP_LOGI(TAG, "Bluetooth: Client disconnected - continuing to advertise");
+            break;
+        default:
+            break;
+    }
+}
+
 void app_main(void) {
-    ESP_LOGI(TAG, "FormSync FW starting");
+    ESP_LOGI(TAG, "GoldenForm FW starting");
 
     // Init I2C (SDA=21, SCL=22 @ 100kHz for BNO055 compatibility)
     ESP_ERROR_CHECK(bus_i2c_init(I2C_NUM_0, 21, 22, 100000));
@@ -28,13 +45,14 @@ void app_main(void) {
         ESP_LOGI(TAG, "BNO055 initialized successfully");
     }
 
-    // Init serial streaming
-    ESP_ERROR_CHECK(serial_stream_init());
+    // Init Bluetooth streaming
+    ESP_ERROR_CHECK(ble_stream_init("GoldenForm", bluetooth_connection_callback));
 
-    ESP_LOGI(TAG, "All systems initialized, starting real-time IMU streaming via serial");
+    ESP_LOGI(TAG, "All systems initialized, starting real-time IMU streaming via Bluetooth");
+    ESP_LOGI(TAG, "Note: For post-session data transmission, use ble_stream_send_session_file()");
 
     TickType_t t0 = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ); // Configurable sampling rate
+    const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_GOLDENFORM_SAMPLE_HZ); // Configurable sampling rate
 
     while (1) {
         if (bno_err == ESP_OK) {
@@ -42,7 +60,7 @@ void app_main(void) {
             bno055_sample_t s;
             esp_err_t err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &s);
             if (err == ESP_OK) {
-                // Create JSON with all 9-axis data and send via serial
+                // Create JSON with all 9-axis data and send via Bluetooth
                 char json_data[512];
                 snprintf(json_data, sizeof(json_data),
                     "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
@@ -51,7 +69,7 @@ void app_main(void) {
                     s.qw, s.qx, s.qy, s.qz, s.temp,
                     s.sys_cal, s.gyro_cal, s.accel_cal, s.mag_cal);
 
-                serial_stream_send_data(json_data);
+                ble_stream_send_data(json_data);
             } else {
                 ESP_LOGW(TAG, "BNO055 read failed: %s", esp_err_to_name(err));
             }
