@@ -39,3 +39,6 @@ flash_project_args
 
 # Component manager
 components/.component_hash
+
+# Swim Session Data
+sessions/

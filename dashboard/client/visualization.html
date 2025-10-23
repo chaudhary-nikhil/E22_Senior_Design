@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoldenForm Forearm Rotation Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: #222;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 100;
+            min-width: 250px;
+        }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.8);
+            padding: 15px 25px;
+            border-radius: 10px;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            color: white;
+        }
+        #controls button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s ease;
+            font-weight: bold;
+        }
+        #controls button:hover {
+            background: #0056b3;
+        }
+        #controls button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        #playback-slider {
+            width: 300px;
+            -webkit-appearance: none;
+            height: 8px;
+            background: #d3d3d3;
+            outline: none;
+            opacity: 0.7;
+            -webkit-transition: .2s;
+            transition: opacity .2s;
+            border-radius: 4px;
+        }
+        #playback-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #007bff;
+            cursor: pointer;
+        }
+        #playback-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #007bff;
+            cursor: pointer;
+        }
+        #speed-control {
+            width: 80px;
+            padding: 8px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            background: white;
+        }
+        .metric {
+            margin: 5px 0;
+            display: flex;
+            justify-content: space-between;
+        }
+        .metric-label {
+            font-weight: bold;
+            color: #ffd700;
+        }
+        .metric-value {
+            color: #fff;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading 3D visualization...</div>
+    
+    <div id="info">
+        <h3 style="margin-top: 0; color: #ffd700;">🦾 Forearm Rotation Analysis</h3>
+        <div class="metric">
+            <span class="metric-label">Session ID:</span>
+            <span class="metric-value" id="session-id-display">N/A</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Data Points:</span>
+            <span class="metric-value" id="data-points-display">0</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Current Frame:</span>
+            <span class="metric-value" id="current-frame-display">0</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Progress:</span>
+            <span class="metric-value" id="percentage-display">0.00%</span>
+        </div>
+        <div class="metric">
+            <span class="metric-label">Playback Speed:</span>
+            <span class="metric-value" id="speed-display">1.0x</span>
+        </div>
+        <div style="margin-top: 10px; font-size: 12px; color: #ccc;">
+            <p><strong>IMU Location:</strong> Right under elbow on forearm</p>
+            <p><strong>Red:</strong> X-axis | <strong>Green:</strong> Y-axis | <strong>Blue:</strong> Z-axis</p>
+        </div>
+    </div>
+
+    <div id="controls">
+        <button id="playPauseBtn">▶️ Play</button>
+        <button id="resetBtn">🔄 Reset</button>
+        <input type="range" id="playback-slider" min="0" value="0">
+        <select id="speed-control">
+            <option value="0.1">0.1x</option>
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="5">5x</option>
+        </select>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script>
+        let scene, camera, renderer, controls;
+        let forearmGroup; // Group for the forearm model and IMU cube
+        let sessionData = [];
+        let currentPlaybackIndex = 0;
+        let playbackInterval;
+        let isPlaying = false;
+        let animationFrameId;
+        let playbackSpeed = 1.0;
+
+        // Coordinate system transformation for realistic forearm rotation
+        // IMU is mounted right under elbow on forearm
+        const coordinateTransform = {
+            rotationX: 0,     // No X rotation needed
+            rotationY: 0,     // No Y rotation needed  
+            rotationZ: Math.PI / 2  // Rotate 90 degrees to align forearm horizontally
+        };
+
+        function init() {
+            // Hide loading
+            document.getElementById('loading').style.display = 'none';
+            
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 2, 4);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.maxPolarAngle = Math.PI / 2;
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 50;
+            directionalLight.shadow.camera.left = -10;
+            directionalLight.shadow.camera.right = 10;
+            directionalLight.shadow.camera.top = 10;
+            directionalLight.shadow.camera.bottom = -10;
+            scene.add(directionalLight);
+
+            // Ground Plane
+            const planeGeometry = new THREE.PlaneGeometry(20, 20);
+            const planeMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x404040, 
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.3
+            });
+            const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            plane.rotation.x = -Math.PI / 2;
+            plane.position.y = -1.5;
+            plane.receiveShadow = true;
+            scene.add(plane);
+
+            // Create Forearm Model
+            createForearmModel();
+
+            // Axes Helper (larger and more visible)
+            const axesHelper = new THREE.AxesHelper(1.5);
+            scene.add(axesHelper);
+
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Event Listeners for controls
+            document.getElementById('playPauseBtn').addEventListener('click', togglePlayback);
+            document.getElementById('resetBtn').addEventListener('click', resetVisualization);
+            document.getElementById('playback-slider').addEventListener('input', onSliderChange);
+            document.getElementById('speed-control').addEventListener('change', onSpeedChange);
+
+            // Load session data
+            loadSessionData();
+        }
+
+        function createForearmModel() {
+            forearmGroup = new THREE.Group();
+
+            // Create main forearm geometry (realistic anatomical shape)
+            const forearmGeometry = new THREE.CylinderGeometry(0.4, 0.6, 3.0, 16);
+            const forearmMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xfdbcb4, // Skin tone
+                shininess: 30,
+                specular: 0x111111,
+                transparent: true,
+                opacity: 0.95
+            });
+            
+            const forearm = new THREE.Mesh(forearmGeometry, forearmMaterial);
+            forearm.castShadow = true;
+            forearm.receiveShadow = true;
+            forearm.rotation.z = Math.PI / 2; // Rotate to horizontal orientation
+            forearm.position.set(0, 0, 0);
+            
+            // Create elbow joint (where IMU is mounted - right under elbow)
+            const elbowGeometry = new THREE.CylinderGeometry(0.7, 0.7, 0.8, 16);
+            const elbowMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xfdbcb4, // Skin tone
+                shininess: 30,
+                specular: 0x111111
+            });
+            
+            const elbow = new THREE.Mesh(elbowGeometry, elbowMaterial);
+            elbow.castShadow = true;
+            elbow.receiveShadow = true;
+            elbow.rotation.z = Math.PI / 2;
+            elbow.position.set(-1.5, 0, 0); // Position at elbow (IMU mount point)
+            
+            // Create wrist joint
+            const wristGeometry = new THREE.CylinderGeometry(0.35, 0.35, 0.7, 12);
+            const wristMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xfdbcb4, // Skin tone
+                shininess: 30,
+                specular: 0x111111
+            });
+            
+            const wrist = new THREE.Mesh(wristGeometry, wristMaterial);
+            wrist.castShadow = true;
+            wrist.receiveShadow = true;
+            wrist.rotation.z = Math.PI / 2;
+            wrist.position.set(1.6, 0, 0); // Position at wrist end
+            
+            // Create hand (simplified)
+            const handGeometry = new THREE.BoxGeometry(0.9, 0.5, 0.4);
+            const handMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xfdbcb4, // Skin tone
+                shininess: 30,
+                specular: 0x111111
+            });
+            
+            const hand = new THREE.Mesh(handGeometry, handMaterial);
+            hand.castShadow = true;
+            hand.receiveShadow = true;
+            hand.position.set(2.3, 0, 0); // Position at end of forearm
+            
+            // Add all parts to group
+            forearmGroup.add(forearm);
+            forearmGroup.add(elbow);
+            forearmGroup.add(wrist);
+            forearmGroup.add(hand);
+            
+            // Add muscle definition (subtle lines)
+            const muscleLines = new THREE.Group();
+            for (let i = 0; i < 4; i++) {
+                const lineGeometry = new THREE.CylinderGeometry(0.015, 0.015, 2.8, 8);
+                const lineMaterial = new THREE.MeshPhongMaterial({ 
+                    color: 0xe8a598, // Slightly darker skin tone
+                    transparent: true,
+                    opacity: 0.4
+                });
+                
+                const muscleLine = new THREE.Mesh(lineGeometry, lineMaterial);
+                muscleLine.rotation.z = Math.PI / 2;
+                muscleLine.position.set(0, 0.4 + i * 0.15, 0);
+                muscleLines.add(muscleLine);
+            }
+            forearmGroup.add(muscleLines);
+            
+            // Add IMU mounting point indicator (right under elbow)
+            const imuMountGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 16);
+            const imuMountMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x333333, // Dark gray for IMU mount
+                shininess: 100,
+                specular: 0x444444
+            });
+            
+            const imuMount = new THREE.Mesh(imuMountGeometry, imuMountMaterial);
+            imuMount.rotation.z = Math.PI / 2;
+            imuMount.position.set(-1.5, 0.5, 0); // Position right under elbow
+            forearmGroup.add(imuMount);
+            
+            // Add IMU axes (Red=X, Green=Y, Blue=Z) - larger and more visible
+            const imuAxesHelper = new THREE.AxesHelper(0.8); // Larger axes for IMU
+            imuAxesHelper.position.set(-1.5, 0.5, 0); // Position at IMU mount point
+            forearmGroup.add(imuAxesHelper);
+
+            // Apply initial coordinate system transformation
+            forearmGroup.rotation.x = coordinateTransform.rotationX;
+            forearmGroup.rotation.y = coordinateTransform.rotationY;
+            forearmGroup.rotation.z = coordinateTransform.rotationZ;
+            
+            scene.add(forearmGroup);
+            console.log('🦾 Realistic forearm model created with IMU mount point');
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            animationFrameId = requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        async function loadSessionData() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionId = urlParams.get('session_id');
+            
+            if (!sessionId) {
+                console.error("No session ID provided for visualization.");
+                document.getElementById('info').innerHTML = "<p style='color:red;'>Error: No session ID provided. Please start and stop a session first.</p>";
+                return;
+            }
+
+            try {
+                const response = await fetch(`/data/${sessionId}.json`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                sessionData = await response.json();
+                
+                document.getElementById('session-id-display').textContent = sessionId;
+                document.getElementById('data-points-display').textContent = sessionData.length;
+                document.getElementById('playback-slider').max = sessionData.length - 1;
+
+                if (sessionData.length > 0) {
+                    // Set initial rotation
+                    updateForearmRotation(sessionData[0]);
+                    animate(); // Start rendering loop
+                } else {
+                    document.getElementById('info').innerHTML = "<p style='color:red;'>Error: No data points in session.</p>";
+                }
+
+            } catch (error) {
+                console.error("Failed to load session data:", error);
+                document.getElementById('info').innerHTML = `<p style='color:red;'>Error loading session data: ${error.message}.</p>`;
+            }
+        }
+
+        function updateForearmRotation(data) {
+            if (!forearmGroup || !data || data.qw === undefined) return;
+
+            // Create quaternion from IMU data
+            const quaternion = new THREE.Quaternion(data.qx, data.qy, data.qz, data.qw);
+            
+            // Apply quaternion rotation with coordinate transformation
+            forearmGroup.setRotationFromQuaternion(quaternion);
+            
+            // Apply additional coordinate system transformation for realistic forearm orientation
+            forearmGroup.rotation.x += coordinateTransform.rotationX;
+            forearmGroup.rotation.y += coordinateTransform.rotationY;
+            forearmGroup.rotation.z += coordinateTransform.rotationZ;
+        }
+
+        function togglePlayback() {
+            const playPauseBtn = document.getElementById('playPauseBtn');
+            if (isPlaying) {
+                clearInterval(playbackInterval);
+                playPauseBtn.textContent = '▶️ Play';
+            } else {
+                if (currentPlaybackIndex >= sessionData.length - 1) {
+                    currentPlaybackIndex = 0; // Restart if at end
+                }
+                playbackInterval = setInterval(playNextFrame, 1000 / 50 / playbackSpeed); // Assuming 50Hz data, adjust with speed
+                playPauseBtn.textContent = '⏸️ Pause';
+            }
+            isPlaying = !isPlaying;
+        }
+
+        function playNextFrame() {
+            if (currentPlaybackIndex < sessionData.length) {
+                const data = sessionData[currentPlaybackIndex];
+                updateForearmRotation(data);
+                document.getElementById('playback-slider').value = currentPlaybackIndex;
+                updatePlaybackInfo();
+                currentPlaybackIndex++;
+            } else {
+                togglePlayback(); // Pause at end
+            }
+        }
+
+        function resetVisualization() {
+            clearInterval(playbackInterval);
+            isPlaying = false;
+            document.getElementById('playPauseBtn').textContent = '▶️ Play';
+            currentPlaybackIndex = 0;
+            document.getElementById('playback-slider').value = 0;
+            if (sessionData.length > 0) {
+                updateForearmRotation(sessionData[0]);
+            } else {
+                // Reset to default orientation if no data
+                forearmGroup.setRotationFromQuaternion(new THREE.Quaternion(0, 0, 0, 1));
+                forearmGroup.rotation.x = coordinateTransform.rotationX;
+                forearmGroup.rotation.y = coordinateTransform.rotationY;
+                forearmGroup.rotation.z = coordinateTransform.rotationZ;
+            }
+            updatePlaybackInfo();
+        }
+
+        function onSliderChange(event) {
+            currentPlaybackIndex = parseInt(event.target.value);
+            if (currentPlaybackIndex < sessionData.length) {
+                updateForearmRotation(sessionData[currentPlaybackIndex]);
+            }
+            updatePlaybackInfo();
+        }
+
+        function onSpeedChange(event) {
+            playbackSpeed = parseFloat(event.target.value);
+            document.getElementById('speed-display').textContent = `${playbackSpeed}x`;
+            if (isPlaying) {
+                togglePlayback(); // Pause and restart to apply new speed
+                togglePlayback();
+            }
+        }
+
+        function updatePlaybackInfo() {
+            document.getElementById('current-frame-display').textContent = currentPlaybackIndex + 1;
+            const percentage = sessionData.length > 0 ? ((currentPlaybackIndex + 1) / sessionData.length * 100).toFixed(1) : 0.0;
+            document.getElementById('percentage-display').textContent = `${percentage}%`;
+        }
+
+        // Initialize when page loads
+        init();
+    </script>
+</body>
+</html>

@@ -1,39 +1,60 @@
-# IMU Real-Time 3D Visualization System
+Quick Start:
+cd /Users/Abathini/E22_Senior_Design && source $HOME/esp/esp-idf/export.sh && idf.py build && idf.py flash
+cd dashboard/server && python session_logger.py
+Connect to "GoldenForm" WiFi (password: goldenform123)
+Press EN button → Press BOOT button → Open http://localhost:8016 → View 3D forearm rotation!
 
-A complete system that reads motion data from an MPU6050 IMU sensor on an ESP32 and displays it as a moving 3D object in real-time on a web browser.
+# GoldenForm - WiFi IMU System
+
+A complete system that reads motion data from a BNO055 9-axis IMU sensor on an ESP32 and streams it wirelessly via WiFi to a web-based session logger and visualizer.
 
 ## 🎯 What This System Does
 
-- **ESP32 Firmware**: Reads 6-axis IMU data (accelerometer + gyroscope) at 100Hz
-- **Serial Streaming**: Sends JSON data via USB cable to your computer
-- **Python Web Server**: Processes IMU data and serves web interface
-- **3D Visualization**: Real-time 3D cube that moves and rotates based on sensor motion
-- **Live Data Display**: Shows current acceleration and angular velocity values
+- **ESP32 Firmware**: Reads 9-axis IMU data (accelerometer + gyroscope + magnetometer) at configurable rate
+- **WiFi Streaming**: Sends protobuf data wirelessly via WiFi to your computer
+- **Session Logger**: Python web server for logging swim sessions and managing data
+- **3D Visualization**: Real-time 3D visualization of IMU orientation and motion
+- **Data Storage**: Automatic session logging with JSON file storage and playback
 
 ## 📋 Prerequisites
 
 - ESP32 development board
-- MPU6050 IMU sensor
+- BNO055 9-axis IMU sensor
 - ESP-IDF development environment
-- Python 3.6+ with required packages
+- Python 3.6+ with required packages (`requests` for WiFi)
 - Modern web browser
 
 ## 🔧 Hardware Setup
 
-1. **Connect MPU6050 to ESP32:**
+1. **Connect BNO055 to ESP32:**
    ```
-   MPU6050    ESP32
+   BNO055    ESP32
    VCC    →   3.3V
    GND    →   GND
    SCL    →   GPIO 22
    SDA    →   GPIO 21
    ```
 
-2. **Connect ESP32 to computer via USB cable**
+2. **Connect laptop to ESP32 WiFi** - everything is wireless!
 
 ## 🚀 Quick Start Guide
 
-### Step 1: Build and Flash ESP32 Firmware
+### Option 1: Automated Installation (Recommended)
+
+```bash
+# Run the installation script
+./install.sh
+
+# This will:
+# - Check Python installation
+# - Install all dependencies
+# - Verify ESP-IDF setup
+# - Check for ESP32 connection
+```
+
+### Option 2: Manual Installation
+
+#### Step 1: Build and Flash ESP32 Firmware
 
 ```bash
 # Navigate to project root
@@ -49,26 +70,38 @@ idf.py -p /dev/cu.usbserial-0001 flash
 idf.py -p /dev/cu.usbserial-0001 monitor
 ```
 
-### Step 2: Start the Python Visualizer
+### Step 2: Install Python Dependencies
 
 ```bash
-# Navigate to scripts folder
-cd scripts
+# Install all required packages from requirements file
+pip install -r requirements.txt
 
-# Start the Python web server
-python3 simple_imu_visualizer.py
+# Or install manually if needed
+pip install requests
 ```
 
-The server will start on `http://localhost:8003`
+**Note**: The `requirements.txt` file contains all necessary Python dependencies for the WiFi functionality.
 
-### Step 3: Open Web Interface
+### Step 3: Start the Session Logger
+
+```bash
+# Navigate to dashboard folder
+cd dashboard
+
+# Start the Bluetooth session logger
+python3 run_session_logger.py
+```
+
+The server will start on `http://localhost:8016`
+
+### Step 4: Open Web Interface
 
 Open your web browser and go to:
 ```
-http://localhost:8003
+http://localhost:8016
 ```
 
-The interface will automatically connect and start showing real-time IMU data.
+The interface will automatically connect via Bluetooth and start logging IMU data.
 
 ## 📁 Project Structure
 
@@ -79,132 +112,174 @@ E22_Senior_Design/
 │   └── CMakeLists.txt          # Main component configuration
 ├── components/
 │   ├── bus_i2c/               # I2C communication driver
-│   ├── imu_mpu6050/          # MPU6050 IMU sensor driver
-│   └── serial_stream/         # Serial data streaming
-├── scripts/
-│   ├── simple_imu_visualizer.py  # Python web server
-│   └── simple_imu_3d.html        # Web interface
+│   ├── imu_bno055/           # BNO055 IMU sensor driver
+│   ├── wifi_server/          # WiFi Access Point and HTTP server
+│   └── serial_stream/        # Serial JSON output
+├── dashboard/
+│   ├── server/                   # Python backend components
+│   │   ├── session_logger.py     # Main application logic
+│   │   ├── session_manager.py    # Session data management
+│   │   ├── web_server.py         # HTTP server & API
+│   │   └── config.py             # Configuration constants
+│   └── client/                   # Web interface components
+│       ├── simple_session_logger.html # Main dashboard interface
+│       └── visualization.html    # 3D forearm rotation visualization
 ├── docs/
-│   └── README.md                 # This documentation
-└── build/                     # Build output (auto-generated)
+│   └── README.md              # This documentation
+├── requirements.txt           # Python dependencies
+├── dependencies.lock         # ESP-IDF component dependencies
+├── install.sh               # Automated installation script
+└── build/                   # Build output (auto-generated)
 ```
 
 ## 🔍 How It Works
 
 ### Data Flow
-1. **ESP32** reads MPU6050 sensor data at 100Hz
-2. **Serial Stream** sends JSON: `{"t":timestamp, "ax":1.08, "ay":-0.014, "az":8.899, "gx":-0.149, "gy":-0.696, "gz":-0.517}`
-3. **Python Server** processes data and calculates position/rotation
-4. **Web Browser** displays 3D cube moving in real-time
+1. **ESP32** reads BNO055 sensor data at configurable rate
+2. **WiFi** sends protobuf data: 57-byte binary packets with IMU data
+3. **Session Logger** processes data and logs to JSON files
+4. **Web Browser** displays 3D visualization and session management
 
-### Visualization Features
-- **Position**: Red cube moves based on acceleration data (ax, ay, az)
-- **Rotation**: Cube rotates based on angular velocity (gx, gy, gz)
-- **Real-time Display**: Shows live acceleration and angular velocity values
-- **3D Environment**: Three.js scene with camera controls
+### WiFi Features
+- **Network Name**: "GoldenForm"
+- **Password**: "goldenform123"
+- **ESP32 IP**: 192.168.4.1
+- **Connection**: Direct WiFi connection
+- **Data**: Fast protobuf transmission for large data
+
+### Session Management
+- **Press EN Button**: Start logging IMU data (LED turns ON)
+- **Press BOOT Button**: Stop logging and save session (LED turns OFF)
+- **Refresh Data**: Retrieve latest session from ESP32
+- **View Forearm Rotation**: 3D visualization of forearm movement
 
 ## 🛠️ Troubleshooting
 
-### ESP32 Not Connecting
+### ESP32 Not Creating WiFi Network
 ```bash
-# Check available serial ports
-ls /dev/cu.usbserial-*
+# Check ESP32 logs for WiFi initialization
+idf.py monitor
 
-# Try different baud rates
-idf.py -p /dev/cu.usbserial-0001 -b 115200 monitor
+# Look for: "WiFi: Access Point running - ready for connections"
 ```
 
 ### Python Server Issues
 ```bash
 # Kill existing Python processes
-pkill -f simple_imu_visualizer.py
+pkill -f session_logger.py
 
-# Check if port 8003 is in use
-lsof -i :8003
+# Check if port 8016 is in use
+lsof -i :8016
 
-# Start server with verbose output
-python3 simple_imu_visualizer.py --verbose
+# Install missing dependencies
+pip install -r requirements.txt
+
+# Or install manually
+pip install requests
 ```
 
-### Web Interface Not Loading
-- Ensure Python server is running on port 8003
-- Check browser console for errors (F12)
-- Try refreshing the page
-- Clear browser cache
+### Python Dependencies Issues
+```bash
+# Check if requests is installed
+python3 -c "import requests; print('Requests installed successfully')"
+
+# Reinstall dependencies
+pip uninstall requests
+pip install requests
+
+# Check Python version (requires 3.6+)
+python3 --version
+```
+
+### WiFi Connection Issues
+- Ensure ESP32 is powered on and WiFi is initialized
+- Check that "GoldenForm" network appears in WiFi list
+- Try restarting the Python session logger
+- Check system WiFi permissions
+- Connect to "GoldenForm" network (password: goldenform123)
 
 ### No Data in Visualization
 - Verify ESP32 is sending data (check serial monitor)
-- Ensure Python server is receiving data (check terminal output)
+- Ensure Python server shows "Connected" status
 - Check that web interface shows "Connected" status
+- Verify BNO055 calibration status
 
 ## 📊 Expected Output
 
 ### ESP32 Serial Output
 ```
-I (1234) APP: t=1000 ax=1.080 ay=-0.014 az=8.899 m/s^2 | gx=-0.149 gy=-0.696 gz=-0.517 rad/s
-I (1244) SERIAL_STREAM: Sent: {"t":1000,"ax":1.080,"ay":-0.014,"az":8.899,"gx":-0.149,"gy":-0.696,"gz":-0.517}
+I (1234) APP: All systems initialized, starting real-time IMU streaming via Bluetooth
+I (1244) BLE_SERVICE: Advertising started successfully
+I (1254) BLE_SERVICE: ESP_GATTS_CONNECT_EVT, conn_id 0
+I (1264) APP: Bluetooth: Client connected - data streaming active
 ```
 
 ### Python Server Output
 ```
-Server running on http://localhost:8003
-Client connected. Total clients: 1
-Processed JSON IMU: t=1000, ax=1.080, ay=-0.014, az=8.899
+🏊 GoldenForm Session Logger (Bluetooth)
+==========================================
+🔍 Scanning for Bluetooth devices...
+✅ Found target device: GoldenForm at AA:BB:CC:DD:EE:FF
+🔗 Connecting to AA:BB:CC:DD:EE:FF...
+✅ Connected successfully!
+📊 Notifications enabled - receiving IMU data...
+📊 Logging: t=1.0s Roll=1.2° Cal=3/3/3/3
 ```
 
 ### Web Interface
-- Red cube moving in 3D space
-- Live data values updating
+- Session management controls
+- Real-time 3D visualization
 - Connection status showing "Connected"
+- Session list and playback controls
 
 ## 🔧 Customization
 
 ### Change Sampling Rate
 Edit `main/app_main.c`:
 ```c
-const TickType_t period = pdMS_TO_TICKS(10); // 100Hz (10ms)
-// Change to pdMS_TO_TICKS(20) for 50Hz
+const TickType_t period = pdMS_TO_TICKS(100); // 10Hz (100ms)
+// Change to pdMS_TO_TICKS(50) for 20Hz
 ```
 
-### Modify Visualization
-Edit `simple_imu_3d.html`:
-- Change cube color, size, or shape
-- Add new data displays
-- Modify 3D scene settings
+### Modify Bluetooth Settings
+Edit `components/ble/ble_service.h`:
+- Change device name
+- Modify service/characteristic UUIDs
+- Adjust advertising parameters
 
 ### Adjust Data Processing
-Edit `simple_imu_visualizer.py`:
-- Modify position calculation algorithms
+Edit `dashboard/session_logger.py`:
+- Modify data processing algorithms
 - Add filtering or smoothing
-- Change data format
+- Change data format or logging behavior
 
 ## 📚 Technical Details
 
 ### ESP32 Firmware
 - **Framework**: ESP-IDF
-- **Communication**: I2C (400kHz)
-- **Sampling**: 100Hz
-- **Data Format**: JSON over serial
+- **Communication**: I2C (100kHz) + Bluetooth Low Energy
+- **Sampling**: Configurable rate (default 10Hz)
+- **Data Format**: JSON over BLE notifications
 
 ### Python Server
-- **Framework**: HTTP server with Server-Sent Events
-- **Port**: 8003
-- **Data Processing**: Real-time IMU data conversion
-- **Communication**: Serial USB + HTTP
+- **Framework**: HTTP server with Bluetooth integration
+- **Port**: 8016
+- **Bluetooth**: Bleak library for BLE communication
+- **Data Processing**: Real-time IMU data logging
 
 ### Web Interface
 - **Framework**: Three.js for 3D graphics
-- **Communication**: Server-Sent Events
-- **Features**: Real-time 3D visualization, live data display
+- **Communication**: HTTP + Server-Sent Events
+- **Features**: Session management, 3D visualization, data playback
 
 ## 🚀 Next Steps
 
-1. **Enhanced Algorithms**: Implement proper sensor fusion (Kalman filter, Madgwick filter)
-2. **Multiple Sensors**: Add support for multiple IMU sensors
-3. **Wireless Communication**: Replace USB with WiFi or Bluetooth
-4. **Advanced Visualization**: Add human body models, motion analysis
-5. **Data Logging**: Save and replay motion data
-6. **Mobile App**: Create mobile interface for remote monitoring
+1. **Haptic Feedback**: Add BLE notifications for form deviations
+2. **Ideal Form Comparison**: Implement baseline form analysis
+3. **Advanced Analytics**: Add stroke analysis and metrics
+4. **Mobile App**: Create mobile interface for swim tracking
+5. **Cloud Integration**: Upload sessions to cloud storage
+6. **Real-time Coaching**: AI-powered form feedback
 
 ## 📞 Support
 
@@ -212,8 +287,9 @@ If you encounter issues:
 1. Check the troubleshooting section above
 2. Verify all hardware connections
 3. Ensure ESP-IDF and Python environments are properly set up
-4. Check serial port permissions and availability
+4. Check Bluetooth permissions and system settings
+5. Verify BNO055 calibration status
 
 ---
 
-**System Status**: ✅ Working - Real-time IMU data streaming to 3D web visualization
+**System Status**: ✅ Working - Wireless IMU data streaming via Bluetooth with session logging and 3D visualization
