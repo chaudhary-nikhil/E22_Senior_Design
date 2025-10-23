@@ -23,8 +23,7 @@ A complete swim analysis system using BNO055 9-axis IMU with session logging and
 - `components/bus_i2c/` - I2C communication with BNO055 compatibility
 - `components/serial_stream/` - Serial JSON output
 - `dashboard/session_logger.py` - Web server + serial reader (286 lines)
-- `dashboard/session_visualizer.html` - Clean HTML interface (228 lines)
-- `dashboard/visualizer.js` - Optimized JavaScript for fast JSON processing (798 lines)
+- `dashboard/simple_session_logger.html` - Clean session logging interface
 - `dashboard/sessions/` - Directory for JSON session files (organized storage)
 
 ### Usage
@@ -60,27 +59,6 @@ python3 session_logger.py
 
 ---
 
-## 🔄 MPU6050 Live Visualization System
-
-The original MPU6050-based live visualization system (preserved from main branch).
-
-### Files
-- `components/imu_mpu6050/` - MPU6050 sensor driver
-- `dashboard/simple_imu_visualizer.py` - Live MPU6050 visualization
-- `dashboard/simple_imu_3d.html` - MPU6050 HTML interface
-
-### Usage
-```bash
-# Flash ESP32 with MPU6050 firmware
-idf.py set-target esp32
-idf.py build flash monitor
-
-# Start MPU6050 visualizer
-cd dashboard
-python3 simple_imu_visualizer.py
-```
-
----
 
 ## 🏗️ Build System
 
@@ -92,18 +70,14 @@ idf.py build flash monitor
 
 ### Structure
 - `components/bus_i2c`: thin I²C helpers
-- `components/imu_mpu6050`: MPU6050 register driver (6-axis)
 - `components/imu_bno055`: BNO055 register driver (9-axis with fusion)
-- `components/fusion`: placeholder Madgwick/Mahony API
-- `components/ble`: stubs for BLE services (enable later)
-- `components/storage`: stubs for SD/FATFS or SPIFFS/LittleFS
-- `components/logging`: app-wide logging helpers
+- `components/wifi_server`: WiFi Access Point and HTTP server for data transmission
 - `components/serial_stream`: JSON serial output
 - `main`: application tasks and wiring
 
 ### Configuration
 - Keep `sdkconfig` out of git; use `sdkconfig.defaults` to share sane defaults
-- Use feature flags in `Kconfig.projbuild` to toggle BLE/Storage/Fusion choices
+- Use feature flags in `Kconfig.projbuild` to toggle WiFi/Storage/Fusion choices
 - Prefer `vTaskDelayUntil` for fixed-rate sampling loops
 
 ---

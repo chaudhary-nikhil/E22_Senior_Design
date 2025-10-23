@@ -34,16 +34,16 @@ if [ -f "requirements.txt" ]; then
         exit 1
     fi
 else
-    echo "⚠️  requirements.txt not found, installing bleak manually..."
-    pip3 install bleak
+    echo "⚠️  requirements.txt not found, installing requests manually..."
+    pip3 install requests
 fi
 
-# Verify bleak installation
+# Verify requests installation
 echo ""
-echo "🔍 Verifying Bluetooth library installation..."
-python3 -c "import bleak; print('✅ Bleak library installed successfully')" 2>/dev/null
+echo "🔍 Verifying WiFi library installation..."
+python3 -c "import requests; print('✅ Requests library installed successfully')" 2>/dev/null
 if [ $? -ne 0 ]; then
-    echo "❌ Bleak library verification failed"
+    echo "❌ Requests library verification failed"
     exit 1
 fi
 

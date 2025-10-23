@@ -1,5 +1,5 @@
-menu "GoldenForm Firmware"
-config GOLDENFORM_SAMPLE_HZ
+menu "FormSync Firmware"
+config FORMSYNC_SAMPLE_HZ
     int "BNO055 sample rate (Hz)"
     range 25 100
     default 50
@@ -8,14 +8,14 @@ config GOLDENFORM_SAMPLE_HZ
 
 choice
     prompt "IMU sensor"
-    default GOLDENFORM_IMU_BNO055
+    default FORMSYNC_IMU_BNO055
     help
         Select the IMU sensor type
-config GOLDENFORM_IMU_BNO055
+config FORMSYNC_IMU_BNO055
     bool "BNO055 (9-axis with fusion)"
     help
         Bosch BNO055 with internal sensor fusion
-config GOLDENFORM_IMU_MPU6050
+config FORMSYNC_IMU_MPU6050
     bool "MPU6050 (6-axis)"
     help
         InvenSense MPU6050 6-axis IMU
@@ -23,25 +23,25 @@ endchoice
 
 choice
     prompt "Fusion algorithm"
-    default GOLDENFORM_FUSION_BNO055_INTERNAL
+    default FORMSYNC_FUSION_BNO055_INTERNAL
     help
         Select the orientation fusion algorithm
-config GOLDENFORM_FUSION_BNO055_INTERNAL
+config FORMSYNC_FUSION_BNO055_INTERNAL
     bool "BNO055 internal fusion (recommended)"
-    depends on GOLDENFORM_IMU_BNO055
-config GOLDENFORM_FUSION_MADGWICK
+    depends on FORMSYNC_IMU_BNO055
+config FORMSYNC_FUSION_MADGWICK
     bool "Madgwick (fast, good default)"
-    depends on GOLDENFORM_IMU_MPU6050
-config GOLDENFORM_FUSION_MAHONY
+    depends on FORMSYNC_IMU_MPU6050
+config FORMSYNC_FUSION_MAHONY
     bool "Mahony"
-    depends on GOLDENFORM_IMU_MPU6050
+    depends on FORMSYNC_IMU_MPU6050
 endchoice
 
-config GOLDENFORM_ENABLE_BLE
+config FORMSYNC_ENABLE_BLE
     bool "Enable BLE services (stubs)"
     default n
 
-config GOLDENFORM_ENABLE_STORAGE
+config FORMSYNC_ENABLE_STORAGE
     bool "Enable storage (stubs)"
     default n
 endmenu

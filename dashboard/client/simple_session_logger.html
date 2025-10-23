@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoldenForm Session Logger</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 30px;
+        }
+
+        .info-section {
+            background: #ecf0f1;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+
+        .info-section h3 {
+            margin-top: 0;
+            color: #34495e;
+        }
+
+        .button-group {
+            text-align: center;
+            margin: 30px 0;
+        }
+
+        button {
+            padding: 15px 30px;
+            margin: 10px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .start-btn {
+            background: #27ae60;
+            color: white;
+        }
+
+        .start-btn:hover:not(:disabled) {
+            background: #229954;
+            transform: translateY(-2px);
+        }
+
+        .stop-btn {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .stop-btn:hover:not(:disabled) {
+            background: #c0392b;
+            transform: translateY(-2px);
+        }
+
+        .refresh-btn {
+            background: #f39c12;
+            color: white;
+        }
+
+        .refresh-btn:hover:not(:disabled) {
+            background: #e67e22;
+            transform: translateY(-2px);
+        }
+
+        .status-btn {
+            background: #3498db;
+            color: white;
+        }
+
+        .status-btn:hover:not(:disabled) {
+            background: #2980b9;
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status-display {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+            min-height: 60px;
+        }
+
+        .status-display h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+            padding: 8px 0;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .metric:last-child {
+            border-bottom: none;
+        }
+
+        .metric-label {
+            font-weight: bold;
+            color: #7f8c8d;
+        }
+
+        .metric-value {
+            color: #2c3e50;
+            font-family: monospace;
+        }
+
+        .error {
+            color: #e74c3c;
+            background: #fdf2f2;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .success {
+            color: #27ae60;
+            background: #f0f9f0;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GoldenForm Session Logger</h1>
+        
+        <div class="info-section">
+            <h3>Instructions</h3>
+            <p><strong>1.</strong> Press <strong>EN button</strong> on ESP32 to START logging</p>
+            <p><strong>2.</strong> Press <strong>BOOT button</strong> on ESP32 to STOP logging</p>
+            <p><strong>3.</strong> LED on ESP32 shows logging status (ON=logging, OFF=stopped)</p>
+            <p><strong>4.</strong> Data automatically transfers to laptop after stopping</p>
+            <p><strong>5.</strong> Visualization shows realistic forearm rotation</p>
+            <p><strong>IMU Location:</strong> Right under the elbow on forearm</p>
+        </div>
+
+        <div class="button-group">
+            <button id="refreshBtn" class="refresh-btn" onclick="refreshData()">Refresh Data</button>
+            <button id="vizBtn" class="viz-btn" onclick="createVisualization()" disabled>View Forearm Rotation</button>
+        </div>
+
+        <div class="status-display">
+            <h3>Session Status</h3>
+            <div class="metric">
+                <span class="metric-label">Status:</span>
+                <span class="metric-value" id="logging-status">Inactive</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Session ID:</span>
+                <span class="metric-value" id="session-id">None</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Data Points:</span>
+                <span class="metric-value" id="data-points">0</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">ESP32 Status:</span>
+                <span class="metric-value" id="esp32-status">Disconnected</span>
+            </div>
+            <div id="status-message"></div>
+        </div>
+    </div>
+
+    <script>
+        let hasData = false;
+        let currentSessionId = null;
+
+        function updateButtons() {
+            document.getElementById('refreshBtn').disabled = false;
+            document.getElementById('vizBtn').disabled = !hasData;
+        }
+
+        function updateStatus(status) {
+            document.getElementById('logging-status').textContent = status.logging_active ? 'Active' : 'Inactive';
+            document.getElementById('session-id').textContent = status.session_id || 'None';
+            document.getElementById('data-points').textContent = status.samples || 0;
+            document.getElementById('esp32-status').textContent = status.esp32_status || 'Unknown';
+            
+            hasData = status.samples > 0;
+            if (status.session_id) {
+                currentSessionId = status.session_id;
+            }
+            updateButtons();
+        }
+
+        function showMessage(message, type = 'info') {
+            const messageDiv = document.getElementById('status-message');
+            messageDiv.innerHTML = `<div class="${type}">${message}</div>`;
+        }
+
+        function refreshData() {
+            showMessage('Checking for new session data...', 'info');
+            
+            fetch('/get_session_data', {method: 'POST'})
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'data_retrieved') {
+                        hasData = true;
+                        currentSessionId = data.session_id;
+                        updateButtons();
+                        showMessage(`✅ New data available! ${data.data_points} data points ready for visualization.`, 'success');
+                        updateStatus({
+                            logging_active: false,
+                            session_id: data.session_id,
+                            samples: data.data_points,
+                            esp32_status: 'Connected'
+                        });
+                    } else if (data.status === 'error' && data.error.includes('No session data')) {
+                        showMessage('No new session data available. Press EN button on ESP32 to start logging.', 'info');
+                        updateStatus({
+                            logging_active: false,
+                            session_id: 'None',
+                            samples: 0,
+                            esp32_status: 'Connected'
+                        });
+                    } else {
+                        showMessage(`❌ Error: ${data.error || 'Failed to get session data'}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    showMessage(`❌ Error: ${error.message}`, 'error');
+                });
+        }
+
+        function createVisualization() {
+            showMessage('Creating visualization...', 'info');
+            
+            fetch('/create_visualization', {method: 'POST'})
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'visualization_created') {
+                        showMessage(`✅ Visualization created! Data points: ${data.data_points}. Opening visualization...`, 'success');
+                        // Open visualization in new window
+                        window.open('/visualization', '_blank');
+                    } else {
+                        showMessage(`❌ Error: ${data.error || 'Failed to create visualization'}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    showMessage(`❌ Error: ${error.message}`, 'error');
+                });
+        }
+
+        function getStatus() {
+            showMessage('Checking status...', 'info');
+            
+            fetch('/session_status')
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus(data);
+                    showMessage('✅ Status updated', 'success');
+                })
+                .catch(error => {
+                    showMessage(`❌ Error: ${error.message}`, 'error');
+                });
+        }
+
+        // Initialize
+        updateButtons();
+        refreshData(); // Check for data on load
+        
+        // Auto-refresh data every 10 seconds
+        setInterval(() => {
+            refreshData();
+        }, 10000);
+    </script>
+</body>
+</html>

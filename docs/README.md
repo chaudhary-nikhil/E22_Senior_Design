@@ -1,11 +1,17 @@
-# GoldenForm - Bluetooth IMU System
+Quick Start:
+cd /Users/Abathini/E22_Senior_Design && source $HOME/esp/esp-idf/export.sh && idf.py build && idf.py flash
+cd dashboard/server && python session_logger.py
+Connect to "GoldenForm" WiFi (password: goldenform123)
+Press EN button → Press BOOT button → Open http://localhost:8016 → View 3D forearm rotation!
 
-A complete system that reads motion data from a BNO055 9-axis IMU sensor on an ESP32 and streams it wirelessly via Bluetooth to a web-based session logger and visualizer.
+# GoldenForm - WiFi IMU System
+
+A complete system that reads motion data from a BNO055 9-axis IMU sensor on an ESP32 and streams it wirelessly via WiFi to a web-based session logger and visualizer.
 
 ## 🎯 What This System Does
 
 - **ESP32 Firmware**: Reads 9-axis IMU data (accelerometer + gyroscope + magnetometer) at configurable rate
-- **Bluetooth Streaming**: Sends JSON data wirelessly via BLE to your computer
+- **WiFi Streaming**: Sends protobuf data wirelessly via WiFi to your computer
 - **Session Logger**: Python web server for logging swim sessions and managing data
 - **3D Visualization**: Real-time 3D visualization of IMU orientation and motion
 - **Data Storage**: Automatic session logging with JSON file storage and playback
@@ -15,7 +21,7 @@ A complete system that reads motion data from a BNO055 9-axis IMU sensor on an E
 - ESP32 development board
 - BNO055 9-axis IMU sensor
 - ESP-IDF development environment
-- Python 3.6+ with required packages (`bleak` for Bluetooth)
+- Python 3.6+ with required packages (`requests` for WiFi)
 - Modern web browser
 
 ## 🔧 Hardware Setup
@@ -29,7 +35,7 @@ A complete system that reads motion data from a BNO055 9-axis IMU sensor on an E
    SDA    →   GPIO 21
    ```
 
-2. **No USB cable needed** - everything is wireless!
+2. **Connect laptop to ESP32 WiFi** - everything is wireless!
 
 ## 🚀 Quick Start Guide
 
@@ -71,10 +77,10 @@ idf.py -p /dev/cu.usbserial-0001 monitor
 pip install -r requirements.txt
 
 # Or install manually if needed
-pip install bleak
+pip install requests
 ```
 
-**Note**: The `requirements.txt` file contains all necessary Python dependencies for the Bluetooth functionality.
+**Note**: The `requirements.txt` file contains all necessary Python dependencies for the WiFi functionality.
 
 ### Step 3: Start the Session Logger
 
@@ -107,19 +113,17 @@ E22_Senior_Design/
 ├── components/
 │   ├── bus_i2c/               # I2C communication driver
 │   ├── imu_bno055/           # BNO055 IMU sensor driver
-│   └── ble/                   # Bluetooth Low Energy service
+│   ├── wifi_server/          # WiFi Access Point and HTTP server
+│   └── serial_stream/        # Serial JSON output
 ├── dashboard/
-│   ├── run_session_logger.py     # Main entry point
 │   ├── server/                   # Python backend components
 │   │   ├── session_logger.py     # Main application logic
 │   │   ├── session_manager.py    # Session data management
-│   │   ├── bluetooth_client.py   # Bluetooth communication
 │   │   ├── web_server.py         # HTTP server & API
 │   │   └── config.py             # Configuration constants
-│   ├── client/                   # Web interface components
-│   │   ├── session_visualizer.html # Web interface
-│   │   └── visualizer.js         # 3D visualization
-│   └── sessions/                # Session data storage
+│   └── client/                   # Web interface components
+│       ├── simple_session_logger.html # Main dashboard interface
+│       └── visualization.html    # 3D forearm rotation visualization
 ├── docs/
 │   └── README.md              # This documentation
 ├── requirements.txt           # Python dependencies
@@ -132,31 +136,31 @@ E22_Senior_Design/
 
 ### Data Flow
 1. **ESP32** reads BNO055 sensor data at configurable rate
-2. **Bluetooth** sends JSON: `{"t":timestamp, "ax":1.08, "ay":-0.014, "az":8.899, "gx":-0.149, "gy":-0.696, "gz":-0.517, "mx":25.1, "my":-15.2, "mz":8.3, "roll":1.2, "pitch":-0.8, "yaw":45.3, "qw":0.707, "qx":0.0, "qy":0.0, "qz":0.707, "temp":25.1, "cal":{"sys":3,"gyro":3,"accel":3,"mag":3}}`
+2. **WiFi** sends protobuf data: 57-byte binary packets with IMU data
 3. **Session Logger** processes data and logs to JSON files
 4. **Web Browser** displays 3D visualization and session management
 
-### Bluetooth Features
-- **Device Name**: "GoldenForm"
-- **Service**: Battery Service (0x180F) - reused for IMU data
-- **Characteristic**: Battery Level (0x2A19) - reused for data streaming
-- **Connection**: Automatic scanning and connection
-- **Data**: Multi-packet JSON transmission for large data
+### WiFi Features
+- **Network Name**: "GoldenForm"
+- **Password**: "goldenform123"
+- **ESP32 IP**: 192.168.4.1
+- **Connection**: Direct WiFi connection
+- **Data**: Fast protobuf transmission for large data
 
 ### Session Management
-- **Start Logging**: Begin recording IMU data
-- **Stop Logging**: Save session to JSON file
-- **View Sessions**: List all recorded sessions
-- **Playback**: Replay any session with 3D visualization
+- **Press EN Button**: Start logging IMU data (LED turns ON)
+- **Press BOOT Button**: Stop logging and save session (LED turns OFF)
+- **Refresh Data**: Retrieve latest session from ESP32
+- **View Forearm Rotation**: 3D visualization of forearm movement
 
 ## 🛠️ Troubleshooting
 
-### ESP32 Not Advertising
+### ESP32 Not Creating WiFi Network
 ```bash
-# Check ESP32 logs for Bluetooth initialization
+# Check ESP32 logs for WiFi initialization
 idf.py monitor
 
-# Look for: "Bluetooth: Advertising for connections"
+# Look for: "WiFi: Access Point running - ready for connections"
 ```
 
 ### Python Server Issues
@@ -171,27 +175,28 @@ lsof -i :8016
 pip install -r requirements.txt
 
 # Or install manually
-pip install bleak
+pip install requests
 ```
 
 ### Python Dependencies Issues
 ```bash
-# Check if bleak is installed
-python3 -c "import bleak; print('Bleak installed successfully')"
+# Check if requests is installed
+python3 -c "import requests; print('Requests installed successfully')"
 
 # Reinstall dependencies
-pip uninstall bleak
-pip install bleak
+pip uninstall requests
+pip install requests
 
 # Check Python version (requires 3.6+)
 python3 --version
 ```
 
-### Bluetooth Connection Issues
-- Ensure ESP32 is powered on and Bluetooth is initialized
-- Check that device name "GoldenForm" appears in logs
+### WiFi Connection Issues
+- Ensure ESP32 is powered on and WiFi is initialized
+- Check that "GoldenForm" network appears in WiFi list
 - Try restarting the Python session logger
-- Check system Bluetooth permissions
+- Check system WiFi permissions
+- Connect to "GoldenForm" network (password: goldenform123)
 
 ### No Data in Visualization
 - Verify ESP32 is sending data (check serial monitor)

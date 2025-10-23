@@ -697,19 +697,24 @@ CONFIG_PARTITION_TABLE_MD5=y
 #
 # FormSync Firmware
 #
+# default:
 CONFIG_FORMSYNC_SAMPLE_HZ=50
 # default:
 CONFIG_FORMSYNC_IMU_BNO055=y
 # default:
 # CONFIG_FORMSYNC_IMU_MPU6050 is not set
+# default:
 CONFIG_FORMSYNC_FUSION_BNO055_INTERNAL=y
+# default:
 # CONFIG_FORMSYNC_ENABLE_BLE is not set
+# default:
 # CONFIG_FORMSYNC_ENABLE_STORAGE is not set
 # end of FormSync Firmware
 
 #
 # Compiler options
 #
+# default:
 CONFIG_COMPILER_OPTIMIZATION_DEBUG=y
 # CONFIG_COMPILER_OPTIMIZATION_SIZE is not set
 # CONFIG_COMPILER_OPTIMIZATION_PERF is not set
