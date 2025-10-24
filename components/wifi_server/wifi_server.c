@@ -84,11 +84,19 @@ static const httpd_uri_t session_status_uri = {
 };
 
 static const httpd_uri_t session_data_uri = {
-    .uri       = "/data/*",
+    .uri       = "/session_data",
     .method    = HTTP_GET,
     .handler   = session_data_handler,
     .user_ctx  = NULL
 };
+
+static const httpd_uri_t session_data_uri_alias = {
+    .uri = "/data/session_data.bin",
+    .method = HTTP_GET,
+    .handler = session_data_handler,
+    .user_ctx = NULL
+};
+
 
 static const httpd_uri_t create_visualization_uri = {
     .uri       = "/create_visualization",
@@ -166,6 +174,8 @@ static esp_err_t start_http_server(void) {
         httpd_register_uri_handler(server, &stop_logging_uri);
         httpd_register_uri_handler(server, &session_status_uri);
         httpd_register_uri_handler(server, &session_data_uri);
+        httpd_register_uri_handler(server, &session_data_uri_alias);
+
         httpd_register_uri_handler(server, &create_visualization_uri);
         httpd_register_uri_handler(server, &sessions_list_uri);
         ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
@@ -183,8 +193,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
     cJSON_AddStringToObject(json, "service", "GoldenForm WiFi Session Logger");
     cJSON_AddStringToObject(json, "status", "running");
     cJSON_AddStringToObject(json, "version", "1.0");
-    cJSON_AddStringToObject(json, "endpoints", "/start_logging, /stop_logging, /session_status, /create_visualization");
-    
+cJSON_AddStringToObject(json, "endpoints", "/start_logging, /stop_logging, /session_status, /session_data, /create_visualization");    
     char *json_string = cJSON_Print(json);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json_string, strlen(json_string));
@@ -257,12 +266,14 @@ static esp_err_t session_status_handler(httpd_req_t *req) {
 
 static esp_err_t session_data_handler(httpd_req_t *req) {
     // For now, return the raw protobuf data
-    if (session_buffer && session_buffer_size > 0) {
-        httpd_resp_set_type(req, "application/octet-stream");
-        httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.bin");
-        httpd_resp_send(req, (char*)session_buffer, session_buffer_size);
-    } else {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No session data available");
+    if (session_buffer && session_data_count > 0) {
+            size_t used = (size_t)session_data_count * IMU_DATA_SIZE;
+            httpd_resp_set_type(req, "application/octet-stream");
+            httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.bin");
+            httpd_resp_send(req, (char*)session_buffer, used); 
+    }
+    else {
+            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No session data available");
     }
     return ESP_OK;
 }

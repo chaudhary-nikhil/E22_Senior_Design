@@ -51,8 +51,8 @@ class SessionHandler(BaseHTTPRequestHandler):
         self.send_header('Content-type', 'text/html')
         self.end_headers()
         html_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'client', 'simple_session_logger.html')
-        with open(html_path, 'r') as f:
-            self.wfile.write(f.read().encode())
+        with open(html_path, "r", encoding="utf-8") as f:
+            self.wfile.write(f.read().encode("utf-8"))
     
     
     def handle_start_logging(self):
@@ -82,23 +82,28 @@ class SessionHandler(BaseHTTPRequestHandler):
     
     def handle_get_session_data(self):
         """Handle get session data request"""
-        if self.path == '/get_session_data':
-            # Get latest session data from ESP32 with timeout protection
-            try:
-                data = self.session_manager.get_session_data()
-                self.send_json_response(data)
-            except Exception as e:
-                self.send_json_response({"status": "error", "error": f"Request failed: {e}"}, status=500)
-        else:
-            # Get specific session data by filename
-            filename = self.path[6:]  # Remove '/data/' prefix
-            data = self.session_manager.get_session_data_by_filename(filename)
-            
-            if data is not None:
-                self.send_json_response(data)
-            else:
-                self.send_json_response({"error": "Session not found"}, status=404)
-    
+        # Try to pull from ESP32 first; fall back to latest local session
+        try:
+            esp_result = self.session_manager.pull_from_esp32()
+        except Exception as e:
+            esp_result = {"status": "error", "error": f"ESP32 fetch failed: {e}"}
+
+        print("ℹ️  ESP result:", esp_result)  
+        if isinstance(esp_result, dict) and esp_result.get("status") == "data_retrieved":
+            esp_result.setdefault("esp32_status", "Connected")
+            self.send_json_response(esp_result)
+            return
+
+        # Fallback: return the most recent local session
+        try:
+            local_result = self.session_manager.get_session_data()
+            if isinstance(local_result, dict) and local_result.get("status") == "data_retrieved":
+                local_result.setdefault("source", "local")
+            self.send_json_response(local_result)
+        except Exception as e:
+            self.send_json_response({"status": "error", "error": f"Request failed: {e}"}, status=500)
+
+        
     def handle_visualization(self):
         """Serve the visualization HTML page"""
         self.send_response(200)

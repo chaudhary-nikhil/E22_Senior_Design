@@ -277,5 +277,85 @@ class WiFiSessionManager:
             print(f"⚠️  Emergency save warning: {e}")
             return 0
 
+    def pull_from_esp32(self):
+        """Fetch the latest session from the ESP32 HTTP server and save it locally."""
+        print("🔍 Trying to fetch from ESP32 ...")
+
+        # ---- imports that won't explode in non-package runs ----
+        try:
+            import requests
+        except Exception as e:
+            print("❌ 'requests' import failed:", e)
+            return {"status": "error", "error": f"'requests' not installed: {e}"}
+
+        # config import works both as package and as flat module
+        try:
+            from .config import ESP32_WIFI_IP, WIFI_CONNECTION_TIMEOUT, WIFI_DATA_TIMEOUT
+        except Exception:
+            from config import ESP32_WIFI_IP, WIFI_CONNECTION_TIMEOUT, WIFI_DATA_TIMEOUT
+
+        # ---- endpoints (match your firmware) ----
+        status_url = f"http://{ESP32_WIFI_IP}/session_status"
+        # IMPORTANT: your firmware serves a fixed route, not /data/*
+        data_url   = f"http://{ESP32_WIFI_IP}/session_data"
+
+        # ---- 1) ESP32 reachable? has data? ----
+        try:
+            r = requests.get(status_url, timeout=WIFI_CONNECTION_TIMEOUT)
+            print("✅ Got status:", r.status_code, r.text[:200])
+        except Exception as e:
+            print("❌ Status fetch failed:", e)
+            return {"status": "error", "error": f"ESP32 not reachable: {e}"}
+        if r.status_code != 200:
+            return {"status": "error", "error": f"ESP32 status HTTP {r.status_code}"}
+
+        try:
+            st = r.json()
+        except Exception as e:
+            return {"status": "error", "error": f"Bad JSON from ESP32: {e}"}
+
+        if int(st.get("buffer_size", 0)) <= 0:
+            return {"status": "error", "error": "No session data available from ESP32"}
+
+        # ---- 2) Download the raw buffer ----
+        try:
+            r2 = requests.get(data_url, timeout=WIFI_DATA_TIMEOUT)
+            print("✅ Got data:", r2.status_code, "len:", len(r2.content))
+        except Exception as e:
+            print("❌ Data fetch failed:", e)
+            return {"status": "error", "error": f"Download failed: {e}"}
+        if r2.status_code != 200 or not r2.content:
+            return {"status": "error", "error": f"Failed to download session buffer (HTTP {r2.status_code})"}
+
+        # ---- 3) Ensure sessions/ exists at server dir (not CWD) ----
+        import os
+        from pathlib import Path
+        base_dir = Path(__file__).resolve().parent
+        sessions_dir = getattr(self, "sessions_dir", str(base_dir / "sessions"))
+        os.makedirs(sessions_dir, exist_ok=True)
+
+        # ---- 4) Parse/save using your existing pipeline ----
+        saved_json = self.receive_session_data(r2.content)  # should write .pb + .json into sessions/
+        print("💾 Saved JSON path:", saved_json)
+
+        if not saved_json:
+            # Fallback: at least drop the raw bin so we can inspect it
+            raw_path = str(Path(sessions_dir) / "_last_raw.bin")
+            with open(raw_path, "wb") as f:
+                f.write(r2.content)
+            return {"status": "error", "error": "Failed to parse/convert downloaded session (raw saved)"}
+
+        filename = os.path.basename(saved_json)
+        data = self.get_session_data_by_filename(filename)
+        return {
+            "status": "data_retrieved",
+            "session_id": filename.replace(".json", ""),
+            "data_points": len(data) if isinstance(data, list) else 0,
+            "json_filename": saved_json,
+            "data": data,
+            "source": "esp32",
+        }
+
+
 # For backward compatibility, create an alias
 SessionManager = WiFiSessionManager
