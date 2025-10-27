@@ -222,6 +222,67 @@ bool storage_is_recording(void) {
 /**
  * @brief Append one IMU sample (CSV row) to the current file; rolls to a new file on timeout.
  */
+// Append one IMU sample (CSV row). Rolls to a new file on timeout.
+// Now 9-axis: accel (ax,ay,az), gyro (gx,gy,gz), mag (mx,my,mz), temp. FOR BNO 
+// esp_err_t storage_log_imu_sample(uint32_t timestamp,
+//                                  float ax, float ay, float az,
+//                                  float gx, float gy, float gz,
+//                                  float mx, float my, float mz,
+//                                  float temp)
+// {
+//     if (current_state != STORAGE_STATE_RECORDING || current_file == NULL) {
+//         return ESP_ERR_INVALID_STATE;
+//     }
+
+//     // Rollover check
+//     uint64_t now_ms_64 = (esp_timer_get_time() / 1000ULL);
+//     uint32_t now_ms = (uint32_t)now_ms_64;
+
+//     if ((now_ms - current_file_open_ms) >= FILE_ROLLOVER_MS) {
+//         ESP_LOGI(TAG, "Rollover: closing %s after ~%" PRIu32 " ms",
+//                  current_filename, (uint32_t)(now_ms - current_file_open_ms));
+//         fflush(current_file);
+//         fsync(fileno(current_file));
+//         fclose(current_file);
+//         current_file = NULL;
+
+//         file_index_in_session++;
+//         if (open_new_csv_file() != ESP_OK) {
+//             current_state = STORAGE_STATE_ERROR;
+//             return ESP_FAIL;
+//         }
+//     }
+
+//     // Write one CSV row (timestamp + 9 axes + temp)
+//     int bytes_written = fprintf(current_file,
+//         "%" PRIu32 ","
+//         "%.3f,%.3f,%.3f,"   // accel
+//         "%.3f,%.3f,%.3f,"   // gyro
+//         "%.3f,%.3f,%.3f,"   // mag
+//         "%.2f\n",           // temp
+//         timestamp,
+//         ax, ay, az,
+//         gx, gy, gz,
+//         mx, my, mz,
+//         temp);
+
+//     if (bytes_written < 0) {
+//         ESP_LOGE(TAG, "Failed to write sample to file");
+//         current_state = STORAGE_STATE_ERROR;
+//         return ESP_FAIL;
+//     }
+
+//     current_file_samples++;
+//     current_file_size += (uint32_t)bytes_written;
+
+//     if ((current_file_samples % 10) == 0) {
+//         fflush(current_file);
+//         fsync(fileno(current_file));
+//     }
+
+//     return ESP_OK;
+// }
+
 esp_err_t storage_log_imu_sample(uint32_t timestamp, float ax, float ay, float az,
                                  float gx, float gy, float gz, float temp) {
     if (current_state != STORAGE_STATE_RECORDING || current_file == NULL) {
@@ -467,6 +528,23 @@ static esp_err_t unmount_sd_card(void) {
 /**
  * @brief Write a single CSV header row to the given file and flush it.
  */
+// Writes CSV header: timestamp + 3x accel + 3x gyro + 3x mag + temp for BNO 9 AXIS
+// static esp_err_t create_csv_header(FILE* file) {
+//     if (file == NULL) return ESP_ERR_INVALID_ARG;
+
+//     int ret = fprintf(file,
+//         "timestamp_ms,"
+//         "ax_mps2,ay_mps2,az_mps2,"
+//         "gx_rads,gy_rads,gz_rads,"
+//         "mx_uT,my_uT,mz_uT,"
+//         "temp_c\n");
+//     if (ret < 0) return ESP_FAIL;
+
+//     fflush(file);
+//     fsync(fileno(file));
+//     return ESP_OK;
+// }
+
 static esp_err_t create_csv_header(FILE* file) {
     if (file == NULL) {
         return ESP_ERR_INVALID_ARG;
