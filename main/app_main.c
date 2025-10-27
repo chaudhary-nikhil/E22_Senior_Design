@@ -270,54 +270,30 @@
 // main/app_main.c
 #include <stdio.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/gpio.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_err.h"
 
-// Your storage API
-#include "storage.h"
+#include "storage.h"    // your storage API
 
-// Match storage.c mount point
-#define MOUNT_POINT   "/sdcard"
+#define TAG "APP_SD_TEST"
+#define MOUNT_POINT "/sdcard"
 
-// ====== LED config ======
-#define LED_GPIO        GPIO_NUM_4     // D4
-#define LED_ACTIVE_LOW  0              // set 1 if your LED is active-low
+// === Test pacing ===
+// If FILE_ROLLOVER_MS in storage.c == 1000 (1s), then 12s gives ~12 files.
+#define TEST_DURATION_MS   (12000)   // total time we keep logging
+#define SAMPLE_PERIOD_MS   (50)      // write one sample every 50ms (~20Hz)
 
-static inline void led_write(int on) {
-    int level = on ? 1 : 0;
-    if (LED_ACTIVE_LOW) level = on ? 0 : 1;
-    gpio_set_level(LED_GPIO, level);
-}
-static void led_init(void) {
-    gpio_reset_pin(LED_GPIO);
-    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-    led_write(0);
-}
-static void blink_n(uint32_t n, int on_ms, int off_ms) {
-    vTaskDelay(pdMS_TO_TICKS(150));
-    for (uint32_t i = 0; i < n; i++) {
-        led_write(1); vTaskDelay(pdMS_TO_TICKS(on_ms));
-        led_write(0); vTaskDelay(pdMS_TO_TICKS(off_ms));
-    }
-}
-static void error_halt(uint32_t code) {
-    // repeat code every ~1s, but no rapid blinking otherwise
-    for (;;) {
-        blink_n(code, 180, 220);
-        vTaskDelay(pdMS_TO_TICKS(600));
-    }
-}
-
-// ====== Helpers ======
+// ------- helpers to read back files from SD -------
 static int count_lines_in_file(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
-
-    int lines = 0;
-    int c;
+    int lines = 0, c;
     while ((c = fgetc(f)) != EOF) {
         if (c == '\n') lines++;
     }
@@ -325,72 +301,134 @@ static int count_lines_in_file(const char *path) {
     return lines;
 }
 
-// ====== main ======
+static void dump_file_head(const char *path, int max_lines) {
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        ESP_LOGW(TAG, "  could not open for reading: %s", path);
+        return;
+    }
+    ESP_LOGI(TAG, "  --- head(%d): %s ---", max_lines, path);
+    char buf[160];
+    int shown = 0;
+    while (shown < max_lines && fgets(buf, sizeof(buf), f)) {
+        // trim newline for pretty logging
+        size_t L = strlen(buf);
+        if (L && (buf[L-1] == '\n' || buf[L-1] == '\r')) buf[L-1] = '\0';
+        ESP_LOGI(TAG, "    %s", buf);
+        shown++;
+    }
+    if (!feof(f)) {
+        ESP_LOGI(TAG, "    ...");
+    }
+    fclose(f);
+}
+
+// List all *.csv in /sdcard, print line counts and first few lines
+static void list_and_show_csvs(void) {
+    DIR *d = opendir(MOUNT_POINT);
+    if (!d) {
+        ESP_LOGE(TAG, "Failed to open %s to list files", MOUNT_POINT);
+        return;
+    }
+    struct dirent *ent;
+    int csv_count = 0;
+    while ((ent = readdir(d)) != NULL) {
+        const char *name = ent->d_name;
+        // skip . and ..
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+
+        // ends with .csv (case-insensitive)
+        size_t len = strlen(name);
+        if (len < 4) continue;
+        const char *ext = name + (len - 4);
+        if (strcasecmp(ext, ".csv") != 0) continue;
+
+        char full[256];
+        int n = snprintf(full, sizeof(full), "%s/%s", MOUNT_POINT, name);
+        if (n < 0 || n >= (int)sizeof(full)) {
+            ESP_LOGW(TAG, "Path too long, skipping: %s", name);
+            continue;
+        }
+
+        int lines = count_lines_in_file(full);
+        ESP_LOGI(TAG, "[%2d] %-24s  lines=%d", ++csv_count, name, lines);
+
+        // show header + first 3 data lines (total 4 lines)
+        dump_file_head(full, 4);
+    }
+    closedir(d);
+
+    if (csv_count == 0) {
+        ESP_LOGW(TAG, "No CSV files found at %s", MOUNT_POINT);
+    } else {
+        ESP_LOGI(TAG, "Total CSV files found: %d", csv_count);
+    }
+}
+
+// ================== MAIN ==================
 void app_main(void) {
-    led_init();
+    ESP_LOGI(TAG, "---- SD CSV rollover demo start ----");
+    ESP_LOGI(TAG, "Tip: set FILE_ROLLOVER_MS in storage.c to 1000 for fast testing.");
 
-    // 0) Init storage (mount SD)
-    if (storage_init() != ESP_OK || !storage_is_available()) {
-        error_halt(1);  // storage init/mount failed
+    // 0) init storage
+    esp_err_t err = storage_init();
+    if (err != ESP_OK || !storage_is_available()) {
+        ESP_LOGE(TAG, "storage_init() failed: %s", esp_err_to_name(err));
+        return;
     }
+    ESP_LOGI(TAG, "storage_init OK");
 
-    // 1) Start a recording session
-    if (storage_start_session() != ESP_OK || !storage_is_recording()) {
-        error_halt(2);  // couldn't start
+    // 1) start session (wipes CSVs at start per your storage.c)
+    err = storage_start_session();
+    if (err != ESP_OK || !storage_is_recording()) {
+        ESP_LOGE(TAG, "storage_start_session() failed: %s", esp_err_to_name(err));
+        return;
     }
+    ESP_LOGI(TAG, "recording started");
 
-    // Grab filename now (will be cleared after stop)
-    char fname[32];
-    if (storage_get_current_filename(fname, sizeof(fname)) != ESP_OK || fname[0] == '\0') {
-        // If we can't get the name, still try to proceed; but failing to get
-        // the name means we won't be able to verify later. Treat as error.
-        error_halt(2);
-    }
+    // 2) write garbage data for TEST_DURATION_MS
+    uint64_t t_start_us = esp_timer_get_time();
+    uint32_t t0_ms = (uint32_t)(t_start_us / 1000ULL);
 
-    // 2) Write 10 rows
-    uint32_t t0_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    for (int i = 0; i < 10; i++) {
-        uint32_t t_ms = t0_ms + (uint32_t)(i * 10);
-        float ax = 0.1f * i, ay = 0.2f * i, az = 9.81f;
-        float gx = 0.01f * i, gy = 0.02f * i, gz = 0.0f;
-        float tempC = 27.0f;
+    while (1) {
+        uint64_t now_us = esp_timer_get_time();
+        uint32_t elapsed_ms = (uint32_t)((now_us - t_start_us) / 1000ULL);
+        if (elapsed_ms >= TEST_DURATION_MS) break;
+
+        // fake IMU sample
+        uint32_t t_ms = t0_ms + elapsed_ms;
+        float ax = 0.001f * (float)elapsed_ms;
+        float ay = 0.002f * (float)elapsed_ms;
+        float az = 9.81f;
+        float gx = 0.01f;
+        float gy = 0.02f;
+        float gz = 0.03f;
+        float tempC = 27.5f;
 
         if (storage_log_imu_sample(t_ms, ax, ay, az, gx, gy, gz, tempC) != ESP_OK) {
-            error_halt(3); // write failure
+            ESP_LOGE(TAG, "storage_log_imu_sample failed at %u ms", elapsed_ms);
+            break;
         }
-        vTaskDelay(pdMS_TO_TICKS(2));
+
+        vTaskDelay(pdMS_TO_TICKS(SAMPLE_PERIOD_MS));
     }
 
-    // 3) Stop session (flush/close)
-    if (storage_stop_session() != ESP_OK) {
-        error_halt(4);
+    ESP_LOGI(TAG, "logging loop finished (~%u ms)", TEST_DURATION_MS);
+
+    // 3) stop session (closes last file)
+    err = storage_stop_session();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "storage_stop_session() failed: %s", esp_err_to_name(err));
+        // continue anyway to see what’s on SD
+    } else {
+        ESP_LOGI(TAG, "recording stopped");
     }
 
-    // 4) Verify by counting lines in the file we just created
-    // full path = MOUNT_POINT + "/" + fname
-    char fullpath[64];
-    // Safe join (bounds checked)
-    int n = snprintf(fullpath, sizeof(fullpath), "%s/%s", MOUNT_POINT, fname);
-    if (n < 0 || n >= (int)sizeof(fullpath)) {
-        error_halt(5);
-    }
+    // 4) list CSVs and show their heads
+    ESP_LOGI(TAG, "Listing CSVs and printing first lines:");
+    list_and_show_csvs();
 
-    // Small delay to ensure VFS bookkeeping is visible
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    int lines = count_lines_in_file(fullpath);
-    if (lines < 0) {
-        error_halt(5); // couldn't open/read the just-created file
-    }
-
-    // Expect 1 header + 10 rows = 11 lines
-    if (lines < 11) {
-        error_halt(6); // not enough lines
-    }
-
-    // ----- LED report (blink only when needed) -----
-    blink_n(3, 180, 220);                    // “new file created”
-    blink_n((lines > 10) ? 10 : lines, 180, 220); // show up to 10 blinks for lines (caps at 10)
-    led_write(1);                             // success: solid ON
+    ESP_LOGI(TAG, "---- SD CSV rollover demo DONE ----");
+    // Idle forever
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }
