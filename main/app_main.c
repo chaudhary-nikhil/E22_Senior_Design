@@ -284,7 +284,7 @@
 #define TAG "APP_SD_TEST"
 #define MOUNT_POINT "/sdcard"
 
-// === Test pacing ===
+// 
 // If FILE_ROLLOVER_MS in storage.c == 1000 (1s), then 12s gives ~12 files.
 #define TEST_DURATION_MS   (12000)   // total time we keep logging
 #define SAMPLE_PERIOD_MS   (50)      // write one sample every 50ms (~20Hz)
@@ -432,3 +432,5 @@ void app_main(void) {
     // Idle forever
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }
+
+
