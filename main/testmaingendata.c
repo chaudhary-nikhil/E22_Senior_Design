@@ -1,0 +1,60 @@
+#include <stdio.h>
+#include <math.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+
+#include "storage.h"
+#include "bno_types.h"
+
+static const char* TAG = "FAKE_LOGGER";
+
+static void fill_fake_sample(bno055_sample_t* s, uint32_t t_ms, float k) {
+    s->t_ms = t_ms;
+    // accel: small sinusoid
+    s->ax = 0.1f * sinf(k); s->ay = 0.1f * cosf(k*0.7f); s->az = 9.81f + 0.05f * sinf(k*1.3f);
+    // gyro (deg/s)
+    s->gx = 5.0f * sinf(k*0.5f); s->gy = 3.0f * cosf(k*0.9f); s->gz = 2.0f * sinf(k*1.7f);
+    // mag (uT)
+    s->mx = 25.0f; s->my = -5.0f; s->mz = 45.0f;
+    // euler
+    s->roll  = 10.0f * sinf(k*0.2f);
+    s->pitch =  8.0f * cosf(k*0.3f);
+    s->yaw   = fmodf(0.5f * k * 57.2958f, 360.0f);
+    // quaternion (unit-ish; not strictly normalized for speed)
+    s->qw = 1.0f; s->qx = 0.0f; s->qy = 0.0f; s->qz = 0.0f;
+    s->temp = 27.0f + 0.2f * sinf(k*0.1f);
+    s->sys_cal = 3; s->gyro_cal = 3; s->accel_cal = 3; s->mag_cal = 3;
+}
+
+void app_main(void) {
+    ESP_LOGI(TAG, "Fake logger start (50 Hz, 10 seconds)");
+
+    // SD storage
+    ESP_ERROR_CHECK(storage_init());
+    ESP_ERRORCHECK(storage_start_session()); // NOTE: if your macro differs, change this to ESP_ERROR_CHECK
+
+    const TickType_t period = pdMS_TO_TICKS(20); // 50 Hz
+    TickType_t last = xTaskGetTickCount();
+
+    const uint32_t duration_ms = 10000; // 10s
+    uint32_t t_start = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    uint32_t samples = 0;
+
+    while (1) {
+        vTaskDelayUntil(&last, period);
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+        if (now_ms - t_start >= duration_ms) break;
+
+        bno055_sample_t s;
+        float k = 0.02f * (float)(now_ms - t_start);
+        fill_fake_sample(&s, now_ms, k);
+
+        if (storage_enqueue_bno_sample(&s) == ESP_OK) samples++;
+        if ((samples % 100) == 0) ESP_LOGI(TAG, "Wrote %u samples", samples);
+    }
+
+    ESP_ERROR_CHECK(storage_stop_session());
+    ESP_LOGI(TAG, "Fake logging done. Samples=%u", (unsigned)samples);
+}

@@ -461,10 +461,13 @@ static esp_err_t unmount_sd_card(void) {
         esp_err_t ret = esp_vfs_fat_sdcard_unmount(mount_point, card);
         card = NULL;
         ESP_LOGI(TAG, "SD card unmounted");
+        // Free the SPI bus created in mount_sd_card()
+        spi_bus_free(SPI2_HOST);
         return ret;
     }
     return ESP_OK;
 }
+
 
 // --------- CSV header now matches bno055_sample_t -----------
 static esp_err_t create_csv_header(FILE* file) {
