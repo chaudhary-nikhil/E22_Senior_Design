@@ -20,7 +20,7 @@
 #include <math.h>       // NAN
 
 // Include your struct (ensure storage.h or a separate bno_types.h declares it)
-#include "bno_types.h"  // contains typedef bno055_sample_t { ... }
+#include "bno055.h"  // contains typedef bno055_sample_t { ... }
 
 static const char *TAG = "STORAGE";
 

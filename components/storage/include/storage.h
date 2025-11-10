@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include <stddef.h>   // size_t
 
-#include "bno_types.h"   // defines bno055_sample_t
+#include "bno055.h"   // defines bno055_sample_t
+
 
 // Storage configuration
 #define STORAGE_MAX_FILENAME_LEN 32

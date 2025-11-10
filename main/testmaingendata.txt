@@ -33,7 +33,7 @@ void app_main(void) {
 
     // SD storage
     ESP_ERROR_CHECK(storage_init());
-    ESP_ERRORCHECK(storage_start_session()); // NOTE: if your macro differs, change this to ESP_ERROR_CHECK
+    ESP_ERROR_CHECK(storage_start_session()); // NOTE: if your macro differs, change this to ESP_ERROR_CHECK
 
     const TickType_t period = pdMS_TO_TICKS(20); // 50 Hz
     TickType_t last = xTaskGetTickCount();
