@@ -46,12 +46,25 @@ static uint32_t current_session_start = 0;
 
 // ---------- File rollover state ----------
 static uint64_t current_file_open_ms = 0;                 // when current file was opened
-static const uint32_t FILE_ROLLOVER_MS = 20 * 1000;       // set 60*1000 for 1 minute
+static const uint32_t FILE_ROLLOVER_MS = 60 * 1000;       // set 60*1000 for 1 minute
 static uint32_t file_index_in_session = 0;                // 0,1,2,...
 
 // ---------- Mount point and card ----------
 static const char mount_point[] = "/sdcard";
 static sdmmc_card_t* card = NULL;
+
+// -------- recent in-RAM ring for last K samples (decoupled from Wi-Fi) -----
+#define RECENT_RING_CAP 256
+static bno055_sample_t s_recent_ring[RECENT_RING_CAP];
+static size_t          s_recent_head  = 0;  // next write index
+static size_t          s_recent_count = 0;  // how many valid entries (<= CAP)
+
+static inline void recent_ring_push(const bno055_sample_t *s) {
+    s_recent_ring[s_recent_head] = *s;
+    s_recent_head = (s_recent_head + 1) % RECENT_RING_CAP;
+    if (s_recent_count < RECENT_RING_CAP) s_recent_count++;
+}
+
 
 // ---------- BLE streaming callback type ----------
 typedef bool (*storage_ble_send_cb)(const uint8_t *data, size_t len, void *user_ctx);
@@ -655,3 +668,305 @@ static __attribute__((unused)) esp_err_t list_files_to_text(char *out, size_t ou
 
 // ... (ble_chunk_and_send, storage_stream_file_over_ble, storage_read_file_into_buffer)
 //     keep exactly as in your file above (no changes needed)
+
+
+// read sd part 
+// ---- NEW: list only .BIN files (optionally sort) ----
+static int name_cmp_asc(const void *a, const void *b) {
+    const char *sa = (const char*)a;
+    const char *sb = (const char*)b;
+    return strncmp(sa, sb, 32);
+}
+
+esp_err_t storage_list_bin_files(char files[][32],
+                                 uint32_t max_files,
+                                 uint32_t *actual_count,
+                                 bool sort_asc)
+{
+    if (!storage_is_available() || !files || !actual_count) return ESP_ERR_INVALID_ARG;
+
+    DIR *dir = opendir(mount_point);
+    if (!dir) return ESP_FAIL;
+
+    uint32_t count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && count < max_files) {
+#if defined(DT_REG)
+        bool is_reg = (entry->d_type == DT_REG);
+#else
+        bool is_reg = true;
+#endif
+        if (!is_reg) continue;
+        const char *n = entry->d_name;
+        if (!(strstr(n, ".BIN") || strstr(n, ".bin"))) continue;
+
+        strncpy(files[count], n, 31);
+        files[count][31] = '\0';
+        count++;
+    }
+    closedir(dir);
+
+    if (sort_asc && count > 1) {
+        qsort(files, count, 32, name_cmp_asc);
+    }
+    *actual_count = count;
+    return ESP_OK;
+}
+
+// ---- NEW: read one .BIN into a caller-provided bno055_sample_t buffer ----
+esp_err_t storage_read_bin_file_into_buffer(const char *filename,
+                                            bno055_sample_t *buf,
+                                            size_t cap,
+                                            size_t *out_len)
+{
+    if (!filename || !buf || !out_len) return ESP_ERR_INVALID_ARG;
+    if (!storage_is_available()) return ESP_ERR_INVALID_STATE;
+
+    char path[160];
+    int n = snprintf(path, sizeof(path), "%s/%s", mount_point, filename);
+    if (n < 0 || (size_t)n >= sizeof(path)) return ESP_ERR_INVALID_ARG;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return ESP_FAIL;
+
+    size_t got = fread(buf, sizeof(bno055_sample_t), cap, f);
+    fclose(f);
+
+    *out_len = got;
+    // If file was larger than cap, the caller can call again with a different offset-style API,
+    // but for simplicity we just signal OK (partial read is still useful).
+    return ESP_OK;
+}
+
+// ---- NEW: stream ALL .BIN files in chunks via a callback ----
+esp_err_t storage_iterate_bin_files(storage_samples_cb_t cb,
+                                    void *ctx,
+                                    size_t chunk)
+{
+    if (!cb || chunk == 0) return ESP_ERR_INVALID_ARG;
+    if (!storage_is_available()) return ESP_ERR_INVALID_STATE;
+
+    char names[64][32];
+    uint32_t count = 0;
+    esp_err_t err = storage_list_bin_files(names, 64, &count, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "list_bin failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+
+    if (count == 0) return ESP_OK;
+
+    bno055_sample_t *buf = (bno055_sample_t*) malloc(chunk * sizeof(bno055_sample_t));
+    if (!buf) return ESP_ERR_NO_MEM;
+
+    for (uint32_t i = 0; i < count; ++i) {
+        char path[160];
+        snprintf(path, sizeof(path), "%s/%s", mount_point, names[i]);
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            ESP_LOGW(TAG, "Open failed: %s", names[i]);
+            continue;
+        }
+
+        size_t got;
+        while ((got = fread(buf, sizeof(bno055_sample_t), chunk, f)) > 0) {
+            cb(buf, got, ctx);
+            // short delay optional to keep UI snappy
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        fclose(f);
+        ESP_LOGI(TAG, "Iterated %s", names[i]);
+    }
+
+    free(buf);
+    return ESP_OK;
+}
+
+static bool ble_chunk_and_send(const uint8_t *data, size_t len,
+                               size_t max_payload,
+                               storage_ble_send_cb send_cb, void *ctx)
+{
+    if (!send_cb || !data || max_payload == 0) return false;
+    size_t off = 0;
+    while (off < len) {
+        size_t n = len - off;
+        if (n > max_payload) n = max_payload;
+        if (!send_cb(data + off, n, ctx)) {
+            return false;  // transport back-pressure or abort
+        }
+        off += n;
+    }
+    return true;
+}
+
+esp_err_t storage_push_bno_sample(const bno055_sample_t *s)
+{
+    if (!s) return ESP_ERR_INVALID_ARG;
+    // 1) Keep a small recent window in RAM (for optional consumers)
+    recent_ring_push(s);
+    // 2) Enqueue into the existing batched SD writer
+    return storage_enqueue_bno_sample(s);  // you already have this function
+}
+
+size_t storage_copy_recent(bno055_sample_t *out, size_t max_out)
+{
+    if (!out || max_out == 0) return 0;
+
+    // Copy newest-first but keep chronological order in out[]
+    size_t n = (s_recent_count < max_out) ? s_recent_count : max_out;
+    // Oldest among the last n is at index: head - n (mod CAP)
+    for (size_t i = 0; i < n; ++i) {
+        size_t idx = (s_recent_head + RECENT_RING_CAP - n + i) % RECENT_RING_CAP;
+        out[i] = s_recent_ring[idx];
+    }
+    return n;
+}
+
+// ---------- NEW: helper to list .BIN/.bin names ----------
+static int cmp_names_asc(const void *a, const void *b)
+{
+    const char * const *sa = (const char * const *)a;
+    const char * const *sb = (const char * const *)b;
+    return strcmp(*sa, *sb);
+}
+
+/**
+ * @brief Read ALL .BIN files into caller buffer.
+ *        Files are read in ascending filename order. Partial fill returns ESP_ERR_NO_MEM.
+ */
+esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
+                                           size_t out_cap,
+                                           size_t *out_len)
+{
+    if (!out || !out_len) return ESP_ERR_INVALID_ARG;
+    *out_len = 0;
+
+    if (!storage_is_available()) {
+        // We only need the card mounted. Not required to be currently "RECORDING".
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // 1) Collect .BIN file names
+    DIR *dir = opendir(mount_point);
+    if (!dir) {
+        ESP_LOGE(TAG, "opendir(%s) failed", mount_point);
+        return ESP_FAIL;
+    }
+
+    // Keep a small dynamic list of names (we expect handful of files).
+    // If you want a strict cap, set e.g., MAX_FILES=256 and use fixed array.
+    size_t names_cap = 16, names_len = 0;
+    char **names = (char **)malloc(names_cap * sizeof(char *));
+    if (!names) {
+        closedir(dir);
+        return ESP_ERR_NO_MEM;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+#if defined(DT_REG)
+        if (entry->d_type != DT_REG) continue;
+#endif
+        const char *n = entry->d_name;
+        bool is_bin = (strstr(n, ".BIN") != NULL) || (strstr(n, ".bin") != NULL);
+        if (!is_bin) continue;
+
+        size_t L = strnlen(n, 255);
+        if (L == 0 || L >= 64) continue; // guard weird names; 8.3 fits well under this
+
+        if (names_len == names_cap) {
+            size_t new_cap = names_cap * 2;
+            char **tmp = (char **)realloc(names, new_cap * sizeof(char *));
+            if (!tmp) break;
+            names = tmp;
+            names_cap = new_cap;
+        }
+
+        names[names_len] = (char *)malloc(L + 1);
+        if (!names[names_len]) break;
+        memcpy(names[names_len], n, L);
+        names[names_len][L] = '\0';
+        names_len++;
+    }
+    closedir(dir);
+
+    if (names_len == 0) {
+        free(names);
+        ESP_LOGW(TAG, "No .BIN files found on SD");
+        return ESP_OK;
+    }
+
+    // 2) Sort ascending by filename (your S%05%02 pattern approximates chronology)
+    qsort(names, names_len, sizeof(char *), cmp_names_asc);
+
+    // 3) Read files sequentially into caller buffer
+    size_t written = 0;
+    esp_err_t ret = ESP_OK;
+
+    for (size_t fi = 0; fi < names_len; ++fi) {
+        // Build path
+        char path[160];
+        int n = snprintf(path, sizeof(path), "%s/%s", mount_point, names[fi]);
+        if (n < 0 || (size_t)n >= sizeof(path)) {
+            ESP_LOGW(TAG, "Path too long, skipping %s", names[fi]);
+            continue;
+        }
+
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            ESP_LOGW(TAG, "Open failed: %s", path);
+            continue;
+        }
+
+        // Determine file size
+        if (fseek(f, 0, SEEK_END) == 0) {
+            long sz = ftell(f);
+            if (sz >= 0) {
+                if ((size_t)sz % sizeof(bno055_sample_t) != 0) {
+                    ESP_LOGW(TAG, "File %s size (%ld) not a multiple of record size (%u) - trailing bytes ignored",
+                             names[fi], sz, (unsigned)sizeof(bno055_sample_t));
+                }
+            }
+            fseek(f, 0, SEEK_SET);
+        }
+
+        // Read in chunks into an internal temp, then copy to caller's buffer
+        bno055_sample_t chunk[128];
+        for (;;) {
+            size_t rd = fread(chunk, sizeof(bno055_sample_t), 128, f);
+            if (rd == 0) break;          // EOF or error; we don't distinguish here
+            size_t can_copy = out_cap - written;
+            if (can_copy == 0) {         // caller buffer full
+                fclose(f);
+                ret = ESP_ERR_NO_MEM;
+                goto DONE;
+            }
+            if (rd > can_copy) rd = can_copy;
+
+            memcpy(out + written, chunk, rd * sizeof(bno055_sample_t));
+            written += rd;
+
+            if (written >= out_cap) {
+                fclose(f);
+                ret = ESP_ERR_NO_MEM;
+                goto DONE;
+            }
+        }
+
+        fclose(f);
+    }
+
+DONE:
+    for (size_t i = 0; i < names_len; ++i) free(names[i]);
+    free(names);
+
+    *out_len = written;
+    if (ret == ESP_ERR_NO_MEM) {
+        ESP_LOGW(TAG, "Caller buffer filled: wrote %u samples (partial).", (unsigned)written);
+    } else {
+        ESP_LOGI(TAG, "Read %u samples from all BIN files.", (unsigned)written);
+    }
+    return ret;
+}
+

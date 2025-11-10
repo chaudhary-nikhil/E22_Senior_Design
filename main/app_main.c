@@ -239,64 +239,93 @@
 //     }
 // }
 
-#include <stdio.h>
+// main/app_fake_generate.c
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-
 #include "storage.h"
 #include "bno055.h"
 
-static const char* TAG = "FAKE_LOGGER";
+static const char* TAG = "FAKE_GEN";
 
-static void fill_fake_sample(bno055_sample_t* s, uint32_t t_ms, float k) {
+static void fill_fake(bno055_sample_t* s, uint32_t t_ms, float k) {
     s->t_ms = t_ms;
-    // accel: small sinusoid
-    s->ax = 0.1f * sinf(k); s->ay = 0.1f * cosf(k*0.7f); s->az = 9.81f + 0.05f * sinf(k*1.3f);
-    // gyro (deg/s)
-    s->gx = 5.0f * sinf(k*0.5f); s->gy = 3.0f * cosf(k*0.9f); s->gz = 2.0f * sinf(k*1.7f);
-    // mag (uT)
-    s->mx = 25.0f; s->my = -5.0f; s->mz = 45.0f;
-    // euler
-    s->roll  = 10.0f * sinf(k*0.2f);
-    s->pitch =  8.0f * cosf(k*0.3f);
-    s->yaw   = fmodf(0.5f * k * 57.2958f, 360.0f);
-    // quaternion (unit-ish; not strictly normalized for speed)
-    s->qw = 1.0f; s->qx = 0.0f; s->qy = 0.0f; s->qz = 0.0f;
-    s->temp = 27.0f + 0.2f * sinf(k*0.1f);
-    s->sys_cal = 3; s->gyro_cal = 3; s->accel_cal = 3; s->mag_cal = 3;
+    s->ax = 0.1f*sinf(k); s->ay = 0.1f*cosf(0.7f*k); s->az = 9.81f + 0.05f*sinf(1.3f*k);
+    s->gx = 5.0f*sinf(0.5f*k); s->gy = 3.0f*cosf(0.9f*k); s->gz = 2.0f*sinf(1.7f*k);
+    s->mx = 25; s->my = -5; s->mz = 45;
+    s->roll=10*sinf(0.2f*k); s->pitch=8*cosf(0.3f*k); s->yaw=fmodf(0.5f*k*57.2958f, 360.0f);
+    s->qw=1; s->qx=0; s->qy=0; s->qz=0;
+    s->temp = 27.0f + 0.2f*sinf(0.1f*k);
+    s->sys_cal = s->gyro_cal = s->accel_cal = s->mag_cal = 3;
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "Fake logger start (50 Hz, 10 seconds)");
+    ESP_LOGI(TAG, "Fake generate start (50Hz, 5 minutes, 1 file/min)");
 
-    // SD storage
     ESP_ERROR_CHECK(storage_init());
-    ESP_ERROR_CHECK(storage_start_session()); // NOTE: if your macro differs, change this to ESP_ERROR_CHECK
+    ESP_ERROR_CHECK(storage_start_session());
 
     const TickType_t period = pdMS_TO_TICKS(20); // 50 Hz
     TickType_t last = xTaskGetTickCount();
 
-    const uint32_t duration_ms = 10000; // 10s
-    uint32_t t_start = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    const uint32_t duration_ms = 5 * 60 * 1000; // 5 minutes
+    uint32_t t0 = (uint32_t)(esp_timer_get_time()/1000ULL);
     uint32_t samples = 0;
 
     while (1) {
         vTaskDelayUntil(&last, period);
-        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-        if (now_ms - t_start >= duration_ms) break;
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time()/1000ULL);
+        if (now_ms - t0 >= duration_ms) break;
 
         bno055_sample_t s;
-        float k = 0.02f * (float)(now_ms - t_start);
-        fill_fake_sample(&s, now_ms, k);
+        float k = 0.02f * (float)(now_ms - t0);
+        fill_fake(&s, now_ms, k);
 
-        if (storage_enqueue_bno_sample(&s) == ESP_OK) samples++;
-        if ((samples % 100) == 0) ESP_LOGI(TAG, "Wrote %u samples", samples);
+        if (storage_enqueue_bno_sample(&s) == ESP_OK) {
+            samples++;
+            if ((samples % 500) == 0) ESP_LOGI(TAG, "Samples: %u", (unsigned)samples);
+        }
     }
 
     ESP_ERROR_CHECK(storage_stop_session());
-    ESP_LOGI(TAG, "Fake logging done. Samples=%u", (unsigned)samples);
+    ESP_LOGI(TAG, "Done. Total samples=%u", (unsigned)samples);
+    // Expect ~5 BIN files on /sdcard.
 }
 
+
+// #include <stdlib.h>
+// #include "storage.h"
+// #include "wifi_server.h"    // esp_err_t wifi_server_add_data_point(const bno055_sample_t*);
+
+// // choose a capacity big enough; you can also do it in chunks (call multiple times)
+// #define STACK_CAP  (200000)   // ~200k samples; adjust to your SD size & RAM
+
+// void replay_all_sd_over_wifi(void)
+// {
+//     // 0) make sure SD is mounted: storage_init() called earlier in your boot
+//     //    Wi-Fi server running: wifi_server_init(...)
+
+//     bno055_sample_t *stack = (bno055_sample_t *)malloc(STACK_CAP * sizeof(bno055_sample_t));
+//     if (!stack) {
+//         ESP_LOGE("REPLAY", "malloc failed");
+//         return;
+//     }
+
+//     size_t got = 0;
+//     esp_err_t e = storage_read_all_bin_into_buffer(stack, STACK_CAP, &got);
+
+//     ESP_LOGI("REPLAY", "Loaded %u samples from SD (ret=%s). Streaming to Wi-Fi...",
+//              (unsigned)got, esp_err_to_name(e));
+
+//     for (size_t i = 0; i < got; ++i) {
+//         (void)wifi_server_add_data_point(&stack[i]);
+//     }
+
+//     ESP_LOGI("REPLAY", "Done sending %u samples.", (unsigned)got);
+//     free(stack);
+
+//     // If e == ESP_ERR_NO_MEM, you read a partial set. Call again (or use a bigger STACK_CAP)
+//     // after you’ve consumed/sent these samples, or switch to a chunked approach (ask me and I’ll provide it).
+// }
