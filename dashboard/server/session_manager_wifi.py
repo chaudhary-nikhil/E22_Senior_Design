@@ -115,8 +115,6 @@ class WiFiSessionManager:
                 with open(json_filename, 'w') as f:
                     json.dump(parsed_data, f, indent=2)
                 
-                print(f"✅ Session received: {json_filename} ({len(parsed_data)} data points)")
-                
                 # Also save protobuf data
                 protobuf_filename = os.path.join(self.sessions_dir, f"session_{timestamp}.pb")
                 with open(protobuf_filename, 'wb') as f:
@@ -124,18 +122,20 @@ class WiFiSessionManager:
                 
                 return json_filename
             else:
-                print("❌ Failed to parse session data")
                 return None
-                
+                        
         except Exception as e:
-            print(f"❌ Error processing session data: {e}")
             return None
     
     def _parse_protobuf_data(self, protobuf_data):
         """Parse protobuf data into JSON format"""
         try:
+            print(f"📥 Parsing {len(protobuf_data)} bytes of protobuf data")
+            
             # Each data point is 49 bytes: 1 uint32 + 10 floats + 1 uint8 + 4 uint8 reserved
             data_point_size = struct.calcsize('<L 10f B 4B')
+            print(f"📊 Expected data point size: {data_point_size} bytes")
+            
             data_points = []
             
             for i in range(0, len(protobuf_data), data_point_size):
@@ -150,6 +150,10 @@ class WiFiSessionManager:
                         gx, gy, gz = unpacked[4:7]
                         qw, qx, qy, qz = unpacked[7:11]
                         cal_status = unpacked[11]
+                        
+                        # Debug: Log first few data points
+                        if len(data_points) < 3:
+                            print(f"📊 Parsed point {len(data_points)}: qw={qw:.4f}, qx={qx:.4f}, qy={qy:.4f}, qz={qz:.4f}")
                         
                         # Extract individual calibration values from packed cal_status
                         sys_cal = cal_status & 0x3
@@ -172,6 +176,7 @@ class WiFiSessionManager:
                     print(f"❌ Incomplete data chunk: {len(chunk)}/{data_point_size} bytes")
                     break
             
+            print(f"✅ Successfully parsed {len(data_points)} data points")
             return data_points
             
         except Exception as e:
@@ -179,23 +184,51 @@ class WiFiSessionManager:
             return None
     
     def get_session_data(self):
-        """Get the latest session data from saved files"""
+        """Get the latest session data from saved files, preferring sessions with valid IMU data"""
         try:
             # List all session files and get the latest one
             session_files = self.list_sessions()
             if not session_files:
                 return {"status": "error", "error": "No session data available"}
             
-            # Get the most recent session
-            latest_file = session_files[0]  # Already sorted by date
-            filepath = os.path.join(self.sessions_dir, latest_file)
+            # Try to find a session with valid IMU data (non-zero quaternions)
+            valid_session = None
+            for session_file in session_files:
+                filepath = os.path.join(self.sessions_dir, session_file)
+                try:
+                    with open(filepath, 'r') as f:
+                        session_data = json.load(f)
+                    
+                    if session_data and len(session_data) > 0:
+                        # Check if first data point has valid quaternions
+                        first_point = session_data[0]
+                        has_valid_quaternions = any(first_point.get(f'q{i}', 0) != 0 for i in ['w', 'x', 'y', 'z'])
+                        
+                        if has_valid_quaternions:
+                            valid_session = (session_file, filepath, session_data)
+                            print(f"✅ Found valid session: {session_file}")
+                            break
+                        else:
+                            print(f"⚠️  Session {session_file} has all-zero quaternions")
+                            
+                except Exception as e:
+                    print(f"❌ Error reading session {session_file}: {e}")
+                    continue
             
-            with open(filepath, 'r') as f:
-                session_data = json.load(f)
+            # If no valid session found, fall back to the latest session
+            if not valid_session:
+                print("⚠️  No valid IMU data found, using latest session")
+                latest_file = session_files[0]
+                filepath = os.path.join(self.sessions_dir, latest_file)
+                with open(filepath, 'r') as f:
+                    session_data = json.load(f)
+                valid_session = (latest_file, filepath, session_data)
+            
+            session_file, filepath, session_data = valid_session
             
             return {
                 "status": "data_retrieved",
-                "session_id": latest_file.replace('.json', ''),
+                "session_id": session_file.replace('.json', ''),
                 "data_points": len(session_data),
                 "json_filename": filepath,
                 "data": session_data
@@ -279,13 +312,11 @@ class WiFiSessionManager:
 
     def pull_from_esp32(self):
         """Fetch the latest session from the ESP32 HTTP server and save it locally."""
-        print("🔍 Trying to fetch from ESP32 ...")
 
         # ---- imports that won't explode in non-package runs ----
         try:
             import requests
         except Exception as e:
-            print("❌ 'requests' import failed:", e)
             return {"status": "error", "error": f"'requests' not installed: {e}"}
 
         # config import works both as package and as flat module
@@ -302,9 +333,7 @@ class WiFiSessionManager:
         # ---- 1) ESP32 reachable? has data? ----
         try:
             r = requests.get(status_url, timeout=WIFI_CONNECTION_TIMEOUT)
-            print("✅ Got status:", r.status_code, r.text[:200])
         except Exception as e:
-            print("❌ Status fetch failed:", e)
             return {"status": "error", "error": f"ESP32 not reachable: {e}"}
         if r.status_code != 200:
             return {"status": "error", "error": f"ESP32 status HTTP {r.status_code}"}
@@ -320,9 +349,7 @@ class WiFiSessionManager:
         # ---- 2) Download the raw buffer ----
         try:
             r2 = requests.get(data_url, timeout=WIFI_DATA_TIMEOUT)
-            print("✅ Got data:", r2.status_code, "len:", len(r2.content))
         except Exception as e:
-            print("❌ Data fetch failed:", e)
             return {"status": "error", "error": f"Download failed: {e}"}
         if r2.status_code != 200 or not r2.content:
             return {"status": "error", "error": f"Failed to download session buffer (HTTP {r2.status_code})"}
@@ -336,7 +363,6 @@ class WiFiSessionManager:
 
         # ---- 4) Parse/save using your existing pipeline ----
         saved_json = self.receive_session_data(r2.content)  # should write .pb + .json into sessions/
-        print("💾 Saved JSON path:", saved_json)
 
         if not saved_json:
             # Fallback: at least drop the raw bin so we can inspect it

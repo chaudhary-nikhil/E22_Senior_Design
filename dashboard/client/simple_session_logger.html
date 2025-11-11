@@ -265,8 +265,8 @@
                 .then(data => {
                     if (data.status === 'visualization_created') {
                         showMessage(`✅ Visualization created! Data points: ${data.data_points}. Opening visualization...`, 'success');
-                        // Open visualization in new window
-                        window.open('/visualization', '_blank');
+                        // Open visualization in new window with session ID
+                        window.open(`/visualization?session_id=${data.session_id}`, '_blank');
                     } else {
                         showMessage(`❌ Error: ${data.error || 'Failed to create visualization'}`, 'error');
                     }

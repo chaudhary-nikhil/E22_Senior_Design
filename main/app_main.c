@@ -197,10 +197,16 @@ void app_main(void) {
             bno055_sample_t s;
             esp_err_t err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &s);
             if (err == ESP_OK) {
-                // Debug: Show first data point
+                // Debug: Show first data point and periodic updates
                 if (session_data_count == 0) {
-                    ESP_LOGI(TAG, "🎯 First IMU data: ax=%.2f, ay=%.2f, az=%.2f, qw=%.3f", 
-                             s.ax, s.ay, s.az, s.qw);
+                    ESP_LOGI(TAG, "🎯 First IMU data: ax=%.3f, ay=%.3f, az=%.3f, qw=%.4f, qx=%.4f, qy=%.4f, qz=%.4f", 
+                             s.ax, s.ay, s.az, s.qw, s.qx, s.qy, s.qz);
+                }
+                
+                // Debug: Show quaternion data every 10 points during logging
+                if (session_data_count % 10 == 0 && session_data_count > 0) {
+                    ESP_LOGI(TAG, "📊 Point %u: qw=%.4f, qx=%.4f, qy=%.4f, qz=%.4f", 
+                             session_data_count, s.qw, s.qx, s.qy, s.qz);
                 }
                 
                 // Send data to WiFi server for storage (only if WiFi server is working)

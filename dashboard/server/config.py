@@ -14,8 +14,8 @@ FALLBACK_PORT = 8017
 
 # Session Configuration
 SESSIONS_DIR = "sessions"
-SESSION_FILE_PREFIX = "swim_session_"
-EMERGENCY_FILE_PREFIX = "swim_session_emergency_"
+SESSION_FILE_PREFIX = "session_"
+EMERGENCY_FILE_PREFIX = "session_emergency_"
 
 # Data Configuration
 MAX_JSON_LENGTH = 512

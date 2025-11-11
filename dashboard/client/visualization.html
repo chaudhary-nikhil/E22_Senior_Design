@@ -255,102 +255,108 @@
         function createForearmModel() {
             forearmGroup = new THREE.Group();
 
-            // Create main forearm geometry (realistic anatomical shape)
-            const forearmGeometry = new THREE.CylinderGeometry(0.4, 0.6, 3.0, 16);
+            // Upper arm section (from elbow)
+            const upperArmGeometry = new THREE.CylinderGeometry(0.7, 0.65, 0.8, 16);
+            const upperArmMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff6b9d, // Skin tone
+                shininess: 30,
+                specular: 0x111111
+            });
+            const upperArm = new THREE.Mesh(upperArmGeometry, upperArmMaterial);
+            upperArm.rotation.z = Math.PI / 2;
+            upperArm.position.set(-0.5, 0, 0);
+            upperArm.castShadow = true;
+            forearmGroup.add(upperArm);
+            
+            // Main forearm section
+            const forearmGeometry = new THREE.CylinderGeometry(0.55, 0.45, 3.2, 16);
             const forearmMaterial = new THREE.MeshPhongMaterial({ 
-                color: 0xfdbcb4, // Skin tone
+                color: 0xff6b9d, // Skin tone
                 shininess: 30,
-                specular: 0x111111,
-                transparent: true,
-                opacity: 0.95
+                specular: 0x111111
             });
-            
             const forearm = new THREE.Mesh(forearmGeometry, forearmMaterial);
+            forearm.rotation.z = Math.PI / 2;
+            forearm.position.set(1.2, 0, 0);
             forearm.castShadow = true;
-            forearm.receiveShadow = true;
-            forearm.rotation.z = Math.PI / 2; // Rotate to horizontal orientation
-            forearm.position.set(0, 0, 0);
-            
-            // Create elbow joint (where IMU is mounted - right under elbow)
-            const elbowGeometry = new THREE.CylinderGeometry(0.7, 0.7, 0.8, 16);
-            const elbowMaterial = new THREE.MeshPhongMaterial({ 
-                color: 0xfdbcb4, // Skin tone
-                shininess: 30,
-                specular: 0x111111
-            });
-            
-            const elbow = new THREE.Mesh(elbowGeometry, elbowMaterial);
-            elbow.castShadow = true;
-            elbow.receiveShadow = true;
-            elbow.rotation.z = Math.PI / 2;
-            elbow.position.set(-1.5, 0, 0); // Position at elbow (IMU mount point)
-            
-            // Create wrist joint
-            const wristGeometry = new THREE.CylinderGeometry(0.35, 0.35, 0.7, 12);
-            const wristMaterial = new THREE.MeshPhongMaterial({ 
-                color: 0xfdbcb4, // Skin tone
-                shininess: 30,
-                specular: 0x111111
-            });
-            
-            const wrist = new THREE.Mesh(wristGeometry, wristMaterial);
-            wrist.castShadow = true;
-            wrist.receiveShadow = true;
-            wrist.rotation.z = Math.PI / 2;
-            wrist.position.set(1.6, 0, 0); // Position at wrist end
-            
-            // Create hand (simplified)
-            const handGeometry = new THREE.BoxGeometry(0.9, 0.5, 0.4);
-            const handMaterial = new THREE.MeshPhongMaterial({ 
-                color: 0xfdbcb4, // Skin tone
-                shininess: 30,
-                specular: 0x111111
-            });
-            
-            const hand = new THREE.Mesh(handGeometry, handMaterial);
-            hand.castShadow = true;
-            hand.receiveShadow = true;
-            hand.position.set(2.3, 0, 0); // Position at end of forearm
-            
-            // Add all parts to group
             forearmGroup.add(forearm);
-            forearmGroup.add(elbow);
+            
+            // Wrist
+            const wristGeometry = new THREE.CylinderGeometry(0.35, 0.35, 0.6, 12);
+            const wristMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff6b9d,
+                shininess: 30
+            });
+            const wrist = new THREE.Mesh(wristGeometry, wristMaterial);
+            wrist.rotation.z = Math.PI / 2;
+            wrist.position.set(3.0, 0, 0);
+            wrist.castShadow = true;
             forearmGroup.add(wrist);
+            
+            // Hand (box shaped, slightly rotated)
+            const handGeometry = new THREE.BoxGeometry(0.9, 0.6, 0.45);
+            const handMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff6b9d,
+                shininess: 30
+            });
+            const hand = new THREE.Mesh(handGeometry, handMaterial);
+            hand.position.set(3.9, 0.1, 0);
+            hand.rotation.z = 0.15;
+            hand.castShadow = true;
             forearmGroup.add(hand);
             
-            // Add muscle definition (subtle lines)
-            const muscleLines = new THREE.Group();
-            for (let i = 0; i < 4; i++) {
-                const lineGeometry = new THREE.CylinderGeometry(0.015, 0.015, 2.8, 8);
-                const lineMaterial = new THREE.MeshPhongMaterial({ 
-                    color: 0xe8a598, // Slightly darker skin tone
-                    transparent: true,
-                    opacity: 0.4
-                });
-                
-                const muscleLine = new THREE.Mesh(lineGeometry, lineMaterial);
-                muscleLine.rotation.z = Math.PI / 2;
-                muscleLine.position.set(0, 0.4 + i * 0.15, 0);
-                muscleLines.add(muscleLine);
-            }
-            forearmGroup.add(muscleLines);
-            
-            // Add IMU mounting point indicator (right under elbow)
-            const imuMountGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.1, 16);
-            const imuMountMaterial = new THREE.MeshPhongMaterial({ 
-                color: 0x333333, // Dark gray for IMU mount
-                shininess: 100,
-                specular: 0x444444
+            // Thumb
+            const thumbGeometry = new THREE.BoxGeometry(0.25, 0.35, 0.25);
+            const thumbMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff6b9d,
+                shininess: 30
             });
+            const thumb = new THREE.Mesh(thumbGeometry, thumbMaterial);
+            thumb.position.set(3.4, 0.45, 0);
+            thumb.rotation.z = -0.3;
+            thumb.castShadow = true;
+            forearmGroup.add(thumb);
             
-            const imuMount = new THREE.Mesh(imuMountGeometry, imuMountMaterial);
-            imuMount.rotation.z = Math.PI / 2;
-            imuMount.position.set(-1.5, 0.5, 0); // Position right under elbow
-            forearmGroup.add(imuMount);
+            // Elbow joint (bulge)
+            const elbowGeometry = new THREE.SphereGeometry(0.75, 16, 16);
+            const elbowMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff6b9d,
+                shininess: 30
+            });
+            const elbow = new THREE.Mesh(elbowGeometry, elbowMaterial);
+            elbow.position.set(0, 0, 0);
+            elbow.castShadow = true;
+            forearmGroup.add(elbow);
             
-            // Add IMU axes (Red=X, Green=Y, Blue=Z) - larger and more visible
-            const imuAxesHelper = new THREE.AxesHelper(0.8); // Larger axes for IMU
-            imuAxesHelper.position.set(-1.5, 0.5, 0); // Position at IMU mount point
+            // IMU Band (under elbow on forearm)
+            const bandGeometry = new THREE.CylinderGeometry(0.65, 0.65, 0.3, 16);
+            const bandMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x4a5568, // Dark gray/black band
+                shininess: 100,
+                specular: 0x666666
+            });
+            const band = new THREE.Mesh(bandGeometry, bandMaterial);
+            band.rotation.z = Math.PI / 2;
+            band.position.set(0.8, 0, 0); // Right under elbow
+            band.castShadow = true;
+            forearmGroup.add(band);
+            
+            // IMU Device (small box on band)
+            const imuGeometry = new THREE.BoxGeometry(0.4, 0.3, 0.5);
+            const imuMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x2d3748, // Dark gray IMU
+                shininess: 150,
+                specular: 0x888888,
+                emissive: 0x1a1a1a
+            });
+            const imu = new THREE.Mesh(imuGeometry, imuMaterial);
+            imu.position.set(0.8, 0.65, 0); // On top of band
+            imu.castShadow = true;
+            forearmGroup.add(imu);
+            
+            // IMU Axes (Red=X, Green=Y, Blue=Z)
+            const imuAxesHelper = new THREE.AxesHelper(0.5);
+            imuAxesHelper.position.set(0.8, 0.65, 0);
             forearmGroup.add(imuAxesHelper);
 
             // Apply initial coordinate system transformation
@@ -359,7 +365,7 @@
             forearmGroup.rotation.z = coordinateTransform.rotationZ;
             
             scene.add(forearmGroup);
-            console.log('🦾 Realistic forearm model created with IMU mount point');
+            console.log('🦾 Realistic forearm with IMU band created');
         }
 
         function onWindowResize() {
@@ -378,27 +384,50 @@
             const urlParams = new URLSearchParams(window.location.search);
             const sessionId = urlParams.get('session_id');
             
+            console.log('🔍 URL params:', window.location.search);
+            console.log('🔍 Session ID:', sessionId);
+            
             if (!sessionId) {
                 console.error("No session ID provided for visualization.");
                 document.getElementById('info').innerHTML = "<p style='color:red;'>Error: No session ID provided. Please start and stop a session first.</p>";
                 return;
             }
 
+            console.log(`📊 Loading session data for: ${sessionId}`);
+            
             try {
                 const response = await fetch(`/data/${sessionId}.json`);
+                console.log('📊 Response status:', response.status);
+                
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 sessionData = await response.json();
+                
+                console.log('✅ Session data loaded:', sessionData.length, 'data points');
                 
                 document.getElementById('session-id-display').textContent = sessionId;
                 document.getElementById('data-points-display').textContent = sessionData.length;
                 document.getElementById('playback-slider').max = sessionData.length - 1;
 
                 if (sessionData.length > 0) {
-                    // Set initial rotation
-                    updateForearmRotation(sessionData[0]);
-                    animate(); // Start rendering loop
+                    // Check if data is all zeros
+                    const firstPoint = sessionData[0];
+                    const isAllZeros = firstPoint.qw === 0 && firstPoint.qx === 0 && 
+                                      firstPoint.qy === 0 && firstPoint.qz === 0 &&
+                                      firstPoint.ax === 0 && firstPoint.ay === 0 && firstPoint.az === 0;
+                    
+                    if (isAllZeros) {
+                        document.getElementById('info').innerHTML = 
+                            '<p style="color:#ff4444;font-size:16px;font-weight:bold;">⚠️ IMU Data Issue</p>' +
+                            '<p style="color:#fff;">All sensor readings are ZERO. Check ESP32 firmware and IMU connections.</p>' +
+                            '<p style="color:#fff;">Expected: Valid quaternion data from BNO055 IMU</p>';
+                        animate(); // Still show the 3D model
+                    } else {
+                        // Set initial rotation
+                        updateForearmRotation(sessionData[0]);
+                        animate(); // Start rendering loop
+                    }
                 } else {
                     document.getElementById('info').innerHTML = "<p style='color:red;'>Error: No data points in session.</p>";
                 }
@@ -410,18 +439,36 @@
         }
 
         function updateForearmRotation(data) {
-            if (!forearmGroup || !data || data.qw === undefined) return;
+            if (!forearmGroup || !data) return;
+
+            // Check if quaternion data is valid (not all zeros)
+            const hasQuaternion = data.qw !== undefined && 
+                                 (data.qw !== 0 || data.qx !== 0 || data.qy !== 0 || data.qz !== 0);
+            
+            if (!hasQuaternion) {
+                // If no valid quaternion, return without updating
+                return;
+            }
 
             // Create quaternion from IMU data
-            const quaternion = new THREE.Quaternion(data.qx, data.qy, data.qz, data.qw);
+            const imuQuat = new THREE.Quaternion(data.qx, data.qy, data.qz, data.qw);
             
-            // Apply quaternion rotation with coordinate transformation
-            forearmGroup.setRotationFromQuaternion(quaternion);
+            // Create offset quaternion for coordinate transformation
+            const offsetQuat = new THREE.Quaternion();
+            offsetQuat.setFromEuler(
+                new THREE.Euler(
+                    coordinateTransform.rotationX,
+                    coordinateTransform.rotationY,
+                    coordinateTransform.rotationZ,
+                    'XYZ'
+                )
+            );
             
-            // Apply additional coordinate system transformation for realistic forearm orientation
-            forearmGroup.rotation.x += coordinateTransform.rotationX;
-            forearmGroup.rotation.y += coordinateTransform.rotationY;
-            forearmGroup.rotation.z += coordinateTransform.rotationZ;
+            // Combine IMU quaternion with coordinate transformation
+            const finalQuat = imuQuat.multiply(offsetQuat);
+            
+            // Apply final quaternion to forearm
+            forearmGroup.setRotationFromQuaternion(finalQuat);
         }
 
         function togglePlayback() {

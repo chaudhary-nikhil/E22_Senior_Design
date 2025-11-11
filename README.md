@@ -34,6 +34,7 @@ idf.py build flash monitor
 
 # 2. Start Session Logger
 cd dashboard
+cd server
 python3 session_logger.py
 
 # 3. Open Web Interface

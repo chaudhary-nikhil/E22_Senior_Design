@@ -267,13 +267,24 @@ static esp_err_t session_status_handler(httpd_req_t *req) {
 static esp_err_t session_data_handler(httpd_req_t *req) {
     // For now, return the raw protobuf data
     if (session_buffer && session_data_count > 0) {
-            size_t used = (size_t)session_data_count * IMU_DATA_SIZE;
-            httpd_resp_set_type(req, "application/octet-stream");
-            httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.bin");
-            httpd_resp_send(req, (char*)session_buffer, used); 
+        // Debug: Log what we're about to send
+        ESP_LOGI(TAG, "📤 Sending session data: %u points, %u bytes", session_data_count, session_buffer_size);
+        
+        // Debug: Check first data point in buffer
+        if (session_data_count > 0) {
+            imu_data_t *first_point = (imu_data_t*)session_buffer;
+            ESP_LOGI(TAG, "📤 First point in buffer: qw=%.4f, qx=%.4f, qy=%.4f, qz=%.4f", 
+                     first_point->qw, first_point->qx, first_point->qy, first_point->qz);
+        }
+        
+        size_t used = (size_t)session_data_count * IMU_DATA_SIZE;
+        httpd_resp_set_type(req, "application/octet-stream");
+        httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.bin");
+        httpd_resp_send(req, (char*)session_buffer, used); 
     }
     else {
-            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No session data available");
+        ESP_LOGW(TAG, "📤 No session data available to send");
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No session data available");
     }
     return ESP_OK;
 }
@@ -489,6 +500,12 @@ esp_err_t wifi_server_add_data_point(uint32_t timestamp_ms,
         // Store in buffer
         memcpy(session_buffer + (session_data_count * IMU_DATA_SIZE), 
                &data_point, IMU_DATA_SIZE);
+        
+        // Debug: Log first few data points being stored
+        if (session_data_count < 3) {
+            ESP_LOGI(TAG, "💾 Storing point %u: qw=%.4f, qx=%.4f, qy=%.4f, qz=%.4f", 
+                     session_data_count, qw, qx, qy, qz);
+        }
         
         session_data_count++;
         

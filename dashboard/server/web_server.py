@@ -31,8 +31,10 @@ class SessionHandler(BaseHTTPRequestHandler):
             self.handle_get_session_data()
         elif self.path == '/session_status':
             self.handle_session_status()
-        elif self.path == '/visualization':
+        elif self.path == '/visualization' or self.path.startswith('/visualization?'):
             self.handle_visualization()
+        elif self.path == '/test':
+            self.handle_test_page()
         else:
             self.send_error(404)
     
@@ -82,6 +84,23 @@ class SessionHandler(BaseHTTPRequestHandler):
     
     def handle_get_session_data(self):
         """Handle get session data request"""
+        # Check if this is a specific session data request (/data/session_id.json)
+        if self.path.startswith('/data/'):
+            session_filename = self.path.split('/data/')[1]
+            if session_filename.endswith('.json'):
+                session_id = session_filename.replace('.json', '')
+                try:
+                    session_data = self.session_manager.get_session_data_by_filename(session_filename)
+                    if session_data:
+                        self.send_json_response(session_data)
+                        return
+                    else:
+                        self.send_json_response({"status": "error", "error": f"Session {session_id} not found"}, status=404)
+                        return
+                except Exception as e:
+                    self.send_json_response({"status": "error", "error": f"Failed to load session {session_id}: {e}"}, status=500)
+                    return
+        
         # Try to pull from ESP32 first; fall back to latest local session
         try:
             esp_result = self.session_manager.pull_from_esp32()
@@ -104,6 +123,15 @@ class SessionHandler(BaseHTTPRequestHandler):
             self.send_json_response({"status": "error", "error": f"Request failed: {e}"}, status=500)
 
         
+    def handle_test_page(self):
+        """Serve the test page"""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        html_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'client', 'test_visualization.html')
+        with open(html_path, 'r') as f:
+            self.wfile.write(f.read().encode())
+    
     def handle_visualization(self):
         """Serve the visualization HTML page"""
         self.send_response(200)
