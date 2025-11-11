@@ -77,6 +77,32 @@ static esp_err_t bno055_read16(int port, uint8_t addr, uint8_t reg, int16_t *dat
     return err;
 }
 
+// Helper function to write 16-bit register with retry for clock stretching
+static esp_err_t bno055_write16(int port, uint8_t addr, uint8_t reg, int16_t data) {
+    uint8_t buffer[3];
+    buffer[0] = reg;                           // Register address
+    buffer[1] = (uint8_t)(data & 0xFF);        // LSB
+    buffer[2] = (uint8_t)((data >> 8) & 0xFF); // MSB
+    
+    esp_err_t err;
+    int retries = 3;
+    
+    do {
+        err = i2c_master_write_to_device(port, addr, buffer, 3, pdMS_TO_TICKS(1000));
+        if (err == ESP_OK) break;
+        
+        // If I2C error, wait and retry (clock stretching issue)
+        if (err == ESP_ERR_TIMEOUT || err == ESP_FAIL) {
+            vTaskDelay(pdMS_TO_TICKS(1)); // Small delay for clock stretching
+            retries--;
+        } else {
+            break; // Other errors don't retry
+        }
+    } while (retries > 0);
+    
+    return err;
+}
+
 esp_err_t bno055_init(int port, uint8_t addr) {
     ESP_LOGI(TAG, "Initializing BNO055 at address 0x%02X", addr);
     
@@ -295,4 +321,161 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     bno055_get_calibration_status(port, addr, &out->sys_cal, &out->gyro_cal, &out->accel_cal, &out->mag_cal);
     
     return ESP_OK;
+}
+
+// Write calibration offsets to BNO055 registers (as described in journal)
+// This implements the hardware-side calibration approach
+esp_err_t bno055_set_calibration_offsets(int port, uint8_t addr,
+                                         int16_t accel_x, int16_t accel_y, int16_t accel_z,
+                                         int16_t gyro_x, int16_t gyro_y, int16_t gyro_z,
+                                         int16_t mag_x, int16_t mag_y, int16_t mag_z) {
+    esp_err_t err;
+    
+    // Must be in config mode to write calibration offsets
+    err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set config mode for calibration");
+        return err;
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(25)); // Wait for mode change (datasheet says 19ms minimum)
+    
+    // Write accelerometer offsets
+    err = bno055_write16(port, addr, BNO055_ACCEL_OFFSET_X_LSB_ADDR, accel_x);
+    if (err != ESP_OK) return err;
+    err = bno055_write16(port, addr, BNO055_ACCEL_OFFSET_Y_LSB_ADDR, accel_y);
+    if (err != ESP_OK) return err;
+    err = bno055_write16(port, addr, BNO055_ACCEL_OFFSET_Z_LSB_ADDR, accel_z);
+    if (err != ESP_OK) return err;
+    
+    // Write gyroscope offsets
+    err = bno055_write16(port, addr, BNO055_GYRO_OFFSET_X_LSB_ADDR, gyro_x);
+    if (err != ESP_OK) return err;
+    err = bno055_write16(port, addr, BNO055_GYRO_OFFSET_Y_LSB_ADDR, gyro_y);
+    if (err != ESP_OK) return err;
+    err = bno055_write16(port, addr, BNO055_GYRO_OFFSET_Z_LSB_ADDR, gyro_z);
+    if (err != ESP_OK) return err;
+    
+    // Write magnetometer offsets
+    err = bno055_write16(port, addr, BNO055_MAG_OFFSET_X_LSB_ADDR, mag_x);
+    if (err != ESP_OK) return err;
+    err = bno055_write16(port, addr, BNO055_MAG_OFFSET_Y_LSB_ADDR, mag_y);
+    if (err != ESP_OK) return err;
+    err = bno055_write16(port, addr, BNO055_MAG_OFFSET_Z_LSB_ADDR, mag_z);
+    if (err != ESP_OK) return err;
+    
+    // Switch back to NDOF fusion mode
+    err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set NDOF mode after calibration");
+        return err;
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(25)); // Wait for mode change
+    
+    ESP_LOGI(TAG, "Calibration offsets written successfully");
+    return ESP_OK;
+}
+
+// Configure axis remapping (as described in journal)
+// This allows remapping physical axes to match sensor mounting orientation
+esp_err_t bno055_set_axis_remap(int port, uint8_t addr, uint8_t axis_map_config, uint8_t axis_map_sign) {
+    esp_err_t err;
+    
+    // Must be in config mode to write axis remap registers
+    err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set config mode for axis remap");
+        return err;
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(25)); // Wait for mode change
+    
+    // Write axis remap configuration
+    err = bno055_write8(port, addr, BNO055_AXIS_MAP_CONFIG_ADDR, axis_map_config);
+    if (err != ESP_OK) return err;
+    
+    // Write axis remap sign (for inverting axes)
+    err = bno055_write8(port, addr, BNO055_AXIS_MAP_SIGN_ADDR, axis_map_sign);
+    if (err != ESP_OK) return err;
+    
+    // Switch back to NDOF fusion mode
+    err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set NDOF mode after axis remap");
+        return err;
+    }
+    
+    vTaskDelay(pdMS_TO_TICKS(25)); // Wait for mode change
+    
+    ESP_LOGI(TAG, "Axis remapping configured successfully");
+    return ESP_OK;
+}
+
+// Set up axis isolation for translation tracking (as described in journal)
+// This calibrates Y and Z axes to stay fixed while tracking X-axis movement
+esp_err_t bno055_setup_axis_isolation(int port, uint8_t addr, uint8_t track_axis) {
+    esp_err_t err;
+    
+    // Read current sensor values to get baseline offsets
+    bno055_sample_t sample;
+    err = bno055_read_sample(port, addr, &sample);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read sample for axis isolation setup");
+        return err;
+    }
+    
+    // Convert float values to raw offset values
+    // For accelerometer: offset is in LSB units (1 LSB = 1 mg = 0.001 m/s²)
+    // For gyroscope: offset is in LSB units (1 LSB = 1/900 dps)
+    int16_t accel_x_offset = (int16_t)(sample.ax * 1000.0f);
+    int16_t accel_y_offset = (int16_t)(sample.ay * 1000.0f);
+    int16_t accel_z_offset = (int16_t)(sample.az * 1000.0f);
+    
+    int16_t gyro_x_offset = (int16_t)(sample.gx * 900.0f * 180.0f / 3.14159265359f);
+    int16_t gyro_y_offset = (int16_t)(sample.gy * 900.0f * 180.0f / 3.14159265359f);
+    int16_t gyro_z_offset = (int16_t)(sample.gz * 900.0f * 180.0f / 3.14159265359f);
+    
+    // If tracking X-axis, set Y and Z offsets to lock them
+    // If tracking Y-axis, set X and Z offsets to lock them
+    // If tracking Z-axis, set X and Y offsets to lock them
+    if (track_axis == 0) {  // Track X, lock Y and Z
+        accel_y_offset = (int16_t)(sample.ay * 1000.0f);
+        accel_z_offset = (int16_t)(sample.az * 1000.0f);
+        gyro_y_offset = (int16_t)(sample.gy * 900.0f * 180.0f / 3.14159265359f);
+        gyro_z_offset = (int16_t)(sample.gz * 900.0f * 180.0f / 3.14159265359f);
+        accel_x_offset = 0;  // Don't offset X-axis
+        gyro_x_offset = 0;
+    } else if (track_axis == 1) {  // Track Y, lock X and Z
+        accel_x_offset = (int16_t)(sample.ax * 1000.0f);
+        accel_z_offset = (int16_t)(sample.az * 1000.0f);
+        gyro_x_offset = (int16_t)(sample.gx * 900.0f * 180.0f / 3.14159265359f);
+        gyro_z_offset = (int16_t)(sample.gz * 900.0f * 180.0f / 3.14159265359f);
+        accel_y_offset = 0;  // Don't offset Y-axis
+        gyro_y_offset = 0;
+    } else {  // Track Z, lock X and Y
+        accel_x_offset = (int16_t)(sample.ax * 1000.0f);
+        accel_y_offset = (int16_t)(sample.ay * 1000.0f);
+        gyro_x_offset = (int16_t)(sample.gx * 900.0f * 180.0f / 3.14159265359f);
+        gyro_y_offset = (int16_t)(sample.gy * 900.0f * 180.0f / 3.14159265359f);
+        accel_z_offset = 0;  // Don't offset Z-axis
+        gyro_z_offset = 0;
+    }
+    
+    // Set magnetometer offsets to zero (we're not using magnetometer for translation)
+    int16_t mag_x_offset = 0;
+    int16_t mag_y_offset = 0;
+    int16_t mag_z_offset = 0;
+    
+    // Write calibration offsets
+    err = bno055_set_calibration_offsets(port, addr,
+                                        accel_x_offset, accel_y_offset, accel_z_offset,
+                                        gyro_x_offset, gyro_y_offset, gyro_z_offset,
+                                        mag_x_offset, mag_y_offset, mag_z_offset);
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Axis isolation configured: tracking axis %d", track_axis);
+    }
+    
+    return err;
 }
