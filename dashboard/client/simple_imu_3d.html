@@ -200,6 +200,7 @@
     <script>
         // Global variables
         let scene, camera, renderer, imuCube, trail = [];
+        let trailLine = null;
         let eventSource = null;
         let isConnected = false;
         
@@ -248,6 +249,12 @@
             imuCube = new THREE.Mesh(geometry, material);
             imuCube.castShadow = true;
             scene.add(imuCube);
+            
+            // Create trail line for movement path
+            const trailGeometry = new THREE.BufferGeometry();
+            const trailMaterial = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
+            trailLine = new THREE.Line(trailGeometry, trailMaterial);
+            scene.add(trailLine);
             
             // Add lighting
             const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
@@ -514,14 +521,27 @@
             imuCube.setRotationFromQuaternion(quaternion);
             
             // Add to trail
-            trail.push({
-                position: data.position,
-                timestamp: data.timestamp
-            });
+            trail.push(new THREE.Vector3(
+                data.position.px,
+                data.position.py,
+                data.position.pz
+            ));
             
-            // Keep trail length manageable
-            if (trail.length > 100) {
+            // Keep trail length manageable (last 500 points)
+            if (trail.length > 500) {
                 trail.shift();
+            }
+            
+            // Update trail line geometry
+            if (trail.length > 1) {
+                const positions = new Float32Array(trail.length * 3);
+                trail.forEach((point, i) => {
+                    positions[i * 3] = point.x;
+                    positions[i * 3 + 1] = point.y;
+                    positions[i * 3 + 2] = point.z;
+                });
+                trailLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                trailLine.geometry.attributes.position.needsUpdate = true;
             }
             
             // Update charts
@@ -570,6 +590,11 @@
         function resetView() {
             camera.position.set(3, 3, 3);
             camera.lookAt(0, 0, 0);
+            // Clear trail
+            trail = [];
+            if (trailLine) {
+                trailLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+            }
         }
         
         // Initialize when page loads
