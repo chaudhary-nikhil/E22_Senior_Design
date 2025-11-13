@@ -64,6 +64,13 @@ extern "C" {
 #define BNO055_QUATERNION_DATA_Z_LSB_ADDR 0x26
 #define BNO055_QUATERNION_DATA_Z_MSB_ADDR 0x27
 
+// Linear acceleration data registers
+#define BNO055_LINEAR_ACCEL_DATA_X_LSB_ADDR 0x28
+#define BNO055_LINEAR_ACCEL_DATA_X_MSB_ADDR 0x29
+#define BNO055_LINEAR_ACCEL_DATA_Y_LSB_ADDR 0x2A
+#define BNO055_LINEAR_ACCEL_DATA_Y_MSB_ADDR 0x2B
+#define BNO055_LINEAR_ACCEL_DATA_Z_LSB_ADDR 0x2C
+#define BNO055_LINEAR_ACCEL_DATA_Z_MSB_ADDR 0x2D
 // Temperature data register
 #define BNO055_TEMP_ADDR 0x34
 
@@ -178,7 +185,11 @@ typedef struct {
     // Fused data
     float roll, pitch, yaw;  // Euler angles (degrees)
     float qw, qx, qy, qz;    // Quaternion
+    float lia_x; // Linear Acceleration (m/s²)
+    float lia_y;
+    float lia_z;
     float temp;              // Temperature (°C)
+
     // Calibration status
     uint8_t sys_cal, gyro_cal, accel_cal, mag_cal;
 } bno055_sample_t;

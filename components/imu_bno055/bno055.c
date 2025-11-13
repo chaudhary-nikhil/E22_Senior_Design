@@ -283,6 +283,20 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     out->qy = (float)qy_raw / 16384.0f;
     out->qz = (float)qz_raw / 16384.0f;
     
+    // Read Linear Acceleration data (Registers 0x28-0x2D)
+    int16_t lia_x_raw, lia_y_raw, lia_z_raw;
+    if (bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_X_LSB_ADDR, &lia_x_raw) != ESP_OK ||
+        bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_Y_LSB_ADDR, &lia_y_raw) != ESP_OK ||
+        bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_Z_LSB_ADDR, &lia_z_raw) != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Convert to m/s^2 (LSB = 1/100 m/s^2)
+    // This scaling comes from the Bosch datasheet/header (BNO055_LINEAR_ACCEL_DIV_MSQ)
+    out->lia_x = (float)lia_x_raw / 100.0f;
+    out->lia_y = (float)lia_y_raw / 100.0f;
+    out->lia_z = (float)lia_z_raw / 100.0f;
+    
     // Read temperature
     uint8_t temp_raw;
     if (bno055_read8(port, addr, BNO055_TEMP_ADDR, &temp_raw) == ESP_OK) {

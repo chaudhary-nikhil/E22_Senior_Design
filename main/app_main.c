@@ -45,11 +45,11 @@ void app_main(void) {
                 // Create JSON with all 9-axis data and send via serial
                 char json_data[512];
                 snprintf(json_data, sizeof(json_data),
-                    "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
-                    (unsigned) s.t_ms, s.ax, s.ay, s.az, s.gx, s.gy, s.gz,
-                    s.mx, s.my, s.mz, s.roll, s.pitch, s.yaw,
-                    s.qw, s.qx, s.qy, s.qz, s.temp,
-                    s.sys_cal, s.gyro_cal, s.accel_cal, s.mag_cal);
+                "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
+                (unsigned) s.t_ms, s.ax, s.ay, s.az, s.gx, s.gy, s.gz,
+                s.mx, s.my, s.mz, s.roll, s.pitch, s.yaw,
+                s.qw, s.qx, s.qy, s.qz, s.lia_x, s.lia_y, s.lia_z, s.temp,
+                s.sys_cal, s.gyro_cal, s.accel_cal, s.mag_cal);
 
                 serial_stream_send_data(json_data);
             } else {
