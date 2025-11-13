@@ -188,6 +188,14 @@
                 <strong>Timestamp</strong><br>
                 <span id="timestamp">0</span>
             </div>
+
+            <div class="metric" id="cal-metric">
+                <strong>Calibration (0=Bad, 3=Good)</strong><br>
+                System: <span id="cal-sys">0</span><br>
+                Gyro:   <span id="cal-gyro">0</span><br>
+                Accel:  <span id="cal-accel">0</span><br>
+                Mag:    <span id="cal-mag">0</span>
+            </div>
             
             <button onclick="connect()">Connect</button>
             <button onclick="disconnect()">Disconnect</button>
@@ -493,6 +501,25 @@
             
             // Timestamp
             document.getElementById('timestamp').textContent = data.timestamp;
+
+            // Calibration Status
+            if (data.calibration) {
+                let sys = data.calibration.sys;
+                document.getElementById('cal-sys').textContent = sys;
+                document.getElementById('cal-gyro').textContent = data.calibration.gyro;
+                document.getElementById('cal-accel').textContent = data.calibration.accel;
+                document.getElementById('cal-mag').textContent = data.calibration.mag;
+
+                // Change color of status box based on system calibration
+                const calBox = document.getElementById('cal-metric');
+                if (sys === 3) {
+                    calBox.style.backgroundColor = '#2d5a2d'; // Green
+                } else if (sys > 0) {
+                    calBox.style.backgroundColor = '#6e6e2b'; // Yellow/Olive
+                } else {
+                    calBox.style.backgroundColor = '#5a2d2d'; // Red
+                }
+            }
         }
         
         // Update 3D visualization

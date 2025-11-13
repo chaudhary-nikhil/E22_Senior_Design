@@ -225,9 +225,9 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     }
     
     // Convert to m/s² (LSB = 1 mg = 0.001 m/s²)
-    out->ax = (float)ax_raw / 1000.0f;
-    out->ay = (float)ay_raw / 1000.0f;
-    out->az = (float)az_raw / 1000.0f;
+    out->ax = (float)ax_raw / 100.0f;
+    out->ay = (float)ay_raw / 100.0f;
+    out->az = (float)az_raw / 100.0f;
     
     // Read gyroscope data
     int16_t gx_raw, gy_raw, gz_raw;
@@ -238,9 +238,9 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     }
     
     // Convert to rad/s (LSB = 1/900 dps, convert dps to rad/s)
-    out->gx = (float)gx_raw / 900.0f * (3.14159265359f / 180.0f);
-    out->gy = (float)gy_raw / 900.0f * (3.14159265359f / 180.0f);
-    out->gz = (float)gz_raw / 900.0f * (3.14159265359f / 180.0f);
+    out->gx = (float)gx_raw / 16.0f * (3.14159265359f / 180.0f);
+    out->gy = (float)gy_raw / 16.0f * (3.14159265359f / 180.0f);
+    out->gz = (float)gz_raw / 16.0f * (3.14159265359f / 180.0f);
     
     // Read magnetometer data
     int16_t mx_raw, my_raw, mz_raw;
@@ -296,7 +296,7 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     out->lia_x = (float)lia_x_raw / 100.0f;
     out->lia_y = (float)lia_y_raw / 100.0f;
     out->lia_z = (float)lia_z_raw / 100.0f;
-    
+
     // Read temperature
     uint8_t temp_raw;
     if (bno055_read8(port, addr, BNO055_TEMP_ADDR, &temp_raw) == ESP_OK) {
