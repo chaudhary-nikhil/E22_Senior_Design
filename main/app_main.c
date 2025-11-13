@@ -157,6 +157,14 @@ void app_main(void) {
         // Don't crash, just continue without IMU
     } else {
         ESP_LOGI(TAG, "✅ BNO055 initialized successfully");
+        // Hardware calibration / axis isolation (prototype: track X-axis translation)
+        // Puts device in CONFIG, writes offsets, returns to NDOF
+        esp_err_t iso_err = bno055_setup_axis_isolation(I2C_NUM_0, BNO055_ADDR_A, 0 /* track X */);
+        if (iso_err == ESP_OK) {
+            ESP_LOGI(TAG, "✅ BNO055 axis isolation configured (tracking X-axis)");
+        } else {
+            ESP_LOGW(TAG, "BNO055 axis isolation setup failed: %s", esp_err_to_name(iso_err));
+        }
     }
 
     // Init buttons and LED

@@ -154,6 +154,12 @@
             <div id="status" class="status disconnected">
                 Disconnected
             </div>
+
+            <div class="metric">
+                <strong>Status</strong>
+                <div id="calibStatus" style="margin-top:6px; font-weight:bold; color:#ee9090;">Calibration: waiting (automatic on first short session)</div>
+                <div id="hint" style="margin-top:6px;color:#ccc;font-size:12px;">Use the device button only. Press to start, hold arm straight 2s then one front stroke, press to stop. We\'ll store calibration. Then press again to record a real swim; we\'ll visualize translation + rotation automatically.</div>
+            </div>
             
             <div class="metric">
                 <strong>Acceleration (m/s²)</strong><br>
@@ -457,6 +463,10 @@
                 updateStatus('Error', false);
             };
         }
+
+        async function planCalibration() { /* removed - no longer used */ }
+
+        async function resetCalibration() { /* removed - no longer used */ }
         
         // Disconnect from Server-Sent Events
         function disconnect() {
@@ -477,6 +487,18 @@
         
         // Update data display
         function updateDisplay(data) {
+            // Calibration status
+            if (data.meta && typeof data.meta.calibrated === 'boolean') {
+                const cs = document.getElementById('calibStatus');
+                if (data.meta.calibrated) {
+                    cs.textContent = 'Calibration: stored (applied to subsequent sessions)';
+                    cs.style.color = '#90ee90';
+                } else {
+                    cs.textContent = 'Calibration: waiting (automatic on first short session)';
+                    cs.style.color = '#ee9090';
+                }
+            }
+            
             // Acceleration
             document.getElementById('ax').textContent = data.acceleration.ax.toFixed(3);
             document.getElementById('ay').textContent = data.acceleration.ay.toFixed(3);

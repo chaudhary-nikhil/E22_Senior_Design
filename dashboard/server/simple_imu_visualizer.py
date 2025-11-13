@@ -27,6 +27,21 @@ data_lock = threading.Lock()
 clients = []
 session_manager = None
 
+# Calibration configuration/state
+class CalibrationState:
+    def __init__(self):
+        self.enabled = True
+        self.calibrated = False
+        self.neutral_duration_s = 2.0
+        self.stroke_duration_s = 4.0
+        self.gravity_vector = None  # world-frame unit vector
+        self.forward_axis = None    # world-frame unit vector along stroke
+        self.buffer = []            # buffered imu samples until calibration is computed
+        self.session_start_ts = None
+        # Removed plan_next_session: calibration is automatic on first session
+
+calib = CalibrationState()
+
 # Translation tracking state
 class TranslationTracker:
     """Tracks translation movement from calibrated IMU data"""
@@ -116,6 +131,7 @@ class TranslationTracker:
 
 tracker = TranslationTracker()
 calibration_done = False
+bias_initialized = False
 
 class SSEHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -132,6 +148,8 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
     
+    # Removed do_POST calibrate; calibration is inferred automatically
+
     def handle_sse(self):
         # Server-Sent Events
         self.send_response(200)
@@ -175,9 +193,68 @@ def broadcast_data(data):
         except (BrokenPipeError, ConnectionResetError, OSError):
             clients.remove(client)
 
+def quat_to_rot_matrix(qw, qx, qy, qz):
+    # Normalize quaternion
+    norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz) + 1e-12
+    w, x, y, z = qw/norm, qx/norm, qy/norm, qz/norm
+    # Rotation from body to world
+    return np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - z*w),     2*(x*z + y*w)],
+        [    2*(x*y + z*w), 1 - 2*(x*x + z*z),     2*(y*z - x*w)],
+        [    2*(x*z - y*w),     2*(y*z + x*w), 1 - 2*(x*x + y*y)]
+    ])
+
+
+def compute_calibration_from_buffer():
+    # Use first neutral_duration for gravity; next stroke_duration for forward axis
+    if not calib.buffer:
+        return False
+    t0 = calib.buffer[0].timestamp_ms
+    neutral_end = t0 + int(calib.neutral_duration_s * 1000)
+    stroke_end = neutral_end + int(calib.stroke_duration_s * 1000)
+
+    neutral_acc_world = []
+    stroke_acc_world = []
+
+    for s in calib.buffer:
+        R = quat_to_rot_matrix(s.qw, s.qx, s.qy, s.qz)
+        a_body = np.array([s.ax, s.ay, s.az])
+        a_world = R @ a_body
+        if s.timestamp_ms <= neutral_end:
+            neutral_acc_world.append(a_world)
+        elif s.timestamp_ms <= stroke_end:
+            stroke_acc_world.append(a_world)
+
+    if len(neutral_acc_world) < 5 or len(stroke_acc_world) < 5:
+        return False
+
+    neutral_acc_world = np.vstack(neutral_acc_world)
+    stroke_acc_world = np.vstack(stroke_acc_world)
+
+    # Gravity vector is mean acceleration during neutral (unit vector)
+    g_vec = neutral_acc_world.mean(axis=0)
+    g_hat = g_vec / (np.linalg.norm(g_vec) + 1e-9)
+
+    # Remove gravity from stroke window and project onto plane orthogonal to gravity
+    stroke_no_g = stroke_acc_world - (stroke_acc_world @ g_hat[:, None]).squeeze()[:, None] * g_hat
+
+    # Principal component as forward axis (largest variance direction)
+    stroke_centered = stroke_no_g - stroke_no_g.mean(axis=0)
+    cov = (stroke_centered.T @ stroke_centered) / max(len(stroke_centered) - 1, 1)
+    eigvals, eigvecs = np.linalg.eig(cov)
+    f_hat = eigvecs[:, np.argmax(eigvals.real)].real
+    f_hat = f_hat / (np.linalg.norm(f_hat) + 1e-9)
+
+    calib.gravity_vector = g_hat
+    calib.forward_axis = f_hat
+    calib.calibrated = True
+    print(f"Calibration computed: g={g_hat}, fwd={f_hat}")
+    return True
+
+
 def process_imu_data_for_translation(imu_data):
     """Process calibrated IMU data to extract translation movement"""
-    global calibration_done, tracker
+    global calibration_done, tracker, bias_initialized
     
     # Extract data from IMU data structure
     timestamp_ms = imu_data.timestamp_ms
@@ -185,13 +262,33 @@ def process_imu_data_for_translation(imu_data):
     gyro = [imu_data.gx, imu_data.gy, imu_data.gz]
     quat = [imu_data.qw, imu_data.qx, imu_data.qy, imu_data.qz]
     
-    # Calibrate on first reading if not done
-    if not calibration_done:
+    # Initialize bias offsets once from first reading
+    if not bias_initialized:
         tracker.calibrate(accel, gyro)
-        calibration_done = True
+        bias_initialized = True
     
-    # Update translation tracker
-    position = tracker.update(accel, gyro, timestamp_ms)
+    # Buffer samples for world-frame calibration (neutral + stroke)
+    if calib.enabled and not calib.calibrated:
+        if calib.session_start_ts is None:
+            calib.session_start_ts = imu_data.timestamp_ms
+        calib.buffer.append(imu_data)
+        # Try to compute calibration when we have enough data
+        total_needed = int((calib.neutral_duration_s + calib.stroke_duration_s) * 1000)
+        if imu_data.timestamp_ms - calib.session_start_ts >= total_needed:
+            compute_calibration_from_buffer()
+
+    # Rotate acceleration to world frame and remove gravity if calibrated
+    R = quat_to_rot_matrix(quat[0], quat[1], quat[2], quat[3])
+    a_world = R @ np.array(accel)
+
+    if calib.calibrated and calib.gravity_vector is not None:
+        # Remove gravity component
+        a_world = a_world - np.dot(a_world, calib.gravity_vector) * calib.gravity_vector
+        # Project onto forward axis for translation tracking
+        a_world = np.dot(a_world, calib.forward_axis) * calib.forward_axis
+
+    # Feed world-frame linear acceleration to tracker (single-axis if projected)
+    position = tracker.update(a_world, gyro, timestamp_ms)
     
     # Create visualization data structure
     data = {
@@ -206,6 +303,9 @@ def process_imu_data_for_translation(imu_data):
             "gyro": imu_data.gyro_cal,
             "accel": imu_data.accel_cal,
             "mag": imu_data.mag_cal
+        },
+        "meta": {
+            "calibrated": bool(calib.calibrated)
         }
     }
     
@@ -217,6 +317,9 @@ def data_processor():
     
     session_manager = WiFiSessionManager()
     print("WiFi Session Manager initialized")
+
+    last_session = None
+    processed_count = 0
     
     while True:
         try:
@@ -224,25 +327,38 @@ def data_processor():
             result = session_manager.pull_from_esp32()
             
             if result and result.get("status") == "data_retrieved":
+                session_id = result.get("session_id")
                 session_data = result.get("data", [])
-                print(f"Processing {len(session_data)} data points from ESP32")
-                
-                # Process each data point
-                for data_point in session_data:
-                    # Convert to ProtobufIMUData format
-                    imu_data = ProtobufIMUData.from_dict(data_point)
-                    
-                    # Process for translation
-                    json_data = process_imu_data_for_translation(imu_data)
-                    broadcast_data(json_data)
-                    
-                    # Small delay to match real-time playback
-                    time.sleep(0.02)  # 50Hz
-                
-                print("Finished processing session data")
-            
-            # Wait before checking for new data
-            time.sleep(1.0)
+
+                # Handle new vs same session incrementally
+                if session_id != last_session:
+                    print(f"New session detected: {session_id}")
+                    last_session = session_id
+                    processed_count = 0
+                    # For the first session after startup (or when not calibrated),
+                    # use it to compute calibration automatically.
+                    if calib.enabled and not calib.calibrated:
+                        calib.buffer = []
+                        calib.session_start_ts = None
+
+                total_points = len(session_data)
+                start_idx = max(0, processed_count)
+                if total_points > start_idx:
+                    print(f"Processing points {start_idx}..{total_points-1} (total {total_points})")
+                    # Process only new data points
+                    for i in range(start_idx, total_points):
+                        data_point = session_data[i]
+                        imu_data = ProtobufIMUData.from_dict(data_point)
+                        json_data = process_imu_data_for_translation(imu_data)
+                        broadcast_data(json_data)
+                        time.sleep(0.02)  # 50Hz pacing
+                    processed_count = total_points
+                else:
+                    # No new points; small idle sleep
+                    time.sleep(0.2)
+            else:
+                # No data yet; back off briefly
+                time.sleep(0.5)
             
         except Exception as e:
             print(f"Error processing data: {e}")
