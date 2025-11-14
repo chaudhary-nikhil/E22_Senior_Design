@@ -116,7 +116,7 @@ class StrokeProcessor:
             "position": {"px": self.position[0], "py": self.position[1], "pz": self.position[2]},
             "calibration": calibration, # Pass full calibration status to UI
             
-            "acceleration": {"ax": data_dict['ax'], "ay": data_dict['ay'], "az": data_dict['az']},
+            "acceleration": {"ax": lia_x, "ay": lia_y, "az": lia_z},  # Use linear acceleration (LIA)
             "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']}
         }
         
@@ -136,6 +136,9 @@ class SSEHandler(BaseHTTPRequestHandler):
             try:
                 with open(html_path, 'r') as f:
                     self.wfile.write(f.read().encode())
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Client disconnected, ignore silently
+                pass
             except FileNotFoundError:
                 self.send_response(404)
                 self.end_headers()
@@ -160,11 +163,17 @@ class SSEHandler(BaseHTTPRequestHandler):
             while True:
                 with data_lock:
                     if latest_data_json:
-                        self.wfile.write(f"data: {latest_data_json}\n\n".encode())
-                        self.wfile.flush()
+                        try:
+                            self.wfile.write(f"data: {latest_data_json}\n\n".encode())
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            # Client disconnected
+                            break
                 time.sleep(0.01) # ~100Hz
-        except:
+        except (BrokenPipeError, ConnectionResetError, OSError):
             pass # Client disconnected
+        except Exception as e:
+            print(f"SSE error: {e}", flush=True)
         finally:
             if self in clients:
                 clients.remove(self)
@@ -213,13 +222,24 @@ def serial_receiver(processor: StrokeProcessor):
         
         while True:
             try:
-                line = serial_port.readline().decode('utf-8').strip()
+                raw_line = serial_port.readline()
+                if not raw_line:
+                    time.sleep(0.01)
+                    continue
+                
+                # Try to decode as UTF-8, ignore invalid bytes
+                try:
+                    line = raw_line.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    # Skip binary data or corrupted bytes
+                    continue
                 
                 if line:
                     try:
                         data_dict = json.loads(line)
                         
-                        if 't' in data_dict and 'lia_x' in data_dict:
+                        # Ensure data_dict is a dictionary before checking keys
+                        if isinstance(data_dict, dict) and 't' in data_dict and 'lia_x' in data_dict:
                             # Process the data (integrates, checks cal, etc.)
                             json_to_broadcast = processor.process_data(data_dict)
                             if json_to_broadcast:
@@ -255,15 +275,20 @@ def serial_receiver(processor: StrokeProcessor):
                 print("Connection lost. Will attempt to reconnect...", flush=True)
                 last_cal_status = {} # Reset cal status
                 break 
+            except UnicodeDecodeError:
+                # Already handled above, skip
+                continue
             except Exception as e:
-                print(f"\nUnhandled serial read error: {e}", flush=True)
+                # Only print unexpected errors (not connection issues)
+                if not isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
+                    print(f"\nUnhandled serial read error: {e}", flush=True)
                 time.sleep(0.1)
 
 # --- (start_web_server and __main__ are unchanged from the previous file) ---
 def start_web_server(port):
     """Start the web server"""
     try:
-        server = HTTPServer(('localhost', port), SSEHandler)
+        server = HTTPServer(('0.0.0.0', port), SSEHandler)
         print(f"Web server started on http://localhost:{port}", flush=True)
         server.serve_forever()
     except OSError as e:
