@@ -1,0 +1,31 @@
+{
+    "idf.espIdfPath": "${workspaceFolder}/esp-idf",
+    "idf.toolsPath": "${workspaceFolder}/esp-idf/tools",
+    "idf.customExtraPaths": "",
+    "idf.customExtraVars": "",
+    "idf.openOcdConfigs": [
+        "board/esp32-wrover-kit-3.3v.cfg"
+    ],
+    "idf.port": "/dev/tty.usbserial-0001",
+    "idf.flashType": "UART",
+    "idf.monitorBaudRate": 115200,
+    "idf.adapterTargetName": "esp32",
+    "idf.customAdapterTargetName": "esp32",
+    "idf.terminal.integrated.env.osx": {
+        "PATH": "${workspaceFolder}/esp-idf/tools:${env:PATH}",
+        "IDF_PATH": "${workspaceFolder}/esp-idf"
+    },
+    "idf.terminal.integrated.env.linux": {
+        "PATH": "${workspaceFolder}/esp-idf/tools:${env:PATH}",
+        "IDF_PATH": "${workspaceFolder}/esp-idf"
+    },
+    "idf.terminal.integrated.env.windows": {
+        "PATH": "${workspaceFolder}/esp-idf/tools;${env:PATH}",
+        "IDF_PATH": "${workspaceFolder}/esp-idf"
+    },
+    "files.associations": {
+        "*.h": "c",
+        "*.c": "c"
+    },
+    "C_Cpp.intelliSenseEngine": "default"
+}
