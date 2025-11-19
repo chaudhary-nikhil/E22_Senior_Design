@@ -82,6 +82,12 @@
             border-radius: 5px;
             font-family: monospace;
         }
+
+        .metric input[type="range"],
+        .metric input[type="number"] {
+            width: 100%;
+            margin-top: 6px;
+        }
         
         .status {
             padding: 10px;
@@ -192,13 +198,34 @@
                 Y: <span id="qy">0.000</span><br>
                 Z: <span id="qz">0.000</span>
             </div>
+
+            <div class="metric">
+                <strong>Visualizer Position Scale</strong><br>
+                <input 
+                    type="range" 
+                    id="scaleSlider" 
+                    min="0.1" 
+                    max="5" 
+                    step="0.1" 
+                    value="1"
+                    oninput="updateScale(this.value)">
+                <input 
+                    type="number" 
+                    id="scaleInput"
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                    value="1"
+                    oninput="updateScale(this.value)">
+                <div>Current scale: <span id="scaleValue">1.0×</span></div>
+            </div>
             
             <div class="metric">
                 <strong>Timestamp</strong><br>
                 <span id="timestamp">0</span>
             </div>
 
-            <div class="metric" id="cal-metric">
+            <div class="metric">
                 <strong>Calibration (0=Bad, 3=Good)</strong><br>
                 System: <span id="cal-sys">0</span><br>
                 Gyro:   <span id="cal-gyro">0</span><br>
@@ -206,9 +233,19 @@
                 Mag:    <span id="cal-mag">0</span>
             </div>
             
+            <div class="status disconnected" id="tracking-status">
+                Tracking: Inactive
+            </div>
+            
+            <div class="metric">
+                <strong>Stroke Count</strong><br>
+                <span id="stroke-count">0</span>
+            </div>
+            
             <button onclick="connect()">Connect</button>
             <button onclick="disconnect()">Disconnect</button>
             <button onclick="resetView()">Reset View</button>
+            <button onclick="clearStrokes()">Clear Strokes</button>
         </div>
     </div>
 
@@ -219,6 +256,12 @@
         let scene, camera, renderer, imuCube, trail = [];
         let eventSource = null;
         let isConnected = false;
+        let positionScale = 1.0;
+        let strokeTrails = []; // Array of stroke path geometries
+        let currentStrokePoints = []; // Points for current stroke
+        let lastStrokeCount = 0;
+        let initialQuaternion = null; // Store initial orientation when calibrated
+        let isCalibrated = false;
         
         // Chart variables
         let accelChart, gyroChart;
@@ -576,54 +619,129 @@
             // Calibration Status
             if (data.calibration) {
                 let sys = data.calibration.sys;
+                let accel = data.calibration.accel;
+                let gyro = data.calibration.gyro;
+                
                 document.getElementById('cal-sys').textContent = sys;
-                document.getElementById('cal-gyro').textContent = data.calibration.gyro;
-                document.getElementById('cal-accel').textContent = data.calibration.accel;
+                document.getElementById('cal-gyro').textContent = gyro;
+                document.getElementById('cal-accel').textContent = accel;
                 document.getElementById('cal-mag').textContent = data.calibration.mag;
 
-                // Change color of status box based on system calibration
-                const calBox = document.getElementById('cal-metric');
-                if (sys === 3) {
-                    calBox.style.backgroundColor = '#2d5a2d'; // Green
-                } else if (sys > 0) {
-                    calBox.style.backgroundColor = '#6e6e2b'; // Yellow/Olive
+                // Tracking Status
+                const trackingStatus = document.getElementById('tracking-status');
+                if (data.tracking_active) {
+                    trackingStatus.textContent = "Tracking: ACTIVE (Moving)";
+                    trackingStatus.className = "status connected";
                 } else {
-                    calBox.style.backgroundColor = '#5a2d2d'; // Red
+                    // Determine WHY it's inactive
+                    if (accel < 2 || gyro < 2) {
+                        trackingStatus.textContent = "Tracking: PAUSED (Need Calib: Accel/Gyro >= 2)";
+                        trackingStatus.className = "status disconnected";
+                    } else {
+                        trackingStatus.textContent = "Tracking: READY (Move to Start)";
+                        trackingStatus.className = "status" // Neutral/Grey
+                        trackingStatus.style.backgroundColor = "#666";
+                        trackingStatus.style.color = "#fff";
+                    }
                 }
             }
         }
         
         // Update 3D visualization
         function updateIMUVisualization(data) {
-            // Update position
-            imuCube.position.set(
-                data.position.px,
-                data.position.py,
-                data.position.pz
-            );
+            // Check if we just became calibrated - set reference orientation
+            const cal = data.calibration;
+            const nowCalibrated = (cal.accel >= 2 && cal.gyro >= 2);
+            if (nowCalibrated && !isCalibrated) {
+                // Just calibrated - store initial quaternion as reference
+                // This makes the cube start "straight" relative to when it was calibrated
+                initialQuaternion = new THREE.Quaternion(
+                    data.quaternion.qx,
+                    data.quaternion.qy,
+                    data.quaternion.qz,
+                    data.quaternion.qw
+                ).inverse(); // Store inverse so we can "subtract" it later
+                isCalibrated = true;
+            }
+            
+            // Update position - X and Z inverted, Y correct
+            const scaledX = -data.position.px * positionScale; // X axis (left/right) - inverted
+            const scaledY = data.position.pz * positionScale;  // Y axis (up/down) - correct
+            const scaledZ = data.position.py * positionScale;   // Z axis (forward/back) - inverted
+            
+            imuCube.position.set(scaledX, scaledY, scaledZ);
             
             // Update rotation using quaternion
-            const quaternion = new THREE.Quaternion(
+            let quaternion = new THREE.Quaternion(
                 data.quaternion.qx,
                 data.quaternion.qy,
                 data.quaternion.qz,
                 data.quaternion.qw
             );
+            
+            // Apply reference orientation so cube starts "straight" when calibrated
+            if (initialQuaternion) {
+                quaternion = quaternion.multiply(initialQuaternion);
+            }
+            
             imuCube.setRotationFromQuaternion(quaternion);
             
-            // Add to trail
-            trail.push({
-                position: data.position,
-                timestamp: data.timestamp
-            });
+            // Stroke visualization
+            const strokeCount = data.stroke_count || 0;
+            const isTracking = data.tracking_active || false;
             
-            // Keep trail length manageable
-            if (trail.length > 100) {
-                trail.shift();
+            // Update stroke count display
+            document.getElementById('stroke-count').textContent = strokeCount;
+            
+            // If new stroke started, save previous stroke trail and start new one
+            if (strokeCount > lastStrokeCount) {
+                // Save current stroke as a trail line
+                if (currentStrokePoints.length > 1) {
+                    createStrokeTrail(currentStrokePoints, strokeCount - 1);
+                }
+                // Start new stroke
+                currentStrokePoints = [];
+                lastStrokeCount = strokeCount;
+            }
+            
+            // Add point to current stroke if tracking
+            if (isTracking) {
+                currentStrokePoints.push(new THREE.Vector3(scaledX, scaledY, scaledZ));
+                // Limit current stroke points to prevent memory issues
+                if (currentStrokePoints.length > 500) {
+                    currentStrokePoints.shift();
+                }
             }
             
             // Update charts
             updateCharts(data);
+        }
+        
+        // Create a visual trail for a completed stroke
+        function createStrokeTrail(points, strokeIndex) {
+            if (points.length < 2) return;
+            
+            const geometry = new THREE.BufferGeometry().setFromPoints(points);
+            // Color each stroke differently
+            const hue = (strokeIndex * 60) % 360; // Cycle through colors
+            const color = new THREE.Color().setHSL(hue / 360, 0.7, 0.5);
+            const material = new THREE.LineBasicMaterial({ 
+                color: color,
+                linewidth: 2,
+                opacity: 0.8,
+                transparent: true
+            });
+            const line = new THREE.Line(geometry, material);
+            scene.add(line);
+            strokeTrails.push(line);
+            
+            // Keep only last 20 strokes visible
+            if (strokeTrails.length > 20) {
+                const oldTrail = strokeTrails.shift();
+                scene.remove(oldTrail);
+                oldTrail.geometry.dispose();
+                oldTrail.material.dispose();
+            }
         }
         
         // Update charts with new data and smoothing
@@ -668,6 +786,30 @@
         function resetView() {
             camera.position.set(3, 3, 3);
             camera.lookAt(0, 0, 0);
+        }
+        
+        // Clear all stroke trails and reset count
+        function clearStrokes() {
+            strokeTrails.forEach(trail => {
+                scene.remove(trail);
+                trail.geometry.dispose();
+                trail.material.dispose();
+            });
+            strokeTrails = [];
+            currentStrokePoints = [];
+            lastStrokeCount = 0;
+            // Reset stroke count display
+            document.getElementById('stroke-count').textContent = '0';
+            // Send reset request to server
+            fetch('/reset', { method: 'POST' }).catch(err => console.log('Reset request failed:', err));
+        }
+
+        function updateScale(value) {
+            const numeric = Math.max(0.1, Math.min(10, parseFloat(value) || 1));
+            positionScale = numeric;
+            document.getElementById('scaleSlider').value = numeric;
+            document.getElementById('scaleInput').value = numeric.toFixed(1);
+            document.getElementById('scaleValue').textContent = numeric.toFixed(1) + '×';
         }
         
         // Initialize when page loads

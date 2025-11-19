@@ -23,6 +23,30 @@ clients = []
 serial_port = None
 last_cal_print_time = 0
 last_cal_status = {}
+stroke_processor_instance = None  # Will be set in main
+
+class SimpleKalmanFilter:
+    """
+    A simplified 1D Kalman filter implementation for single-value signals (like acceleration).
+    Math:
+        x_est = x_pred + K * (meas - x_pred)
+    """
+    def __init__(self, process_noise, measurement_noise, estimation_error, initial_value):
+        self.Q = process_noise # Process noise covariance
+        self.R = measurement_noise # Measurement noise covariance
+        self.P = estimation_error # Estimation error covariance
+        self.X = initial_value # Value state estimate (x)
+
+    def update(self, measurement):
+        # Prediction update (assume constant state)
+        self.P = self.P + self.Q
+
+        # Measurement update
+        K = self.P / (self.P + self.R)
+        self.X = self.X + K * (measurement - self.X)
+        self.P = (1 - K) * self.P
+        
+        return self.X
 
 # --- This class contains your new logic ---
 class StrokeProcessor:
@@ -36,36 +60,36 @@ class StrokeProcessor:
         self.last_timestamp_ms = None
         self.in_stroke = False
         
-        # --- You must tune these values! ---
-        self.STROKE_START_GYRO_THRESHOLD = 2.0  # rad/s
-        self.STROKE_END_GYRO_THRESHOLD = 0.5    # rad/s
-
-        '''
-        first calib phase:
-            need to calibrate sys, accel, mag, gyro (follow the data sheet, 5/6 seconds each position).
-
-            during calib phase: ask user to place arm flat (first position), then go through 
-            the stroke positions.
-
-            NEED TO DETERMINE A STROKE CYCLE: maybe from 
-            init_position: 0,0,0 -> back to final_position: 0,0,0 +/- (threshold for integration error).
-
-            INTEGRATION PER STROKE CYCLE!
-
-            "start stroke" -> for prototyping, maybe ask user to just press button to start stroke.
-
-            integrate -> constantly check if stroke cycle ended -> if curr_position == final_position -> 
-                set pos all axes to 0 (THIS STEP WILL ENSURE INTEGRATION BIAS DOESNT ACCUMULATE?)
-
-            
-            INTEGRATION FUNCTION:
-                get timestamps -> get dt
-                get lia, all axes;
-                get vel, all axes from lia;
-                get pos, all axes from vel.
-
+        # Kalman Filters for Acceleration (X, Y, Z)
+        # TUNING for HUMAN MOTION:
+        # Q (Process Noise): 0.3 -> High because human motion changes accel rapidly.
+        # R (Measurement Noise): 0.1 -> Low because BNO055 is relatively precise.
+        # This reduces "lag" so we catch the start of the stroke instantly.
+        self.kalman_ax = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
+        self.kalman_ay = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
+        self.kalman_az = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         
-        '''
+        # --- You must tune these values! ---
+        # SWIMMING TUNING:
+        # - Start: Sensitive enough to catch the catch/pull.
+        # - End: "Loose" enough to recognize the glide/turnaround as a stop.
+        self.STROKE_START_GYRO_THRESHOLD = 0.6  # rad/s (Lowered for smoother swim starts)
+        self.STROKE_START_ACCEL_THRESHOLD = 0.25  # m/s^2
+        
+        # TIGHTER END THRESHOLDS:
+        # You must be VERY still to end a stroke.
+        # This prevents "slowing down" during the stroke from splitting it into two.
+        self.STROKE_END_GYRO_THRESHOLD = 0.2    # rad/s (Slightly relaxed to catch stops)
+        self.STROKE_END_ACCEL_THRESHOLD = 0.25  # m/s^2 (Raised: stop tracking sooner to prevent drift)
+        
+        self.MIN_CAL_LEVEL = 2
+        self.ACCEL_DEADZONE = 0.2 # m/s^2 (Raised: ignore more noise)
+        self.VELOCITY_DECAY = 0.98 # Base friction
+        self.STATIONARY_FRICTION = 0.80 # Strong braking when accel is low
+
+        self.stroke_count = 0 # Track number of strokes
+        self.stroke_start_time = 0 # To track duration
+        self.MIN_STROKE_DURATION = 0.5 # Seconds. Ignore short accidental triggers.
 
     def process_data(self, data_dict):
         """
@@ -102,6 +126,9 @@ class StrokeProcessor:
             # Get calibration status
             calibration = data_dict['cal']
             cal_sys = calibration['sys']
+            cal_accel = calibration.get('accel', 0)
+            cal_gyro = calibration.get('gyro', 0)
+            cal_mag = calibration.get('mag', 0)
 
         except KeyError as e:
             # This will fire if you haven't updated your C code!
@@ -110,33 +137,127 @@ class StrokeProcessor:
             return None
 
         # 3. --- Check Calibration BEFORE doing any logic ---
-        if cal_sys < 3:
-            # If not calibrated, reset everything
+        # BNO055 TIP: "System" status (sys) often drops to 0 during movement.
+        # We should NOT stop tracking just because SYS=0, provided Accel/Gyro are good.
+        if (
+            cal_accel < self.MIN_CAL_LEVEL
+            or cal_gyro < self.MIN_CAL_LEVEL
+        ):
+            # If Accel or Gyro are bad, we cannot integrate safely.
             self.in_stroke = False
-            self.position = [0.0, 0.0, 0.0]
+            # Reset velocity but keep position static.
             self.velocity = [0.0, 0.0, 0.0]
         else:
-            # --- System is calibrated, run stroke logic ---
+            # --- System is sufficiently calibrated, run stroke logic ---
+            # Apply Kalman Filter to Raw Linear Acceleration (LIA)
+            lia_x = self.kalman_ax.update(lia_x)
+            lia_y = self.kalman_ay.update(lia_y)
+            lia_z = self.kalman_az.update(lia_z)
+
+            accel_mag = math.sqrt(lia_x * lia_x + lia_y * lia_y + lia_z * lia_z)
             # 4. Stroke Detection Logic
             if not self.in_stroke:
-                if gyro_y > self.STROKE_START_GYRO_THRESHOLD:
+                if (
+                    abs(gyro_y) > self.STROKE_START_GYRO_THRESHOLD
+                    or accel_mag > self.STROKE_START_ACCEL_THRESHOLD
+                ):
                     self.in_stroke = True
-                    self.position = [0.0, 0.0, 0.0]
-                    self.velocity = [0.0, 0.0, 0.0]
+                    self.stroke_start_time = t_ms
+                    self.position = [0.0, 0.0, 0.0] # Reset position on new stroke
+                    self.velocity = [0.0, 0.0, 0.0] 
             else:
-                if abs(gyro_y) < self.STROKE_END_GYRO_THRESHOLD:
-                    self.in_stroke = False
+                # We are IN a stroke. Check if we should stop.
+                # Only stop if BOTH Accel and Gyro are very low.
+                if (
+                    abs(gyro_y) < self.STROKE_END_GYRO_THRESHOLD
+                    and accel_mag < self.STROKE_END_ACCEL_THRESHOLD
+                ):
+                    duration_sec = (t_ms - self.stroke_start_time) / 1000.0
+                    # Only count as a valid stroke if it lasted long enough (e.g. > 0.5s)
+                    if duration_sec > self.MIN_STROKE_DURATION:
+                        self.stroke_count += 1
+                        self.in_stroke = False
+                    elif duration_sec > 20.0:
+                         # Safety: Timeout if stroke is suspiciously long (>20s)
+                         self.in_stroke = False
+                    else:
+                        # If too short, we don't count it, but we might stop tracking
+                        # if the person really stopped.
+                        # Let's say if it's SUPER short (<0.5s), it was just noise.
+                        # We stop tracking but don't increment count.
+                        self.in_stroke = False
             
-            # 5. Integration Logic (Only runs if calibrated)
-            self.velocity[0] += lia_x * dt
-            self.velocity[1] += lia_y * dt
-            self.velocity[2] += lia_z * dt
-            
-            self.position[0] += self.velocity[0] * dt
-            self.position[1] += self.velocity[1] * dt
-            self.position[2] += self.velocity[2] * dt
+            # 5. Integration Logic (Only runs if calibrated AND in stroke)
+            if self.in_stroke:
+                # --- Rotate Sensor Acceleration to World Frame ---
+                # Formula: v_world = q * v_sensor * q_conjugate
+                qw, qx, qy, qz = quat_w, quat_x, quat_y, quat_z
+                ax, ay, az = lia_x, lia_y, lia_z
+
+                ww = qw * qw
+                xx = qx * qx
+                yy = qy * qy
+                zz = qz * qz
+                wx = qw * qx
+                wy = qw * qy
+                wz = qw * qz
+                xy = qx * qy
+                xz = qx * qz
+                yz = qy * qz
+
+                world_ax = (ww + xx - yy - zz) * ax + 2 * (xy - wz) * ay + 2 * (xz + wy) * az
+                world_ay = 2 * (xy + wz) * ax + (ww - xx + yy - zz) * ay + 2 * (yz - wx) * az
+                world_az = 2 * (xz - wy) * ax + 2 * (yz + wx) * ay + (ww - xx - yy + zz) * az
+
+                # --- Apply Deadzone to Acceleration ---
+                # If acceleration is low, assume it's noise and clamp to 0
+                is_accelerating = False
+                if abs(world_ax) < self.ACCEL_DEADZONE: 
+                    world_ax = 0.0
+                else: is_accelerating = True
+                
+                if abs(world_ay) < self.ACCEL_DEADZONE: 
+                    world_ay = 0.0
+                else: is_accelerating = True
+                
+                if abs(world_az) < self.ACCEL_DEADZONE: 
+                    world_az = 0.0
+                else: is_accelerating = True
+
+                self.velocity[0] += world_ax * dt
+                self.velocity[1] += world_ay * dt
+                self.velocity[2] += world_az * dt
+                
+                # --- Smart Friction/Decay ---
+                # If we are actively accelerating, use light friction (fluid motion).
+                # If we are NOT accelerating (gliding/coasting/stopping), use heavy friction
+                # to kill drift before it builds up.
+                decay = self.VELOCITY_DECAY if is_accelerating else self.STATIONARY_FRICTION
+                
+                self.velocity[0] *= decay
+                self.velocity[1] *= decay
+                self.velocity[2] *= decay
+                
+                self.position[0] += self.velocity[0] * dt
+                # INVERTING position on Y and Z axes to match screen intuition
+                # X: Right is Right
+                # Y: Forward motion (sensor Y) should be Up/Away on screen? Or just invert sensor Y?
+                # Z: Up motion (sensor Z)
+                
+                # Standard mapping:
+                # Position[0] += Vel[0] * dt
+                # Position[1] += Vel[1] * dt
+                # Position[2] += Vel[2] * dt
+                
+                # If visualizer is inverted, we flip the signs here:
+                self.position[1] += self.velocity[1] * dt
+                self.position[2] += self.velocity[2] * dt
+            else:
+                # Damp velocity when no stroke is active to prevent drift
+                self.velocity = [0.0, 0.0, 0.0]
 
         # 6. Create the final JSON for the visualizer
+        # All directions are inverted, so flip all signs
         vis_data = {
             "timestamp": t_ms,
             "quaternion": {"qw": quat_w, "qx": quat_x, "qy": quat_y, "qz": quat_z},
@@ -144,7 +265,9 @@ class StrokeProcessor:
             "calibration": calibration, # Pass full calibration status to UI
             
             "acceleration": {"ax": lia_x, "ay": lia_y, "az": lia_z},  # Use linear acceleration (LIA)
-            "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']}
+            "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
+            "tracking_active": self.in_stroke,
+            "stroke_count": self.stroke_count
         }
         
         return json.dumps(vis_data)
@@ -171,6 +294,23 @@ class SSEHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b"Error: 'simple_imu_3d.html' not found in this directory.")
                 print("ERROR: 'simple_imu_3d.html' not found.", flush=True)
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def do_POST(self):
+        if self.path == '/reset':
+            global stroke_processor_instance
+            if stroke_processor_instance:
+                stroke_processor_instance.stroke_count = 0
+                stroke_processor_instance.position = [0.0, 0.0, 0.0]
+                stroke_processor_instance.velocity = [0.0, 0.0, 0.0]
+                stroke_processor_instance.in_stroke = False
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(b'{"status": "reset"}')
         else:
             self.send_response(404)
             self.end_headers()
@@ -283,14 +423,29 @@ def serial_receiver(processor: StrokeProcessor):
                                 cal_accel = cal_status.get('accel', 0)
                                 cal_mag = cal_status.get('mag', 0)
                                 
+                                # Provide helpful hints based on missing calibration
+                                hint = ""
+                                if cal_accel < 3:
+                                    hint = "[TIP: Place sensor in 6 different stable positions for ACCEL]"
+                                elif cal_mag < 3:
+                                    hint = "[TIP: Move in figure-8 for MAG]"
+                                elif cal_gyro < 3:
+                                    hint = "[TIP: Leave sensor completely still for GYRO]"
+                                
+                                # Stroke status
+                                status_str = "ACTIVE" if processor.in_stroke else "IDLE"
+                                count_str = f"Strokes: {processor.stroke_count}"
+                                
                                 # Use print() with carriage return to update in-place
-                                print(f"CALIBRATION STATUS: SYS={cal_sys} | GYRO={cal_gyro} | ACCEL={cal_accel} | MAG={cal_mag}    ", end='\r', flush=True)
+                                print(f"CALIB: S={cal_sys} G={cal_gyro} A={cal_accel} M={cal_mag} | {status_str} | {count_str} | {hint}          ", end='\r', flush=True)
                                 
                                 last_cal_print_time = current_time
                                 last_cal_status = cal_status
                                 
-                                if cal_sys == 3:
-                                    print("\n--- SYSTEM FULLY CALIBRATED! ---", flush=True)
+                                if cal_accel >= 2 and cal_gyro >= 2:
+                                    print(f"\n--- SENSORS READY (A={cal_accel} G={cal_gyro}) [{status_str}] ---", flush=True)
+                                elif cal_accel < 2:
+                                    print("\n--- Waiting for Accelerometer (Rotate Sensor) ---", flush=True)
 
                     except json.JSONDecodeError:
                         pass # Ignore non-JSON lines
@@ -336,6 +491,7 @@ if __name__ == "__main__":
             print(f"Invalid port argument '{sys.argv[1]}', using port {port}", flush=True)
     
     stroke_processor = StrokeProcessor()
+    stroke_processor_instance = stroke_processor
     
     receiver_thread = threading.Thread(target=serial_receiver, args=(stroke_processor,), daemon=True)
     receiver_thread.start()
