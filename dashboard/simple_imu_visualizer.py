@@ -40,6 +40,33 @@ class StrokeProcessor:
         self.STROKE_START_GYRO_THRESHOLD = 2.0  # rad/s
         self.STROKE_END_GYRO_THRESHOLD = 0.5    # rad/s
 
+        '''
+        first calib phase:
+            need to calibrate sys, accel, mag, gyro (follow the data sheet, 5/6 seconds each position).
+
+            during calib phase: ask user to place arm flat (first position), then go through 
+            the stroke positions.
+
+            NEED TO DETERMINE A STROKE CYCLE: maybe from 
+            init_position: 0,0,0 -> back to final_position: 0,0,0 +/- (threshold for integration error).
+
+            INTEGRATION PER STROKE CYCLE!
+
+            "start stroke" -> for prototyping, maybe ask user to just press button to start stroke.
+
+            integrate -> constantly check if stroke cycle ended -> if curr_position == final_position -> 
+                set pos all axes to 0 (THIS STEP WILL ENSURE INTEGRATION BIAS DOESNT ACCUMULATE?)
+
+            
+            INTEGRATION FUNCTION:
+                get timestamps -> get dt
+                get lia, all axes;
+                get vel, all axes from lia;
+                get pos, all axes from vel.
+
+        
+        '''
+
     def process_data(self, data_dict):
         """
         Processes a full data dictionary from the sensor.
