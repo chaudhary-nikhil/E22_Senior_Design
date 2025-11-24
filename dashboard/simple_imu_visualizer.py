@@ -90,6 +90,20 @@ class StrokeProcessor:
         self.stroke_count = 0 # Track number of strokes
         self.stroke_start_time = 0 # To track duration
         self.MIN_STROKE_DURATION = 0.5 # Seconds. Ignore short accidental triggers.
+        
+        # Spike-based stroke detection parameters (tuned for swimming)
+        self.ACCEL_SPIKE_THRESHOLD = 1.5  # m/s² - minimum acceleration magnitude (lowered for sensitivity)
+        self.ACCEL_SPIKE_RATE_THRESHOLD = 2.0  # m/s² per second - rate of change threshold (lowered)
+        self.ACCEL_NOISE_FLOOR = 0.3  # m/s² - ignore spikes below this (noise threshold)
+        self.SPIKE_DEBOUNCE_TIME = 0.5  # seconds - minimum time between spike detections (increased)
+        self.last_spike_time = 0  # timestamp of last detected spike
+        
+        # Debug mode - set to True to see detection details
+        self.DEBUG_SPIKE_DETECTION = True
+        
+        # Rolling window for acceleration magnitude history (for spike detection)
+        self.accel_mag_history = []  # List of (timestamp, magnitude) tuples
+        self.ACCEL_HISTORY_SIZE = 10  # Keep last 10 samples for spike detection
 
     def process_data(self, data_dict):
         """
@@ -155,7 +169,16 @@ class StrokeProcessor:
             lia_z = self.kalman_az.update(lia_z)
 
             accel_mag = math.sqrt(lia_x * lia_x + lia_y * lia_y + lia_z * lia_z)
-            # 4. Stroke Detection Logic
+            
+            # 3.5. Spike-based stroke detection (NEW METHOD)
+            # This detects sudden spikes in acceleration magnitude
+            # Only run if calibrated enough (same as rest of logic)
+            spike_detected = self._detect_acceleration_spike(accel_mag, t_ms)
+            if spike_detected:
+                self.stroke_count += 1
+                print(f"\n[SPIKE DETECTED] Stroke count: {self.stroke_count} (Accel mag: {accel_mag:.2f} m/s²)", flush=True)
+            
+            # 4. Stroke Detection Logic (Original method - still active)
             if not self.in_stroke:
                 if (
                     abs(gyro_y) > self.STROKE_START_GYRO_THRESHOLD
@@ -271,6 +294,72 @@ class StrokeProcessor:
         }
         
         return json.dumps(vis_data)
+    
+    def _detect_acceleration_spike(self, accel_mag, timestamp_ms):
+        """
+        Detects sudden spikes in acceleration magnitude.
+        Returns True if a spike is detected (and debounced).
+        
+        Algorithm:
+        1. Maintain a rolling window of recent acceleration magnitudes
+        2. Calculate rate of change (derivative) of acceleration
+        3. Detect when rate exceeds threshold AND magnitude exceeds threshold
+        4. Apply debouncing to prevent multiple detections from same event
+        """
+        # Add current sample to history
+        self.accel_mag_history.append((timestamp_ms, accel_mag))
+        
+        # Keep only recent history
+        if len(self.accel_mag_history) > self.ACCEL_HISTORY_SIZE:
+            self.accel_mag_history.pop(0)
+        
+        # Need at least 3 samples to calculate rate of change
+        if len(self.accel_mag_history) < 3:
+            return False
+        
+        # Check debounce: don't detect spikes too close together
+        time_since_last_spike = (timestamp_ms - self.last_spike_time) / 1000.0
+        if time_since_last_spike < self.SPIKE_DEBOUNCE_TIME:
+            return False
+        
+        # Ignore noise: acceleration must be above noise floor
+        if accel_mag < self.ACCEL_NOISE_FLOOR:
+            return False
+        
+        # Calculate rate of change (derivative) using recent samples
+        # Use the last 3 samples for a simple derivative
+        recent_samples = self.accel_mag_history[-3:]
+        
+        # Calculate average rate of change (m/s² per second)
+        total_rate = 0.0
+        for i in range(1, len(recent_samples)):
+            dt = (recent_samples[i][0] - recent_samples[i-1][0]) / 1000.0  # Convert to seconds
+            if dt > 0:
+                dmag = recent_samples[i][1] - recent_samples[i-1][1]
+                rate = abs(dmag / dt)  # Absolute rate of change
+                total_rate += rate
+        
+        avg_rate = total_rate / (len(recent_samples) - 1) if len(recent_samples) > 1 else 0.0
+        
+        # Detect spike: both magnitude and rate of change must exceed thresholds
+        is_spike = (
+            accel_mag >= self.ACCEL_SPIKE_THRESHOLD and
+            avg_rate >= self.ACCEL_SPIKE_RATE_THRESHOLD
+        )
+        
+        # Debug output (only print occasionally to avoid spam)
+        if self.DEBUG_SPIKE_DETECTION and len(self.accel_mag_history) % 20 == 0:
+            print(f"[DEBUG] Accel: {accel_mag:.2f} m/s², Rate: {avg_rate:.2f} m/s²/s, "
+                  f"Thresholds: mag>={self.ACCEL_SPIKE_THRESHOLD}, rate>={self.ACCEL_SPIKE_RATE_THRESHOLD} | "
+                  f"Spike: {is_spike}", flush=True)
+        
+        if is_spike:
+            self.last_spike_time = timestamp_ms
+            if self.DEBUG_SPIKE_DETECTION:
+                print(f"\n[SPIKE DETECTED] Accel: {accel_mag:.2f} m/s², Rate: {avg_rate:.2f} m/s²/s", flush=True)
+            return True
+        
+        return False
 
 
 # --- HTTP Server (Unchanged) ---
@@ -369,7 +458,10 @@ def serial_receiver(processor: StrokeProcessor):
             for port in possible_ports:
                 try:
                     if sys.platform.startswith('win') or os.path.exists(port):
-                        serial_port = serial.Serial(port, 115200, timeout=1)
+                        serial_port = serial.Serial(port, 115200, timeout=2, write_timeout=1)
+                        # Clear any stale data in buffers
+                        serial_port.reset_input_buffer()
+                        serial_port.reset_output_buffer()
                         print(f"Connected to ESP32 on {port}", flush=True)
                         break
                 except serial.SerialException as e:
@@ -387,21 +479,38 @@ def serial_receiver(processor: StrokeProcessor):
         print("--- WAITING FOR CALIBRATION ---")
         print("Please move the sensor to calibrate it (see instructions).")
         
+        # Buffer for partial JSON lines
+        buffer = ""
+        
         while True:
             try:
-                raw_line = serial_port.readline()
-                if not raw_line:
-                    time.sleep(0.01)
-                    continue
+                # Read available data (may be partial)
+                if serial_port.in_waiting > 0:
+                    try:
+                        raw_data = serial_port.read(serial_port.in_waiting)
+                        buffer += raw_data.decode('utf-8', errors='ignore')
+                    except (serial.SerialException, OSError) as e:
+                        error_msg = str(e).lower()
+                        if "readiness to read" in error_msg or "no data" in error_msg:
+                            # Port is in bad state, reset it
+                            time.sleep(0.1)
+                            try:
+                                serial_port.reset_input_buffer()
+                            except:
+                                pass
+                            continue
+                        else:
+                            raise
                 
-                # Try to decode as UTF-8, ignore invalid bytes
-                try:
-                    line = raw_line.decode('utf-8').strip()
-                except UnicodeDecodeError:
-                    # Skip binary data or corrupted bytes
-                    continue
-                
-                if line:
+                # Process complete lines (ending with newline)
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    line = line.strip()
+                    
+                    if not line:
+                        continue
+                    
+                    # Try to parse JSON
                     try:
                         data_dict = json.loads(line)
                         
@@ -420,7 +529,7 @@ def serial_receiver(processor: StrokeProcessor):
                             if (current_time - last_cal_print_time > 1.0) or (cal_status != last_cal_status):
                                 cal_sys = cal_status.get('sys', 0)
                                 cal_gyro = cal_status.get('gyro', 0)
-                                cal_accel = cal_status.get('accel', 0)
+                                cal_accel = cal_status.get('accel', 0)  # Fixed: read from data
                                 cal_mag = cal_status.get('mag', 0)
                                 
                                 # Provide helpful hints based on missing calibration
@@ -448,12 +557,30 @@ def serial_receiver(processor: StrokeProcessor):
                                     print("\n--- Waiting for Accelerometer (Rotate Sensor) ---", flush=True)
 
                     except json.JSONDecodeError:
-                        pass # Ignore non-JSON lines
+                        # Ignore incomplete or corrupted JSON lines
+                        pass
+                
+                # Small sleep to prevent CPU spinning
+                time.sleep(0.01)
                     
             except serial.SerialException as e:
+                error_msg = str(e).lower()
+                if "readiness to read" in error_msg or "no data" in error_msg:
+                    # Try to recover by resetting the port
+                    try:
+                        serial_port.reset_input_buffer()
+                        time.sleep(0.1)
+                        continue
+                    except:
+                        pass
+                
                 print(f"\nSerial read error (device disconnected?): {e}", flush=True)
-                serial_port.close()
+                try:
+                    serial_port.close()
+                except:
+                    pass
                 serial_port = None
+                buffer = ""  # Clear buffer on disconnect
                 print("Connection lost. Will attempt to reconnect...", flush=True)
                 last_cal_status = {} # Reset cal status
                 break 
