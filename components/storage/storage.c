@@ -13,13 +13,12 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <inttypes.h>   // PRIu32
-#include <stdlib.h>     // malloc, free
-#include <unistd.h>     // unlink, fsync
+#include <stdlib.h>     
+#include <unistd.h>     
 #include <stdbool.h>
 #include <errno.h>      // strerror
-#include <math.h>       // NAN
+#include <math.h>    
 
-// Include your struct (ensure storage.h or a separate bno_types.h declares it)
 #include "bno055.h"  // contains typedef bno055_sample_t { ... }
 
 static const char *TAG = "STORAGE";
