@@ -225,9 +225,9 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     }
     
     // Convert to m/s² (LSB = 1 mg = 0.001 m/s²)
-    out->ax = (float)ax_raw / 1000.0f;
-    out->ay = (float)ay_raw / 1000.0f;
-    out->az = (float)az_raw / 1000.0f;
+    out->ax = (float)ax_raw / 100.0f;
+    out->ay = (float)ay_raw / 100.0f;
+    out->az = (float)az_raw / 100.0f;
     
     // Read gyroscope data
     int16_t gx_raw, gy_raw, gz_raw;
@@ -238,9 +238,9 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     }
     
     // Convert to rad/s (LSB = 1/900 dps, convert dps to rad/s)
-    out->gx = (float)gx_raw / 900.0f * (3.14159265359f / 180.0f);
-    out->gy = (float)gy_raw / 900.0f * (3.14159265359f / 180.0f);
-    out->gz = (float)gz_raw / 900.0f * (3.14159265359f / 180.0f);
+    out->gx = (float)gx_raw / 16.0f * (3.14159265359f / 180.0f);
+    out->gy = (float)gy_raw / 16.0f * (3.14159265359f / 180.0f);
+    out->gz = (float)gz_raw / 16.0f * (3.14159265359f / 180.0f);
     
     // Read magnetometer data
     int16_t mx_raw, my_raw, mz_raw;
@@ -283,6 +283,20 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     out->qy = (float)qy_raw / 16384.0f;
     out->qz = (float)qz_raw / 16384.0f;
     
+    // Read Linear Acceleration data (Registers 0x28-0x2D)
+    int16_t lia_x_raw, lia_y_raw, lia_z_raw;
+    if (bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_X_LSB_ADDR, &lia_x_raw) != ESP_OK ||
+        bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_Y_LSB_ADDR, &lia_y_raw) != ESP_OK ||
+        bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_Z_LSB_ADDR, &lia_z_raw) != ESP_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // Convert to m/s^2 (LSB = 1/100 m/s^2)
+    // This scaling comes from the Bosch datasheet/header (BNO055_LINEAR_ACCEL_DIV_MSQ)
+    out->lia_x = (float)lia_x_raw / 100.0f;
+    out->lia_y = (float)lia_y_raw / 100.0f;
+    out->lia_z = (float)lia_z_raw / 100.0f;
+
     // Read temperature
     uint8_t temp_raw;
     if (bno055_read8(port, addr, BNO055_TEMP_ADDR, &temp_raw) == ESP_OK) {

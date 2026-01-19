@@ -113,7 +113,7 @@ ls /dev/cu.usbserial-*
 # Try different baud rates
 idf.py -p /dev/cu.usbserial-0001 -b 115200 monitor
 ```
-
+source esp-idf/export.sh
 ### Python Server Issues
 ```bash
 # Kill existing Python processes

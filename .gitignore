@@ -34,6 +34,10 @@ venv/
 *.tmp
 .cache/
 
+# Session data
+sessions/
+dashboard/server/sessions/
+
 # Flash download tool config
 flash_project_args
 
