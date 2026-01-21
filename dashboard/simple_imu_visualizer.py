@@ -74,6 +74,7 @@ class StrokeProcessor:
         self.velocity = [0.0, 0.0, 0.0]  # vx, vy, vz
         self.last_timestamp_ms = None
         self.in_stroke = False
+        self.just_reset = False
         
         # Kalman Filters for Acceleration (X, Y, Z)
         # TUNING for HUMAN MOTION:
@@ -172,7 +173,6 @@ class StrokeProcessor:
         self.stroke_count = 0  # Track number of strokes
         self.stroke_start_time = 0  # To track duration
         self.MIN_STROKE_DURATION = 0.5  # Seconds for position tracking
-        self.just_reset = False  # Flag to confirm reset to client
         
         # DEBUG: Track stroke detection state for troubleshooting
         self.debug_world_az = 0.0
@@ -502,7 +502,6 @@ class StrokeProcessor:
             "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
             "tracking_active": self.in_stroke,
             "stroke_count": self.stroke_count,
-            "just_reset": self.just_reset,  # Confirms reset to client
             
             # Stroke detection debug info (helps with threshold tuning)
             "stroke_debug": {
@@ -591,8 +590,6 @@ class SSEHandler(BaseHTTPRequestHandler):
                 stroke_processor_instance.last_wall_impact_time_ms = 0
                 stroke_processor_instance.glide_sample_count = 0
                 stroke_processor_instance.is_gliding = False
-                stroke_processor_instance.just_reset = True  # Signal reset to client
-                print(">>> RESET: Stroke count and position reset to 0", flush=True)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
