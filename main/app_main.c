@@ -8,6 +8,10 @@
 #include "bus_i2c.h"
 #include "bno055.h"
 #include "serial_stream.h"
+#include "storage.h"
+
+#define DEBUG_SD_CARD 0
+#define PRINT_INTERVAL 100
 
 static const char *TAG = "APP";
 
@@ -31,27 +35,83 @@ void app_main(void) {
     // Init serial streaming
     ESP_ERROR_CHECK(serial_stream_init());
 
-    ESP_LOGI(TAG, "All systems initialized, starting real-time IMU streaming via serial");
+    // Init SD card storage (with graceful error handling)
+    esp_err_t storage_err = storage_init();
+    if (storage_err != ESP_OK) {
+        ESP_LOGW(TAG, "SD card storage initialization failed: %s", esp_err_to_name(storage_err));
+        ESP_LOGW(TAG, "Continuing without SD card - data will only be sent via serial");
+    } else {
+        ESP_LOGI(TAG, "SD card storage initialized successfully");
+        // Start recording session immediately
+        storage_err = storage_start_session();
+        if (storage_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to start storage session: %s", esp_err_to_name(storage_err));
+        } else {
+            ESP_LOGI(TAG, "SD card recording session started");
+        }
+    }
+
+    ESP_LOGI(TAG, "All systems initialized, starting real-time IMU streaming via serial and SD card");
 
     TickType_t t0 = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ); // Configurable sampling rate
-
+    int count = 0;
     while (1) {
         if (bno_err == ESP_OK) {
+            count++;
             // BNO055 is available, read real data
             bno055_sample_t s;
             esp_err_t err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &s);
             if (err == ESP_OK) {
                 // Create JSON with all 9-axis data and send via serial
                 char json_data[512];
-                snprintf(json_data, sizeof(json_data),
-                "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
-                (unsigned) s.t_ms, s.ax, s.ay, s.az, s.gx, s.gy, s.gz,
-                s.mx, s.my, s.mz, s.roll, s.pitch, s.yaw,
-                s.qw, s.qx, s.qy, s.qz, s.lia_x, s.lia_y, s.lia_z, s.temp,
-                s.sys_cal, s.gyro_cal, s.accel_cal, s.mag_cal);
+                if(count == PRINT_INTERVAL) {
+                    snprintf(json_data, sizeof(json_data),
+                    "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
+                    (unsigned) s.t_ms, s.ax, s.ay, s.az, s.gx, s.gy, s.gz,
+                    s.mx, s.my, s.mz, s.roll, s.pitch, s.yaw,
+                    s.qw, s.qx, s.qy, s.qz, s.lia_x, s.lia_y, s.lia_z, s.temp,
+                    s.sys_cal, s.gyro_cal, s.accel_cal, s.mag_cal);
+                    count = 0;
+                }
 
                 serial_stream_send_data(json_data);
+
+                // Also write to SD card if storage is available
+                if (storage_err == ESP_OK && storage_is_recording()) {
+                    // For debugging purposes, can you write 1's for all IMU data?
+                    if(DEBUG_SD_CARD) {
+                        s.ax = 1.0f;
+                        s.ay = 1.0f;
+                        s.az = 1.0f;
+                        s.gx = 1.0f;
+                        s.gy = 1.0f;
+                        s.gz = 1.0f;
+                        s.mx = 1.0f;
+                        s.my = 1.0f;
+                        s.mz = 1.0f;
+                        s.roll = 1.0f;
+                        s.pitch = 1.0f;
+                        s.yaw = 1.0f;
+                        s.qw = 1.0f;
+                        s.qx = 1.0f;
+                        s.qy = 1.0f;
+                        s.qz = 1.0f;
+                        s.lia_x = 1.0f;
+                        s.lia_y = 1.0f;
+                        s.lia_z = 1.0f;
+                        s.temp = 1.0f;
+                        s.sys_cal = 1;
+                        s.gyro_cal = 1;
+                        s.accel_cal = 1;
+                        s.mag_cal = 1;
+                    }
+                    
+                    esp_err_t sd_err = storage_enqueue_bno_sample(&s);
+                    if (sd_err != ESP_OK && sd_err != ESP_ERR_INVALID_STATE) {
+                        ESP_LOGW(TAG, "SD card write failed: %s", esp_err_to_name(sd_err));
+                    }
+                }
             } else {
                 ESP_LOGW(TAG, "BNO055 read failed: %s", esp_err_to_name(err));
             }
