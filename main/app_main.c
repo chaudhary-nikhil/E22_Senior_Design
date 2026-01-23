@@ -17,6 +17,7 @@
  */
 
 #include <stdio.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -70,6 +71,10 @@ static bool bno055_available = false;
 static bool storage_available = false;
 static bool wifi_available = false;
 
+// LED blink task handle
+static TaskHandle_t led_blink_task_handle = NULL;
+static volatile bool led_blink_stop = false;
+
 // ============== Button ISR ==============
 static void IRAM_ATTR button_isr_handler(void* arg) {
     uint32_t now = esp_timer_get_time() / 1000;
@@ -82,16 +87,44 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
 // ============== LED Control ==============
 static void led_set(bool on) {
     gpio_set_level(LED_GPIO, on ? 1 : 0);
+    ESP_LOGD(TAG, "LED %s", on ? "ON" : "OFF");
 }
 
 static void led_blink_task(void *arg) {
-    while (current_state == STATE_SYNCING) {
+    ESP_LOGI(TAG, "LED blink task started");
+    led_blink_stop = false;
+    
+    while (!led_blink_stop) {
         gpio_set_level(LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (led_blink_stop) break;
         gpio_set_level(LED_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(200));
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
+    
+    gpio_set_level(LED_GPIO, 0);  // Ensure LED is off when stopping
+    ESP_LOGI(TAG, "LED blink task stopped");
+    led_blink_task_handle = NULL;
     vTaskDelete(NULL);
+}
+
+static void led_blink_start(void) {
+    if (led_blink_task_handle == NULL) {
+        led_blink_stop = false;
+        // Increased stack size to 2048 for safety
+        xTaskCreate(led_blink_task, "led_blink", 2048, NULL, 5, &led_blink_task_handle);
+    }
+}
+
+static void led_blink_stop_and_wait(void) {
+    if (led_blink_task_handle != NULL) {
+        led_blink_stop = true;
+        // Wait for task to finish (max 1 second)
+        for (int i = 0; i < 20 && led_blink_task_handle != NULL; i++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+    gpio_set_level(LED_GPIO, 0);
 }
 
 // ============== State Transitions ==============
@@ -103,6 +136,9 @@ static void transition_to_logging(void) {
     session_sample_count = 0;
     session_start_time = esp_timer_get_time() / 1000;
     
+    // Ensure any previous blink task is stopped
+    led_blink_stop_and_wait();
+    
     // Start SD card session
     if (storage_available) {
         esp_err_t err = storage_start_session();
@@ -111,10 +147,11 @@ static void transition_to_logging(void) {
         }
     }
     
-    led_set(true);  // Solid ON = logging
+    // Turn LED ON solid - logging in progress
+    led_set(true);
     current_state = STATE_LOGGING;
     
-    ESP_LOGI(TAG, "LED ON - Press button to STOP");
+    ESP_LOGI(TAG, "LED ON (GPIO%d) - Recording - Press button to STOP", LED_GPIO);
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -124,18 +161,19 @@ static void transition_to_stopped(void) {
     
     uint32_t duration_ms = (esp_timer_get_time() / 1000) - session_start_time;
     ESP_LOGI(TAG, "Session complete:");
-    ESP_LOGI(TAG, "  Duration: %u ms", duration_ms);
-    ESP_LOGI(TAG, "  Samples: %u", session_sample_count);
+    ESP_LOGI(TAG, "  Duration: %" PRIu32 " ms", duration_ms);
+    ESP_LOGI(TAG, "  Samples: %" PRIu32, session_sample_count);
     
     // Stop SD card session
     if (storage_available) {
         storage_stop_session();
     }
     
-    led_set(false);  // OFF = stopped
+    // Turn LED OFF - stopped
+    led_set(false);
     current_state = STATE_STOPPED;
     
-    ESP_LOGI(TAG, "LED OFF - Press button to SYNC via WiFi");
+    ESP_LOGI(TAG, "LED OFF (GPIO%d) - Press button to SYNC via WiFi", LED_GPIO);
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -144,20 +182,24 @@ static void transition_to_syncing(void) {
     ESP_LOGI(TAG, ">>> STATE: SYNCING");
     ESP_LOGI(TAG, "Preparing data for WiFi transfer...");
     
-    // Start WiFi sync (loads data from SD card)
+    current_state = STATE_SYNCING;
+    
+    // Start LED blink to indicate syncing mode
+    led_blink_start();
+    
+    // Start WiFi sync (loads data from SD card into PSRAM buffer)
     if (wifi_available) {
         esp_err_t err = wifi_server_start_sync();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start sync: %s", esp_err_to_name(err));
+            ESP_LOGI(TAG, "WiFi server still running - visit http://192.168.4.1");
         } else {
+            ESP_LOGI(TAG, "Data loaded into PSRAM buffer");
             ESP_LOGI(TAG, "Connect to WiFi: %s (password: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
             ESP_LOGI(TAG, "Open browser: http://192.168.4.1");
+            ESP_LOGI(TAG, "View JSON data at: http://192.168.4.1/data.json");
         }
     }
-    
-    // Start LED blink task
-    xTaskCreate(led_blink_task, "led_blink", 1024, NULL, 5, NULL);
-    current_state = STATE_SYNCING;
     
     ESP_LOGI(TAG, "LED BLINKING - Press button to return to IDLE");
     ESP_LOGI(TAG, "========================================");
@@ -167,7 +209,10 @@ static void transition_to_idle(void) {
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, ">>> STATE: IDLE");
     
-    // Stop WiFi sync
+    // Stop LED blink task first
+    led_blink_stop_and_wait();
+    
+    // Stop WiFi sync and free PSRAM buffer
     if (wifi_available) {
         wifi_server_stop_sync();
     }
@@ -221,7 +266,15 @@ static void init_gpio(void) {
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&led_cfg);
-    led_set(false);
+    
+    // Quick LED test - blink twice to show it's working
+    ESP_LOGI(TAG, "Testing LED on GPIO%d...", LED_GPIO);
+    for (int i = 0; i < 2; i++) {
+        gpio_set_level(LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(LED_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     
     ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d, LED=GPIO%d", BUTTON_GPIO, LED_GPIO);
 }
