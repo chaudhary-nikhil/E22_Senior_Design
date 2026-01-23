@@ -136,13 +136,16 @@ static esp_err_t start_http_server(void) {
     config.server_port = HTTP_SERVER_PORT;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
+    config.stack_size = 8192;  // Larger stack for JSON generation
+    config.recv_wait_timeout = 10;
+    config.send_wait_timeout = 10;
 
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_register_uri_handler(server, &root_uri);
         httpd_register_uri_handler(server, &status_uri);
         httpd_register_uri_handler(server, &data_uri);
         httpd_register_uri_handler(server, &data_json_uri);
-        ESP_LOGI(TAG, "HTTP server started on port %d", config.server_port);
+        ESP_LOGI(TAG, "HTTP server started on port %d (stack: %d)", config.server_port, config.stack_size);
         return ESP_OK;
     }
 
@@ -350,40 +353,70 @@ esp_err_t wifi_server_start_sync(void) {
         return ESP_OK;
     }
     
-    ESP_LOGI(TAG, "Starting data sync - reading from SD card...");
+    ESP_LOGI(TAG, "Starting data sync...");
     
-    // Allocate buffer from PSRAM (internal RAM is too small for large data)
+    // Give scheduler a chance to run
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
+    // Free any previous buffer
     if (sync_buffer) {
-        free(sync_buffer);
+        heap_caps_free(sync_buffer);
+        sync_buffer = NULL;
     }
+    sync_buffer_count = 0;
+    sync_checksum = 0;
+    
+    // Log memory status before allocation
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "Memory before sync: PSRAM=%zu bytes, Internal=%zu bytes", free_psram, free_internal);
     
     size_t buffer_size = SYNC_BUFFER_MAX_SAMPLES * sizeof(bno055_sample_t);
     ESP_LOGI(TAG, "Allocating %zu bytes from PSRAM for sync buffer...", buffer_size);
     
+    // Yield before allocation
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
     // Try PSRAM first (8MB available on ESP32-S3-WROOM-1)
     sync_buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
     if (!sync_buffer) {
-        // Fallback to internal RAM (unlikely to work for large buffers)
-        ESP_LOGW(TAG, "PSRAM allocation failed, trying internal RAM...");
+        ESP_LOGW(TAG, "PSRAM allocation failed (free: %zu), trying smaller buffer...", free_psram);
+        // Try a smaller buffer
+        buffer_size = 1024 * sizeof(bno055_sample_t);  // ~90KB
+        sync_buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
+    }
+    
+    if (!sync_buffer) {
+        // Last resort: try internal RAM with small buffer
+        ESP_LOGW(TAG, "PSRAM still failed, trying internal RAM...");
+        buffer_size = 256 * sizeof(bno055_sample_t);  // ~22KB
         sync_buffer = malloc(buffer_size);
     }
     
     if (!sync_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate sync buffer (%zu bytes)", buffer_size);
+        ESP_LOGE(TAG, "Failed to allocate sync buffer");
         return ESP_ERR_NO_MEM;
     }
     
-    ESP_LOGI(TAG, "Sync buffer allocated successfully");
+    size_t max_samples = buffer_size / sizeof(bno055_sample_t);
+    ESP_LOGI(TAG, "Sync buffer allocated: %zu bytes for %zu samples", buffer_size, max_samples);
     
-    // Read all data from SD card
-    esp_err_t ret = storage_read_all_bin_into_buffer(sync_buffer, SYNC_BUFFER_MAX_SAMPLES, &sync_buffer_count);
+    // Yield before SD card read
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
+    // Read data from SD card
+    ESP_LOGI(TAG, "Reading from SD card...");
+    esp_err_t ret = storage_read_all_bin_into_buffer(sync_buffer, max_samples, &sync_buffer_count);
+    
+    // Yield after SD read
+    vTaskDelay(pdMS_TO_TICKS(10));
     
     // If no data or error, generate test data for testing WiFi transfer
-    if ((ret != ESP_OK && ret != ESP_ERR_NO_MEM) || sync_buffer_count == 0) {
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to read SD card: %s", esp_err_to_name(ret));
+    if (ret != ESP_OK || sync_buffer_count == 0) {
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "SD read result: %s", esp_err_to_name(ret));
         }
-        ESP_LOGI(TAG, "Generating test data for WiFi testing...");
+        ESP_LOGI(TAG, "No data on SD card - generating test data for WiFi testing...");
         
         sync_buffer_count = 10;  // 10 test samples
         for (size_t i = 0; i < sync_buffer_count; i++) {
@@ -414,22 +447,25 @@ esp_err_t wifi_server_start_sync(void) {
             sync_buffer[i].accel_cal = 3;
             sync_buffer[i].mag_cal = 3;
         }
-        ESP_LOGI(TAG, "Generated %zu test samples for WiFi testing", sync_buffer_count);
+        ESP_LOGI(TAG, "Generated %zu test samples", sync_buffer_count);
+    } else {
+        ESP_LOGI(TAG, "Read %zu samples from SD card", sync_buffer_count);
     }
     
     // Compute checksum for verification
     sync_checksum = compute_checksum(sync_buffer, sync_buffer_count);
     
     is_syncing = true;
+    
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "SYNC READY - Data loaded from SD card");
+    ESP_LOGI(TAG, "SYNC READY");
     ESP_LOGI(TAG, "  Samples: %zu", sync_buffer_count);
     ESP_LOGI(TAG, "  Size: %zu bytes", sync_buffer_count * sizeof(bno055_sample_t));
     ESP_LOGI(TAG, "  CHECKSUM: %" PRIu32, sync_checksum);
-    ESP_LOGI(TAG, "Connect to WiFi: GoldenForm");
+    ESP_LOGI(TAG, "Connect to WiFi: GoldenForm (pw: goldenform123)");
     ESP_LOGI(TAG, "Open: http://192.168.4.1");
-    ESP_LOGI(TAG, "Compare checksum on webpage to verify!");
     ESP_LOGI(TAG, "========================================");
+    
     return ESP_OK;
 }
 
@@ -441,13 +477,16 @@ esp_err_t wifi_server_stop_sync(void) {
     is_syncing = false;
     
     if (sync_buffer) {
-        free(sync_buffer);
+        // Use heap_caps_free for PSRAM-allocated memory
+        heap_caps_free(sync_buffer);
         sync_buffer = NULL;
     }
     sync_buffer_count = 0;
     sync_checksum = 0;
     
-    ESP_LOGI(TAG, "Sync stopped");
+    // Log memory after free
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG, "Sync stopped, PSRAM free: %zu bytes", free_psram);
     return ESP_OK;
 }
 
