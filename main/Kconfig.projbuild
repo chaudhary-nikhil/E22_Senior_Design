@@ -1,4 +1,109 @@
 menu "FormSync Firmware"
+
+menu "Hardware Configuration (ESP32-S3-WROOM-1)"
+
+    comment "=== BNO055 IMU (I2C) ==="
+    
+    config FORMSYNC_I2C_SDA_GPIO
+        int "I2C SDA GPIO"
+        range 0 48
+        default 4
+        help
+            I2C data line. Schematic: GPIO 4
+
+    config FORMSYNC_I2C_SCL_GPIO
+        int "I2C SCL GPIO"
+        range 0 48
+        default 5
+        help
+            I2C clock line. Schematic: GPIO 5
+
+    config FORMSYNC_BNO055_ADDR_GPIO
+        int "BNO055 address select GPIO"
+        range 0 48
+        default 6
+        help
+            Controls BNO055 I2C address (LOW=0x28, HIGH=0x29).
+            Schematic: GPIO 6
+
+    config FORMSYNC_BNO055_INT_GPIO
+        int "BNO055 interrupt GPIO (optional)"
+        range 0 48
+        default 7
+        help
+            BNO055 interrupt output. Schematic: GPIO 7
+
+    comment "=== SD Card (SPI) ==="
+
+    config FORMSYNC_SD_MOSI_GPIO
+        int "SD MOSI GPIO"
+        range 0 48
+        default 47
+        help
+            SPI Master Out Slave In. Schematic: GPIO 47
+
+    config FORMSYNC_SD_MISO_GPIO
+        int "SD MISO GPIO"
+        range 0 48
+        default 14
+        help
+            SPI Master In Slave Out. Schematic: GPIO 14
+
+    config FORMSYNC_SD_SCK_GPIO
+        int "SD SCK GPIO"
+        range 0 48
+        default 21
+        help
+            SPI clock. Schematic: GPIO 21
+
+    config FORMSYNC_SD_CS_GPIO
+        int "SD CS GPIO"
+        range 0 48
+        default 48
+        help
+            SPI chip select. Schematic: GPIO 48
+
+    config FORMSYNC_SD_DETECT_GPIO
+        int "SD card detect GPIO"
+        range 0 48
+        default 11
+        help
+            Card detect pin (active low). Schematic: GPIO 11
+
+    comment "=== LEDs ==="
+
+    config FORMSYNC_LED_1_GPIO
+        int "LED 1 GPIO"
+        range 0 48
+        default 1
+        help
+            Status LED 1. Schematic: GPIO 1
+
+    config FORMSYNC_LED_2_GPIO
+        int "LED 2 GPIO"
+        range 0 48
+        default 2
+        help
+            Status LED 2. Schematic: GPIO 2
+
+    config FORMSYNC_LED_3_GPIO
+        int "LED 3 GPIO"
+        range 0 48
+        default 8
+        help
+            Status LED 3. Schematic: GPIO 8
+
+    comment "=== Other ==="
+
+    config FORMSYNC_HAPTIC_GPIO
+        int "Haptic motor GPIO"
+        range 0 48
+        default 38
+        help
+            Haptic feedback motor. Schematic: GPIO 38
+
+endmenu
+
 config FORMSYNC_SAMPLE_HZ
     int "BNO055 sample rate (Hz)"
     range 25 100

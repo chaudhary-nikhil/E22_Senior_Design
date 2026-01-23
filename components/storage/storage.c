@@ -24,10 +24,10 @@
 
 static const char *TAG = "STORAGE";
 
-// ---------------- New config: batching & format ----------------
-#define STORAGE_TO_BINARY   0         // 1 = write .BIN (fast/small), 0 = CSV
-#define BATCH_CAP           128        // write out when we have this many
-#define FLUSH_INTERVAL_MS   250        // also flush if this much time passes
+// ---------------- Storage config: batching & format ----------------
+#define STORAGE_TO_BINARY   1         // 1 = write .BIN (protobuf-like), 0 = CSV
+#define BATCH_CAP           128       // Flush when batch reaches this size
+#define FLUSH_INTERVAL_MS   250       // Also flush if this much time passes
 
 static bno055_sample_t s_batch[BATCH_CAP];
 static size_t          s_batch_len = 0;
@@ -435,15 +435,20 @@ esp_err_t storage_list_files(char files[][32], uint32_t max_files, uint32_t* act
 // =======================================================
 
 static esp_err_t mount_sd_card(void) {
-    // SPI bus for SD (SPI2 / HSPI)
+    // SD Card SPI pins from Kconfig (matches schematic)
+    // MOSI=GPIO47, MISO=GPIO14, SCK=GPIO21, CS=GPIO48
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = 23,
-        .miso_io_num = 19,
-        .sclk_io_num = 18,
+        .mosi_io_num = CONFIG_FORMSYNC_SD_MOSI_GPIO,
+        .miso_io_num = CONFIG_FORMSYNC_SD_MISO_GPIO,
+        .sclk_io_num = CONFIG_FORMSYNC_SD_SCK_GPIO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
     };
+
+    ESP_LOGI(TAG, "SD SPI pins: MOSI=%d, MISO=%d, SCK=%d, CS=%d",
+             CONFIG_FORMSYNC_SD_MOSI_GPIO, CONFIG_FORMSYNC_SD_MISO_GPIO,
+             CONFIG_FORMSYNC_SD_SCK_GPIO, CONFIG_FORMSYNC_SD_CS_GPIO);
 
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
     if (ret != ESP_OK) {
@@ -453,7 +458,7 @@ static esp_err_t mount_sd_card(void) {
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = 5;
+    slot_config.gpio_cs = CONFIG_FORMSYNC_SD_CS_GPIO;
     slot_config.host_id = SPI2_HOST;
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
