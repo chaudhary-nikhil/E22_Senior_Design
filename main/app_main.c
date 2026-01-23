@@ -267,16 +267,12 @@ static void init_gpio(void) {
     };
     gpio_config(&led_cfg);
     
-    // Quick LED test - blink twice to show it's working
-    ESP_LOGI(TAG, "Testing LED on GPIO%d...", LED_GPIO);
-    for (int i = 0; i < 2; i++) {
-        gpio_set_level(LED_GPIO, 1);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_set_level(LED_GPIO, 0);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+    // Note: ESP32-S3-WROOM-1 module may not have onboard LED on GPIO2
+    // If using a dev board with LED, it will blink. Otherwise just watch serial monitor.
+    gpio_set_level(LED_GPIO, 0);
     
-    ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d, LED=GPIO%d", BUTTON_GPIO, LED_GPIO);
+    ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d (BOOT), LED=GPIO%d", BUTTON_GPIO, LED_GPIO);
+    ESP_LOGI(TAG, "(If no LED visible, just watch serial monitor for state changes)");
 }
 
 static void init_bno055_address_pin(void) {
@@ -384,9 +380,14 @@ void app_main(void) {
 
         // Status update every 5 seconds when idle
         static uint32_t status_counter = 0;
-        if (current_state == STATE_IDLE && ++status_counter >= (5 * CONFIG_FORMSYNC_SAMPLE_HZ)) {
-            status_counter = 0;
-            ESP_LOGI(TAG, "Status: IDLE - Press button to start");
+        if (current_state == STATE_IDLE) {
+            status_counter++;
+            if (status_counter >= (uint32_t)(5 * CONFIG_FORMSYNC_SAMPLE_HZ)) {
+                status_counter = 0;
+                ESP_LOGI(TAG, "Status: IDLE - Press button to start");
+            }
+        } else {
+            status_counter = 0;  // Reset counter when not idle
         }
 
         vTaskDelayUntil(&last_wake, period);
