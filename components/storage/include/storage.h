@@ -88,6 +88,27 @@ esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
                                            size_t out_cap,
                                            size_t *out_len);
 
+// =======================================================
+// SD Card to Serial Streaming (for wireless transfer)
+// =======================================================
+
+/**
+ * @brief Stream all SD card BIN data to serial as JSON.
+ *        Data is sent in same format as live IMU data so web app can receive it.
+ *        Includes start/end markers with {"type":"sd_dump"} messages.
+ * 
+ * @param delay_ms Delay between samples in ms (0 = fast dump, 1-10 = throttled)
+ * @return ESP_OK on success
+ */
+esp_err_t storage_stream_to_serial(uint32_t delay_ms);
+
+/**
+ * @brief Get total sample count across all BIN files on SD card.
+ * @param count Output: total number of samples
+ * @return ESP_OK on success
+ */
+esp_err_t storage_get_total_sample_count(uint32_t *count);
+
 #ifdef __cplusplus
 }
 #endif

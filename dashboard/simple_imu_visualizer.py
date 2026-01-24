@@ -25,6 +25,11 @@ last_cal_print_time = 0
 last_cal_status = {}
 stroke_processor_instance = None  # Will be set in main
 
+# SD Card dump state
+sd_dump_active = False
+sd_dump_samples = []
+sd_dump_file = None
+
 class SimpleKalmanFilter:
     """
     A simplified 1D Kalman filter implementation for single-value signals (like acceleration).
@@ -692,8 +697,75 @@ def serial_receiver(processor: StrokeProcessor):
                     try:
                         data_dict = json.loads(line)
                         
-                        # Ensure data_dict is a dictionary before checking keys
-                        if isinstance(data_dict, dict) and 't' in data_dict and 'lia_x' in data_dict:
+                        # Ensure data_dict is a dictionary
+                        if not isinstance(data_dict, dict):
+                            continue
+                        
+                        # Handle SD card dump control messages
+                        if data_dict.get('type') == 'sd_dump':
+                            global sd_dump_active, sd_dump_samples, sd_dump_file
+                            status = data_dict.get('status')
+                            
+                            if status == 'start':
+                                file_count = data_dict.get('files', 0)
+                                print(f"\n{'='*60}", flush=True)
+                                print(f"📥 SD CARD DUMP STARTED - {file_count} files to transfer", flush=True)
+                                print(f"{'='*60}", flush=True)
+                                sd_dump_active = True
+                                sd_dump_samples = []
+                                # Create dump file with timestamp
+                                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                                dump_filename = f"sd_dump_{timestamp}.json"
+                                sd_dump_file = open(dump_filename, 'w')
+                                sd_dump_file.write('[\n')
+                                print(f"Saving to: {dump_filename}", flush=True)
+                                
+                            elif status == 'end':
+                                total = data_dict.get('total_samples', 0)
+                                print(f"\n{'='*60}", flush=True)
+                                print(f"✅ SD CARD DUMP COMPLETE - {total} samples received", flush=True)
+                                if sd_dump_file:
+                                    sd_dump_file.write('\n]')
+                                    sd_dump_file.close()
+                                    print(f"Data saved to file", flush=True)
+                                    sd_dump_file = None
+                                print(f"{'='*60}\n", flush=True)
+                                sd_dump_active = False
+                                sd_dump_samples = []
+                                
+                            elif status == 'empty':
+                                print(f"\n⚠️  SD card is empty - no data to transfer", flush=True)
+                                
+                            elif status == 'error':
+                                msg = data_dict.get('msg', 'unknown')
+                                print(f"\n❌ SD dump error: {msg}", flush=True)
+                                sd_dump_active = False
+                            continue
+                        
+                        # Handle status messages
+                        if data_dict.get('type') == 'status':
+                            print(f"\n📊 Status: {json.dumps(data_dict)}", flush=True)
+                            continue
+                        
+                        # Handle SD card historical data (has "src":"sd" marker)
+                        if data_dict.get('src') == 'sd':
+                            if sd_dump_file:
+                                # Write to file (add comma separator for JSON array)
+                                if len(sd_dump_samples) > 0:
+                                    sd_dump_file.write(',\n')
+                                sd_dump_file.write(json.dumps(data_dict))
+                                sd_dump_samples.append(data_dict)
+                                
+                                # Progress indicator every 1000 samples
+                                if len(sd_dump_samples) % 1000 == 0:
+                                    print(f"  Received {len(sd_dump_samples)} samples...", end='\r', flush=True)
+                            
+                            # Also broadcast to web app for visualization
+                            broadcast_data(json.dumps(data_dict))
+                            continue
+                        
+                        # Handle live IMU data (normal case)
+                        if 't' in data_dict and 'lia_x' in data_dict:
                             # Process the data (integrates, checks cal, etc.)
                             json_to_broadcast = processor.process_data(data_dict)
                             if json_to_broadcast:
