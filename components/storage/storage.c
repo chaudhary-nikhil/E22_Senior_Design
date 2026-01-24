@@ -25,7 +25,7 @@
 static const char *TAG = "STORAGE";
 
 // ---------------- New config: batching & format ----------------
-#define STORAGE_TO_BINARY   0         // 1 = write .BIN (fast/small), 0 = CSV
+#define STORAGE_TO_BINARY   0        // 1 = write .BIN (fast/small), 0 = CSV
 #define BATCH_CAP           128        // write out when we have this many
 #define FLUSH_INTERVAL_MS   250        // also flush if this much time passes
 
@@ -970,3 +970,163 @@ DONE:
     return ret;
 }
 
+// =======================================================
+// SD Card to Serial Streaming (for wireless transfer to web app)
+// =======================================================
+
+/**
+ * @brief Stream all SD card data to serial as JSON.
+ *        Sends data in same format as live IMU data so web app can receive it.
+ *        Includes special markers for start/end of historical data dump.
+ * 
+ * @param delay_ms Delay between samples in ms (0 = no delay, fast dump)
+ * @return ESP_OK on success
+ */
+esp_err_t storage_stream_to_serial(uint32_t delay_ms) {
+    if (!storage_is_available()) {
+        ESP_LOGE(TAG, "SD card not available for streaming");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Stop recording while we read (prevent file access conflicts)
+    bool was_recording = storage_is_recording();
+    if (was_recording) {
+        storage_stop_session();
+        ESP_LOGI(TAG, "Paused recording for SD card dump");
+    }
+
+    // List all BIN files
+    char files[64][32];
+    uint32_t file_count = 0;
+    esp_err_t err = storage_list_bin_files(files, 64, &file_count, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to list BIN files");
+        if (was_recording) storage_start_session();
+        return err;
+    }
+
+    if (file_count == 0) {
+        ESP_LOGW(TAG, "No BIN files found on SD card");
+        // Send empty dump notification
+        printf("{\"type\":\"sd_dump\",\"status\":\"empty\",\"files\":0}\n");
+        fflush(stdout);
+        if (was_recording) storage_start_session();
+        return ESP_OK;
+    }
+
+    // Send start marker with file count
+    printf("{\"type\":\"sd_dump\",\"status\":\"start\",\"files\":%lu}\n", (unsigned long)file_count);
+    fflush(stdout);
+
+    // Allocate read buffer (128 samples at a time)
+    const size_t CHUNK_SIZE = 128;
+    bno055_sample_t *buf = (bno055_sample_t *)malloc(CHUNK_SIZE * sizeof(bno055_sample_t));
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to allocate read buffer");
+        printf("{\"type\":\"sd_dump\",\"status\":\"error\",\"msg\":\"no memory\"}\n");
+        fflush(stdout);
+        if (was_recording) storage_start_session();
+        return ESP_ERR_NO_MEM;
+    }
+
+    uint32_t total_samples = 0;
+    char json_data[512];
+
+    // Iterate through all files
+    for (uint32_t fi = 0; fi < file_count; fi++) {
+        char path[160];
+        snprintf(path, sizeof(path), "%s/%s", mount_point, files[fi]);
+        
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            ESP_LOGW(TAG, "Failed to open: %s", files[fi]);
+            continue;
+        }
+
+        ESP_LOGI(TAG, "Streaming file %lu/%lu: %s", (unsigned long)(fi + 1), (unsigned long)file_count, files[fi]);
+
+        // Read and send in chunks
+        size_t samples_read;
+        while ((samples_read = fread(buf, sizeof(bno055_sample_t), CHUNK_SIZE, f)) > 0) {
+            for (size_t i = 0; i < samples_read; i++) {
+                bno055_sample_t *s = &buf[i];
+                
+                // Format as JSON (same format as live data, with "src":"sd" marker)
+                snprintf(json_data, sizeof(json_data),
+                    "{\"src\":\"sd\",\"t\":%lu,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+                    "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
+                    "\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,"
+                    "\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,"
+                    "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,"
+                    "\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,"
+                    "\"temp\":%.1f,"
+                    "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
+                    (unsigned long)s->t_ms, s->ax, s->ay, s->az,
+                    s->gx, s->gy, s->gz,
+                    s->mx, s->my, s->mz,
+                    s->roll, s->pitch, s->yaw,
+                    s->qw, s->qx, s->qy, s->qz,
+                    s->lia_x, s->lia_y, s->lia_z,
+                    s->temp,
+                    s->sys_cal, s->gyro_cal, s->accel_cal, s->mag_cal);
+                
+                printf("%s\n", json_data);
+                fflush(stdout);
+                total_samples++;
+
+                // Optional delay for flow control
+                if (delay_ms > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+                }
+            }
+            
+            // Small yield to prevent watchdog issues
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        fclose(f);
+    }
+
+    free(buf);
+
+    // Send end marker with total count
+    printf("{\"type\":\"sd_dump\",\"status\":\"end\",\"total_samples\":%lu}\n", (unsigned long)total_samples);
+    fflush(stdout);
+
+    ESP_LOGI(TAG, "SD card dump complete: %lu samples sent", (unsigned long)total_samples);
+
+    // Resume recording if it was active
+    if (was_recording) {
+        storage_start_session();
+        ESP_LOGI(TAG, "Resumed recording after SD card dump");
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief Get total sample count across all BIN files (for progress estimation)
+ */
+esp_err_t storage_get_total_sample_count(uint32_t *count) {
+    if (!count) return ESP_ERR_INVALID_ARG;
+    if (!storage_is_available()) return ESP_ERR_INVALID_STATE;
+
+    *count = 0;
+
+    char files[64][32];
+    uint32_t file_count = 0;
+    esp_err_t err = storage_list_bin_files(files, 64, &file_count, false);
+    if (err != ESP_OK) return err;
+
+    for (uint32_t i = 0; i < file_count; i++) {
+        char path[160];
+        snprintf(path, sizeof(path), "%s/%s", mount_point, files[i]);
+        
+        struct stat st;
+        if (stat(path, &st) == 0) {
+            *count += (uint32_t)(st.st_size / sizeof(bno055_sample_t));
+        }
+    }
+
+    return ESP_OK;
+}

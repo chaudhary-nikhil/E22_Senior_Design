@@ -1,9 +1,13 @@
 
 #include <stdio.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "driver/i2c.h"
+#include "driver/gpio.h"
+#include "driver/uart.h"
 
 #include "bus_i2c.h"
 #include "bno055.h"
@@ -13,7 +17,96 @@
 #define DEBUG_SD_CARD 0
 #define PRINT_INTERVAL 100
 
+// GPIO for BOOT button (trigger SD dump)
+#define BOOT_BUTTON_GPIO    0
+#define BUTTON_DEBOUNCE_MS  200
+
+// UART command buffer
+#define CMD_BUF_SIZE        64
+
 static const char *TAG = "APP";
+static volatile bool sd_dump_requested = false;
+static uint32_t last_button_time = 0;
+
+// =======================================================
+// BOOT Button ISR - Request SD card dump
+// =======================================================
+static void IRAM_ATTR button_isr_handler(void* arg) {
+    uint32_t now = xTaskGetTickCountFromISR();
+    if ((now - last_button_time) > pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS)) {
+        sd_dump_requested = true;
+        last_button_time = now;
+    }
+}
+
+static void init_boot_button(void) {
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,  // Trigger on button press (falling edge)
+    };
+    gpio_config(&io_conf);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(BOOT_BUTTON_GPIO, button_isr_handler, NULL);
+    ESP_LOGI(TAG, "BOOT button (GPIO %d) configured for SD card dump trigger", BOOT_BUTTON_GPIO);
+}
+
+// =======================================================
+// UART Command Listener Task - Listen for "DUMP" command
+// =======================================================
+static void uart_cmd_task(void* arg) {
+    char cmd_buf[CMD_BUF_SIZE];
+    int cmd_idx = 0;
+
+    ESP_LOGI(TAG, "UART command listener started. Send 'DUMP' to transfer SD card data.");
+
+    while (1) {
+        int c = getchar();
+        if (c != EOF) {
+            if (c == '\n' || c == '\r') {
+                cmd_buf[cmd_idx] = '\0';
+                
+                // Check for commands
+                if (strcasecmp(cmd_buf, "DUMP") == 0) {
+                    ESP_LOGI(TAG, "DUMP command received - starting SD card transfer");
+                    sd_dump_requested = true;
+                } else if (strcasecmp(cmd_buf, "STATUS") == 0) {
+                    uint32_t sample_count = 0;
+                    storage_get_total_sample_count(&sample_count);
+                    printf("{\"type\":\"status\",\"sd_samples\":%lu,\"recording\":%s}\n",
+                           (unsigned long)sample_count,
+                           storage_is_recording() ? "true" : "false");
+                    fflush(stdout);
+                } else if (strcasecmp(cmd_buf, "STOP") == 0) {
+                    storage_stop_session();
+                    ESP_LOGI(TAG, "Recording stopped");
+                    printf("{\"type\":\"status\",\"recording\":false}\n");
+                    fflush(stdout);
+                } else if (strcasecmp(cmd_buf, "START") == 0) {
+                    storage_start_session();
+                    ESP_LOGI(TAG, "Recording started");
+                    printf("{\"type\":\"status\",\"recording\":true}\n");
+                    fflush(stdout);
+                } else if (strcasecmp(cmd_buf, "DELETE") == 0) {
+                    storage_stop_session();
+                    storage_delete_all_files();
+                    ESP_LOGI(TAG, "All SD card files deleted");
+                    printf("{\"type\":\"status\",\"msg\":\"files_deleted\"}\n");
+                    fflush(stdout);
+                } else if (cmd_idx > 0) {
+                    ESP_LOGW(TAG, "Unknown command: %s", cmd_buf);
+                }
+                
+                cmd_idx = 0;
+            } else if (cmd_idx < CMD_BUF_SIZE - 1) {
+                cmd_buf[cmd_idx++] = (char)c;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));  // Check every 10ms
+    }
+}
 
 void app_main(void) {
     ESP_LOGI(TAG, "FormSync FW starting");
@@ -51,12 +144,28 @@ void app_main(void) {
         }
     }
 
+    // Init BOOT button for SD card dump trigger
+    init_boot_button();
+
+    // Start UART command listener task
+    xTaskCreate(uart_cmd_task, "uart_cmd", 4096, NULL, 5, NULL);
+
     ESP_LOGI(TAG, "All systems initialized, starting real-time IMU streaming via serial and SD card");
+    ESP_LOGI(TAG, "Commands: DUMP (transfer SD data), STATUS, START, STOP, DELETE");
+    ESP_LOGI(TAG, "Press BOOT button to trigger SD card data transfer");
 
     TickType_t t0 = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ); // Configurable sampling rate
     int count = 0;
     while (1) {
+        // Check if SD card dump was requested (via button or command)
+        if (sd_dump_requested) {
+            sd_dump_requested = false;
+            ESP_LOGI(TAG, "Starting SD card data transfer to serial...");
+            storage_stream_to_serial(0);  // 0 = fast dump, no delay
+            ESP_LOGI(TAG, "SD card transfer complete");
+        }
+
         if (bno_err == ESP_OK) {
             count++;
             // BNO055 is available, read real data
