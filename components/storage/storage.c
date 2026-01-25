@@ -937,9 +937,10 @@ esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
         }
 
         // Read in chunks into an internal temp, then copy to caller's buffer
-        bno055_sample_t chunk[128];
+        // Use smaller chunk size to avoid stack overflow (16 samples = ~1.4KB vs 128 = ~11KB)
+        bno055_sample_t chunk[16];
         for (;;) {
-            size_t rd = fread(chunk, sizeof(bno055_sample_t), 128, f);
+            size_t rd = fread(chunk, sizeof(bno055_sample_t), 16, f);
             if (rd == 0) break;          // EOF or error; we don't distinguish here
             size_t can_copy = out_cap - written;
             if (can_copy == 0) {         // caller buffer full

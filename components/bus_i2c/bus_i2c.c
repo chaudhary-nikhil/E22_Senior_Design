@@ -1,6 +1,7 @@
 #include "bus_i2c.h"
 #include "esp_log.h"
 #include "soc/i2c_reg.h"
+#include "hal/i2c_ll.h"
 
 static const char *TAG_I2C = "BUS_I2C";
 
@@ -17,15 +18,16 @@ esp_err_t bus_i2c_init(i2c_port_t port, int sda, int scl, uint32_t hz) {
     esp_err_t err = i2c_driver_install(port, conf.mode, 0, 0, 0);
     
     // Set I2C timeout for BNO055 clock stretching
-    // ESP32-S3 max timeout is I2C_TIME_OUT_VALUE (0x1F = 31) which at 80MHz gives ~1.3ms
+    // ESP32-S3 max timeout is I2C_LL_MAX_TIMEOUT (0x1F = 31) which at 80MHz gives ~1.3ms
     // This is sufficient for BNO055 which needs ~500μs max
     if (err == ESP_OK) {
-        // Use max timeout value for ESP32-S3 (0x1F = 31, which is the max for the hardware)
+        // Use max timeout value for ESP32-S3 (31 = 0x1F, which is the max for the hardware)
         // The actual timeout depends on clock config, but max value ensures BNO055 works
-        esp_err_t timeout_err = i2c_set_timeout(port, 0xFFFFF);  // Max valid timeout
+        esp_err_t timeout_err = i2c_set_timeout(port, I2C_LL_MAX_TIMEOUT);
         if (timeout_err != ESP_OK) {
-            // If that fails, try a smaller value that's definitely valid
-            i2c_set_timeout(port, 0xFFFF);
+            ESP_LOGW(TAG_I2C, "Failed to set I2C timeout to max value, using default");
+        } else {
+            ESP_LOGI(TAG_I2C, "I2C timeout set to max value (%d) for BNO055 clock stretching", I2C_LL_MAX_TIMEOUT);
         }
         ESP_LOGI(TAG_I2C, "I2C initialized on SDA=%d, SCL=%d @ %lu Hz", sda, scl, hz);
     }

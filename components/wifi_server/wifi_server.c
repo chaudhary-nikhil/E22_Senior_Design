@@ -48,6 +48,7 @@ static esp_err_t root_handler(httpd_req_t *req);
 static esp_err_t status_handler(httpd_req_t *req);
 static esp_err_t data_handler(httpd_req_t *req);
 static esp_err_t data_json_handler(httpd_req_t *req);
+static esp_err_t catch_all_handler(httpd_req_t *req);  // Catch-all for unknown URIs
 
 // URI definitions
 static const httpd_uri_t root_uri = {
@@ -75,6 +76,14 @@ static const httpd_uri_t data_json_uri = {
     .uri = "/data.json",
     .method = HTTP_GET,
     .handler = data_json_handler,
+    .user_ctx = NULL
+};
+
+// Catch-all handler for unknown URIs (suppresses warnings from ESP-IDF components)
+static const httpd_uri_t catch_all_uri = {
+    .uri = "/*",
+    .method = HTTP_GET,
+    .handler = catch_all_handler,
     .user_ctx = NULL
 };
 
@@ -145,6 +154,8 @@ static esp_err_t start_http_server(void) {
         httpd_register_uri_handler(server, &status_uri);
         httpd_register_uri_handler(server, &data_uri);
         httpd_register_uri_handler(server, &data_json_uri);
+        // Register catch-all handler LAST (lowest priority) to suppress warnings
+        httpd_register_uri_handler(server, &catch_all_uri);
         ESP_LOGI(TAG, "HTTP server started on port %d (stack: %d)", config.server_port, config.stack_size);
         return ESP_OK;
     }
@@ -197,7 +208,15 @@ static esp_err_t root_handler(httpd_req_t *req) {
         "+\"<div class='status-row'><span class='label'>Size:</span><span class='value'>\"+(d.size_bytes/1024).toFixed(2)+' KB</span></div>'"
         "+\"<div class='status-row'><span class='label'>Checksum:</span><span class='checksum'>\"+d.checksum+'</span></div>';"
         "});}"
-        "function downloadData(){window.location='/data';}"
+        "function downloadData(){"
+        "if(!confirm('Download binary data file?')) return;"
+        "const a=document.createElement('a');"
+        "a.href='/data';"
+        "a.download='session_data.bin';"
+        "document.body.appendChild(a);"
+        "a.click();"
+        "document.body.removeChild(a);"
+        "}"
         "function viewJson(){window.open('/data.json','_blank');}"
         "fetchStatus();setInterval(fetchStatus,2000);"
         "</script></body></html>";
@@ -223,7 +242,15 @@ static esp_err_t status_handler(httpd_req_t *req) {
 }
 
 static esp_err_t data_handler(httpd_req_t *req) {
+    // Check if client is connected to GoldenForm WiFi
+    if (!wifi_server_has_clients()) {
+        ESP_LOGW(TAG, "Data request rejected: No client connected to GoldenForm WiFi");
+        httpd_resp_send_custom_err(req, "503 Service Unavailable", "Not connected to GoldenForm WiFi. Please connect to SSID: GoldenForm");
+        return ESP_FAIL;
+    }
+    
     if (!is_syncing || !sync_buffer || sync_buffer_count == 0) {
+        ESP_LOGW(TAG, "Data request rejected: No data available");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No data available. Start sync first.");
         return ESP_FAIL;
     }
@@ -261,7 +288,15 @@ static esp_err_t data_handler(httpd_req_t *req) {
 }
 
 static esp_err_t data_json_handler(httpd_req_t *req) {
+    // Check if client is connected to GoldenForm WiFi
+    if (!wifi_server_has_clients()) {
+        ESP_LOGW(TAG, "JSON data request rejected: No client connected to GoldenForm WiFi");
+        httpd_resp_send_custom_err(req, "503 Service Unavailable", "Not connected to GoldenForm WiFi. Please connect to SSID: GoldenForm");
+        return ESP_FAIL;
+    }
+    
     if (!is_syncing || !sync_buffer || sync_buffer_count == 0) {
+        ESP_LOGW(TAG, "JSON data request rejected: No data available");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No data available");
         return ESP_FAIL;
     }
@@ -301,6 +336,15 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);  // End chunked response
     
+    return ESP_OK;
+}
+
+// Catch-all handler for unknown URIs (suppresses warnings from ESP-IDF components)
+static esp_err_t catch_all_handler(httpd_req_t *req) {
+    // Silently ignore unknown URIs (like /auth/discovery from ESP-IDF components)
+    // Only log at debug level to avoid spam
+    ESP_LOGD(TAG, "Unknown URI requested: %s", req->uri);
+    httpd_resp_send_404(req);
     return ESP_OK;
 }
 
@@ -351,6 +395,12 @@ esp_err_t wifi_server_start_sync(void) {
     if (is_syncing) {
         ESP_LOGW(TAG, "Already syncing");
         return ESP_OK;
+    }
+    
+    // Check WiFi server state
+    if (current_state != WIFI_SERVER_STATE_RUNNING) {
+        ESP_LOGE(TAG, "WiFi server not running (state: %d)", current_state);
+        return ESP_ERR_INVALID_STATE;
     }
     
     ESP_LOGI(TAG, "Starting data sync...");
