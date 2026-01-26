@@ -94,11 +94,20 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
 // ============== LED Control ==============
 // ESP32-S3-WROOM-1 dev board has RGB NeoPixel LED on GPIO48
 // Using RMT driver to control the NeoPixel LED (WS2812 protocol)
+// NOTE: GPIO48 is shared with SD card CS - LED disabled during recording
 static void led_set(bool on) {
     if (led_strip == NULL) {
         ESP_LOGW(TAG, "LED strip not initialized");
         return;
     }
+    
+    // Safety check: Don't use LED if SD card is recording (GPIO48 conflict)
+    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
+    if (storage_available && storage_is_recording()) {
+        // LED disabled during recording to avoid GPIO48 conflict with SD card CS
+        return;
+    }
+    #endif
     
     if (on) {
         // Set LED to red (R=255, G=0, B=0) for status indication
@@ -137,6 +146,15 @@ static void led_blink_task(void *arg) {
     }
     
     while (!led_blink_stop) {
+        // Safety check: Don't use LED if SD card is recording (GPIO48 conflict)
+        #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
+        if (storage_available && storage_is_recording()) {
+            // Skip LED operations during recording
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        #endif
+        
         // LED ON (red) - using NeoPixel API
         // Note: led_strip_set_pixel uses RGB order: (strip, index, red, green, blue)
         esp_err_t ret = led_strip_set_pixel(led_strip, 0, 255, 0, 0);
@@ -206,8 +224,15 @@ static void transition_to_logging(void) {
         }
     }
     
-    // Turn LED ON solid - logging in progress
+    // NOTE: LED disabled during recording due to GPIO48 conflict with SD card CS
+    // LED and SD card CS both use GPIO48 - LED operations interfere with SD card
+    // LED will be re-enabled when recording stops
+    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
+    ESP_LOGI(TAG, "LED disabled during recording (GPIO48 conflict with SD CS)");
+    #else
+    // Turn LED ON solid - logging in progress (only if no conflict)
     led_set(true);
+    #endif
     current_state = STATE_LOGGING;
     
     ESP_LOGI(TAG, "LED ON (GPIO%d) - Recording - Press button to STOP", LED_GPIO);
@@ -228,6 +253,10 @@ static void transition_to_stopped(void) {
         storage_stop_session();
     }
     
+    // Re-enable LED now that SD card is idle (GPIO48 conflict resolved)
+    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
+    // LED can now be used again since SD card is not actively writing
+    #endif
     // Turn LED OFF - stopped
     led_set(false);
     current_state = STATE_STOPPED;

@@ -149,4 +149,51 @@ config FORMSYNC_ENABLE_BLE
 config FORMSYNC_ENABLE_STORAGE
     bool "Enable storage (stubs)"
     default n
+
+menu "Storage & PSRAM Configuration"
+
+    config PSRAM_BUFFER_CAPACITY_SAMPLES
+        int "PSRAM ring buffer capacity (samples)"
+        range 1000 100000
+        default 47662
+        help
+            Maximum number of IMU samples to buffer in PSRAM before flushing to SD card.
+            Each sample is 88 bytes (bno055_sample_t).
+            Default 47662 samples = exactly 4MB (4,194,256 bytes) = ~16 minutes at 50Hz.
+            Uses 4MB of the 8MB total PSRAM to leave room for other allocations.
+            Larger buffer provides more margin for SD card write latency.
+
+    config PSRAM_BUFFER_WATERMARK_PERCENT
+        int "Buffer watermark threshold (%)"
+        range 10 90
+        default 50
+        help
+            Trigger SD card flush when buffer reaches this percentage of capacity.
+            Lower values flush more frequently (more SD writes, less PSRAM usage).
+            Higher values batch more data (fewer SD writes, more PSRAM usage).
+
+    config PSRAM_BUFFER_FLUSH_BATCH_SIZE
+        int "Flush batch size (samples)"
+        range 64 512
+        default 256
+        help
+            Number of samples to write to SD card in each flush operation.
+            Larger batches are more efficient but use more temporary memory.
+
+endmenu
+
+menu "WiFi & Development Options"
+
+    config WIFI_GENERATE_TEST_DATA
+        bool "Generate test data when SD card is empty"
+        default n
+        help
+            When enabled, the WiFi sync endpoint will generate fake IMU data
+            if no real session data exists on the SD card. This is useful for
+            testing WiFi transfer without a real IMU or recording session.
+            
+            DISABLE THIS FOR PRODUCTION BUILDS - it can mask real data issues.
+
+endmenu
+
 endmenu

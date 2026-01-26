@@ -30,6 +30,7 @@ static uint8_t connected_clients = 0;
 static bno055_sample_t *sync_buffer = NULL;
 static size_t sync_buffer_count = 0;
 static uint32_t sync_checksum = 0;  // Simple checksum for verification
+static bool sync_buffer_use_heap_caps = false;  // Track allocation method for proper cleanup
 #define SYNC_BUFFER_MAX_SAMPLES 4096  // ~400KB max
 
 // Simple checksum: sum of all bytes
@@ -191,7 +192,7 @@ static esp_err_t root_handler(httpd_req_t *req) {
         "<div class='card'>"
         "<h2>Actions</h2>"
         "<button class='btn-primary' onclick='fetchStatus()'>Refresh</button>"
-        "<button class='btn-secondary' onclick='downloadData()'>Download Binary</button>"
+        "<button class='btn-secondary' onclick='downloadData()'>Download Protobuf</button>"
         "<button class='btn-secondary' onclick='viewJson()'>View JSON</button>"
         "</div>"
         "<div class='card verify'>"
@@ -209,10 +210,10 @@ static esp_err_t root_handler(httpd_req_t *req) {
         "+\"<div class='status-row'><span class='label'>Checksum:</span><span class='checksum'>\"+d.checksum+'</span></div>';"
         "});}"
         "function downloadData(){"
-        "if(!confirm('Download binary data file?')) return;"
+        "if(!confirm('Download protobuf data file?')) return;"
         "const a=document.createElement('a');"
         "a.href='/data';"
-        "a.download='session_data.bin';"
+        "a.download='session_data.pb';"
         "document.body.appendChild(a);"
         "a.click();"
         "document.body.removeChild(a);"
@@ -258,23 +259,36 @@ static esp_err_t data_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Sending %zu samples (%zu bytes)", 
              sync_buffer_count, sync_buffer_count * sizeof(bno055_sample_t));
     
-    httpd_resp_set_type(req, "application/octet-stream");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.bin");
+    httpd_resp_set_type(req, "application/x-protobuf");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.pb");
     
     // Send in chunks to avoid memory issues
     size_t chunk_size = 64;  // samples per chunk
     size_t sent = 0;
     
     while (sent < sync_buffer_count) {
+        // Check if sync was stopped or buffer became invalid
+        if (!is_syncing || !sync_buffer) {
+            ESP_LOGW(TAG, "Sync interrupted during transfer");
+            return ESP_FAIL;
+        }
+        
         size_t to_send = sync_buffer_count - sent;
         if (to_send > chunk_size) to_send = chunk_size;
+        
+        // Validate buffer bounds
+        if (sent + to_send > sync_buffer_count) {
+            ESP_LOGE(TAG, "Buffer bounds error: sent=%zu, to_send=%zu, total=%zu", 
+                     sent, to_send, sync_buffer_count);
+            return ESP_ERR_INVALID_SIZE;
+        }
         
         esp_err_t err = httpd_resp_send_chunk(req, 
             (const char*)(sync_buffer + sent), 
             to_send * sizeof(bno055_sample_t));
         
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to send chunk");
+            ESP_LOGE(TAG, "Failed to send chunk at offset %zu: %s", sent, esp_err_to_name(err));
             return err;
         }
         sent += to_send;
@@ -317,6 +331,12 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
     // Send samples one by one
     char sample_buf[256];
     for (size_t i = 0; i < samples_to_send; i++) {
+        // Check if sync was stopped or buffer became invalid during transfer
+        if (!is_syncing || !sync_buffer || i >= sync_buffer_count) {
+            ESP_LOGW(TAG, "Sync interrupted during JSON transfer at sample %zu", i);
+            return ESP_FAIL;
+        }
+        
         bno055_sample_t *s = &sync_buffer[i];
         snprintf(sample_buf, sizeof(sample_buf),
             "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
@@ -326,9 +346,14 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
             (unsigned)s->t_ms, s->ax, s->ay, s->az,
             s->gx, s->gy, s->gz,
             s->qw, s->qx, s->qy, s->qz);
-        httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
         
-        // Yield occasionally
+        esp_err_t err = httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to send JSON chunk at sample %zu: %s", i, esp_err_to_name(err));
+            return err;
+        }
+        
+        // Yield occasionally to prevent watchdog
         if (i % 50 == 0) vTaskDelay(pdMS_TO_TICKS(1));
     }
     
@@ -408,32 +433,46 @@ esp_err_t wifi_server_start_sync(void) {
     // Give scheduler a chance to run
     vTaskDelay(pdMS_TO_TICKS(10));
     
-    // Free any previous buffer
+    // Free any previous buffer (cleanup from previous sync attempt)
     if (sync_buffer) {
-        heap_caps_free(sync_buffer);
+        if (sync_buffer_use_heap_caps) {
+            heap_caps_free(sync_buffer);
+        } else {
+            free(sync_buffer);
+        }
         sync_buffer = NULL;
     }
     sync_buffer_count = 0;
     sync_checksum = 0;
+    sync_buffer_use_heap_caps = false;
     
     // Log memory status before allocation
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     ESP_LOGI(TAG, "Memory before sync: PSRAM=%zu bytes, Internal=%zu bytes", free_psram, free_internal);
     
+    // Validate we have enough memory before attempting allocation
     size_t buffer_size = SYNC_BUFFER_MAX_SAMPLES * sizeof(bno055_sample_t);
+    if (free_psram < buffer_size && free_internal < (256 * sizeof(bno055_sample_t))) {
+        ESP_LOGE(TAG, "Insufficient memory for sync: PSRAM=%zu, Internal=%zu", free_psram, free_internal);
+        return ESP_ERR_NO_MEM;
+    }
+    
     ESP_LOGI(TAG, "Allocating %zu bytes from PSRAM for sync buffer...", buffer_size);
     
-    // Yield before allocation
+    // Yield before allocation to prevent watchdog issues
     vTaskDelay(pdMS_TO_TICKS(10));
     
     // Try PSRAM first (8MB available on ESP32-S3-WROOM-1)
     sync_buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
+    sync_buffer_use_heap_caps = (sync_buffer != NULL);
+    
     if (!sync_buffer) {
         ESP_LOGW(TAG, "PSRAM allocation failed (free: %zu), trying smaller buffer...", free_psram);
         // Try a smaller buffer
         buffer_size = 1024 * sizeof(bno055_sample_t);  // ~90KB
         sync_buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
+        sync_buffer_use_heap_caps = (sync_buffer != NULL);
     }
     
     if (!sync_buffer) {
@@ -441,70 +480,81 @@ esp_err_t wifi_server_start_sync(void) {
         ESP_LOGW(TAG, "PSRAM still failed, trying internal RAM...");
         buffer_size = 256 * sizeof(bno055_sample_t);  // ~22KB
         sync_buffer = malloc(buffer_size);
+        sync_buffer_use_heap_caps = false;
     }
     
     if (!sync_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate sync buffer");
+        ESP_LOGE(TAG, "Failed to allocate sync buffer - out of memory");
         return ESP_ERR_NO_MEM;
     }
     
     size_t max_samples = buffer_size / sizeof(bno055_sample_t);
     ESP_LOGI(TAG, "Sync buffer allocated: %zu bytes for %zu samples", buffer_size, max_samples);
     
-    // Yield before SD card read
+    // Yield before SD card read to prevent watchdog
     vTaskDelay(pdMS_TO_TICKS(10));
     
-    // Read data from SD card
+    // Read data from SD card with error handling
     ESP_LOGI(TAG, "Reading from SD card...");
     esp_err_t ret = storage_read_all_bin_into_buffer(sync_buffer, max_samples, &sync_buffer_count);
     
     // Yield after SD read
     vTaskDelay(pdMS_TO_TICKS(10));
     
-    // If no data or error, generate test data for testing WiFi transfer
-    if (ret != ESP_OK || sync_buffer_count == 0) {
-        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "SD read result: %s", esp_err_to_name(ret));
-        }
-        ESP_LOGI(TAG, "No data on SD card - generating test data for WiFi testing...");
+    // Handle errors and edge cases
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "SD card read failed: %s", esp_err_to_name(ret));
         
-        sync_buffer_count = 10;  // 10 test samples
-        for (size_t i = 0; i < sync_buffer_count; i++) {
-            memset(&sync_buffer[i], 0, sizeof(bno055_sample_t));
-            sync_buffer[i].t_ms = (uint32_t)(i * 100);
-            sync_buffer[i].ax = 0.1f * (float)i;
-            sync_buffer[i].ay = 0.2f * (float)i;
-            sync_buffer[i].az = 9.8f;
-            sync_buffer[i].gx = 0.01f * (float)i;
-            sync_buffer[i].gy = 0.02f * (float)i;
-            sync_buffer[i].gz = 0.0f;
-            sync_buffer[i].mx = 30.0f;
-            sync_buffer[i].my = 0.0f;
-            sync_buffer[i].mz = 45.0f;
-            sync_buffer[i].roll = 1.0f + (float)i;
-            sync_buffer[i].pitch = 2.0f + (float)i;
-            sync_buffer[i].yaw = 3.0f + (float)i;
-            sync_buffer[i].qw = 1.0f;
-            sync_buffer[i].qx = 0.0f;
-            sync_buffer[i].qy = 0.0f;
-            sync_buffer[i].qz = 0.0f;
-            sync_buffer[i].lia_x = 0.0f;
-            sync_buffer[i].lia_y = 0.0f;
-            sync_buffer[i].lia_z = 0.0f;
-            sync_buffer[i].temp = 25.0f;
-            sync_buffer[i].sys_cal = 3;
-            sync_buffer[i].gyro_cal = 3;
-            sync_buffer[i].accel_cal = 3;
-            sync_buffer[i].mag_cal = 3;
+        // Cleanup on error
+        if (sync_buffer) {
+            if (sync_buffer_use_heap_caps) {
+                heap_caps_free(sync_buffer);
+            } else {
+                free(sync_buffer);
+            }
+            sync_buffer = NULL;
         }
-        ESP_LOGI(TAG, "Generated %zu test samples", sync_buffer_count);
-    } else {
-        ESP_LOGI(TAG, "Read %zu samples from SD card", sync_buffer_count);
+        sync_buffer_count = 0;
+        sync_checksum = 0;
+        sync_buffer_use_heap_caps = false;
+        
+        // Don't set is_syncing on error - allow retry
+        return ret;
     }
+    
+    // Handle case when no data available (but read succeeded)
+    if (sync_buffer_count == 0) {
+        ESP_LOGW(TAG, "No session data available on SD card");
+        ESP_LOGW(TAG, "Start a recording session first, then sync");
+        
+        // Cleanup empty buffer
+        if (sync_buffer) {
+            if (sync_buffer_use_heap_caps) {
+                heap_caps_free(sync_buffer);
+            } else {
+                free(sync_buffer);
+            }
+            sync_buffer = NULL;
+        }
+        sync_buffer_use_heap_caps = false;
+        
+        // Don't set is_syncing - no data to sync
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    // Validate data integrity
+    if (sync_buffer_count > max_samples) {
+        ESP_LOGE(TAG, "Data corruption: read %zu samples but buffer only holds %zu", 
+                 sync_buffer_count, max_samples);
+        sync_buffer_count = max_samples;  // Limit to buffer size
+    }
+    
+    ESP_LOGI(TAG, "Read %zu samples from SD card (protobuf format)", sync_buffer_count);
     
     // Compute checksum for verification
     sync_checksum = compute_checksum(sync_buffer, sync_buffer_count);
     
+    // Mark as syncing only after successful read and validation
     is_syncing = true;
     
     ESP_LOGI(TAG, "========================================");
@@ -520,23 +570,29 @@ esp_err_t wifi_server_start_sync(void) {
 }
 
 esp_err_t wifi_server_stop_sync(void) {
-    if (!is_syncing) {
-        return ESP_OK;
+    if (!is_syncing && !sync_buffer) {
+        return ESP_OK;  // Already stopped
     }
     
     is_syncing = false;
     
+    // Safely free buffer using correct function based on allocation method
     if (sync_buffer) {
-        // Use heap_caps_free for PSRAM-allocated memory
-        heap_caps_free(sync_buffer);
+        if (sync_buffer_use_heap_caps) {
+            heap_caps_free(sync_buffer);
+        } else {
+            free(sync_buffer);
+        }
         sync_buffer = NULL;
     }
     sync_buffer_count = 0;
     sync_checksum = 0;
+    sync_buffer_use_heap_caps = false;
     
     // Log memory after free
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    ESP_LOGI(TAG, "Sync stopped, PSRAM free: %zu bytes", free_psram);
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "Sync stopped - PSRAM: %zu bytes, Internal: %zu bytes", free_psram, free_internal);
     return ESP_OK;
 }
 
