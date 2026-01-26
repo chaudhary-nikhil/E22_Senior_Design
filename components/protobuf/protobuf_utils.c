@@ -300,3 +300,40 @@ esp_err_t protobuf_read_delimited(FILE *file, bno055_sample_t *samples,
     
     return err;
 }
+
+/**
+ * @brief Skip a length-delimited protobuf message in a file
+ * 
+ * Used when we can't allocate memory to read a message - we skip it to continue
+ * @param file File pointer (must be positioned at start of 4-byte length prefix)
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND at EOF, ESP_FAIL on error
+ */
+esp_err_t protobuf_skip_delimited(FILE *file) {
+    if (!file) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Read 4-byte length prefix
+    uint32_t len = 0;
+    if (fread(&len, sizeof(len), 1, file) != 1) {
+        return ESP_ERR_NOT_FOUND;  // EOF
+    }
+    
+    // Sanity check on length
+    if (len == 0) {
+        ESP_LOGE(TAG, "Invalid message length: 0");
+        return ESP_FAIL;
+    }
+    if (len > 1024 * 1024) {  // Max 1MB message
+        ESP_LOGE(TAG, "Invalid message length: %lu", (unsigned long)len);
+        return ESP_FAIL;
+    }
+    
+    // Skip the protobuf data by seeking forward
+    if (fseek(file, (long)len, SEEK_CUR) != 0) {
+        ESP_LOGE(TAG, "Failed to seek past protobuf message of %lu bytes", (unsigned long)len);
+        return ESP_FAIL;
+    }
+    
+    return ESP_OK;
+}

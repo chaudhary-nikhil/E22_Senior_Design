@@ -429,8 +429,10 @@ esp_err_t storage_delete_all_files(void) {
 
         const char *name = entry->d_name;
         bool is_csv = (strstr(name, ".csv") || strstr(name, ".CSV"));
-        bool is_bin = (strstr(name, ".bin") || strstr(name, ".BIN"));
-        if (!is_csv && !is_bin) continue;
+        // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
+        bool is_protobuf = (strstr(name, ".pb") || strstr(name, ".PB") ||
+                           strstr(name, ".bin") || strstr(name, ".BIN"));
+        if (!is_csv && !is_protobuf) continue;
 
         char full_path[320];
         int n = snprintf(full_path, sizeof(full_path), "%s/%s", mount_point, name);
@@ -471,7 +473,9 @@ esp_err_t storage_list_files(char files[][32], uint32_t max_files, uint32_t *act
 #endif
         if (!is_reg) continue;
 
+        // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
         if (strstr(entry->d_name, ".csv") || strstr(entry->d_name, ".CSV") ||
+            strstr(entry->d_name, ".pb") || strstr(entry->d_name, ".PB") ||
             strstr(entry->d_name, ".bin") || strstr(entry->d_name, ".BIN")) {
             strncpy(files[count], entry->d_name, 31);
             files[count][31] = '\0';
@@ -509,7 +513,9 @@ esp_err_t storage_list_bin_files(char files[][32], uint32_t max_files,
 #endif
         if (!is_reg) continue;
         const char *n = entry->d_name;
-        if (!(strstr(n, ".BIN") || strstr(n, ".bin"))) continue;
+        // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
+        if (!(strstr(n, ".pb") || strstr(n, ".PB") || 
+              strstr(n, ".BIN") || strstr(n, ".bin"))) continue;
 
         strncpy(files[count], n, 31);
         files[count][31] = '\0';
@@ -624,8 +630,10 @@ esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
         if (entry->d_type != DT_REG) continue;
 #endif
         const char *n = entry->d_name;
-        bool is_bin = (strstr(n, ".BIN") != NULL) || (strstr(n, ".bin") != NULL);
-        if (!is_bin) continue;
+        // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
+        bool is_protobuf = (strstr(n, ".pb") != NULL) || (strstr(n, ".PB") != NULL) ||
+                          (strstr(n, ".BIN") != NULL) || (strstr(n, ".bin") != NULL);
+        if (!is_protobuf) continue;
 
         size_t L = strnlen(n, 255);
         if (L == 0 || L >= 64) continue;
@@ -648,7 +656,7 @@ esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
 
     if (names_len == 0) {
         free(names);
-        ESP_LOGW(TAG, "No .BIN files found on SD");
+        ESP_LOGW(TAG, "No .pb files found on SD");
         return ESP_OK;
     }
 
@@ -741,13 +749,13 @@ static esp_err_t open_new_data_file(void) {
         close_current_file();
     }
 
-    // Generate filename: S<5-digit time><2-digit index>.BIN
+    // Generate filename: S<5-digit time><2-digit index>.pb (protobuf format)
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
     uint32_t t5 = now_ms % 100000;
     uint32_t idx2 = file_index_in_session % 100;
 
     char filename[13];
-    snprintf(filename, sizeof(filename), "S%05" PRIu32 "%02" PRIu32 ".BIN", t5, idx2);
+    snprintf(filename, sizeof(filename), "S%05" PRIu32 "%02" PRIu32 ".pb", t5, idx2);
 
     char full_path[96];
     int n = snprintf(full_path, sizeof(full_path), "%s/%s", mount_point, filename);

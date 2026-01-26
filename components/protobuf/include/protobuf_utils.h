@@ -90,10 +90,21 @@ esp_err_t protobuf_write_delimited(FILE *file, const bno055_sample_t *samples,
  * @param samples Output array of samples
  * @param max_samples Maximum samples to read
  * @param decoded_count Output: actual number of decoded samples
- * @return ESP_OK on success, ESP_ERR_NOT_FOUND at EOF
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND at EOF, ESP_ERR_NO_MEM if allocation fails
  */
 esp_err_t protobuf_read_delimited(FILE *file, bno055_sample_t *samples,
                                    size_t max_samples, size_t *decoded_count);
+
+/**
+ * @brief Skip a length-delimited protobuf message in a file
+ * 
+ * Reads the 4-byte length prefix and seeks past the protobuf data.
+ * Used for recovery when protobuf_read_delimited fails with ESP_ERR_NO_MEM.
+ * 
+ * @param file File pointer (must be positioned at start of 4-byte length prefix)
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND at EOF, ESP_FAIL on error
+ */
+esp_err_t protobuf_skip_delimited(FILE *file);
 
 #ifdef __cplusplus
 }

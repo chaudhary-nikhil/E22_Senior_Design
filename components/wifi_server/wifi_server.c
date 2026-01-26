@@ -14,9 +14,13 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <dirent.h>
+#include <stdlib.h>
 
 #include "storage.h"
 #include "bno055.h"
+#include "protobuf_utils.h"
+#include "protobuf_utils.h"
 
 static const char *TAG = "WIFI_SERVER";
 
@@ -26,22 +30,104 @@ static httpd_handle_t server = NULL;
 static bool is_syncing = false;
 static uint8_t connected_clients = 0;
 
-// Data buffer for HTTP transfer (allocated during sync)
-static bno055_sample_t *sync_buffer = NULL;
-static size_t sync_buffer_count = 0;
-static uint32_t sync_checksum = 0;  // Simple checksum for verification
-static bool sync_buffer_use_heap_caps = false;  // Track allocation method for proper cleanup
-#define SYNC_BUFFER_MAX_SAMPLES 4096  // ~400KB max
+// Streaming state for SD card -> WiFi transfer
+typedef struct {
+    char **file_names;           // List of .BIN file names to stream
+    size_t file_count;            // Number of files
+    size_t current_file_idx;      // Current file being streamed
+    FILE *current_file;           // File handle for current file
+    size_t total_samples_sent;   // Total samples sent so far
+    size_t total_samples_available; // Total samples available (for status)
+    bool transfer_complete;       // Flag indicating transfer finished
+    SemaphoreHandle_t mutex;      // Mutex to protect streaming state
+} streaming_state_t;
 
-// Simple checksum: sum of all bytes
-static uint32_t compute_checksum(const bno055_sample_t *data, size_t count) {
-    uint32_t sum = 0;
-    const uint8_t *bytes = (const uint8_t *)data;
-    size_t total_bytes = count * sizeof(bno055_sample_t);
-    for (size_t i = 0; i < total_bytes; i++) {
-        sum += bytes[i];
+static streaming_state_t stream_state = {0};
+
+// Small buffer for reading chunks from SD card (much smaller than full session)
+// This buffer is used to accumulate samples from protobuf batches before sending
+// Each protobuf batch can contain up to MAX_BATCH_SAMPLES (256), so we need at least that
+#define STREAM_CHUNK_SAMPLES 256  // Must be >= MAX_BATCH_SAMPLES to avoid truncation
+static bno055_sample_t *stream_chunk_buffer = NULL;
+
+// Initialize streaming state
+static esp_err_t init_streaming_state(void) {
+    if (stream_state.mutex == NULL) {
+        stream_state.mutex = xSemaphoreCreateMutex();
+        if (stream_state.mutex == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
     }
-    return sum;
+    
+    // Allocate small chunk buffer for reading from SD card
+    if (stream_chunk_buffer == NULL) {
+        stream_chunk_buffer = malloc(STREAM_CHUNK_SAMPLES * sizeof(bno055_sample_t));
+        if (stream_chunk_buffer == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate stream chunk buffer");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    
+    return ESP_OK;
+}
+
+// Comparison function for sorting file names
+static int cmp_file_names(const void *a, const void *b) {
+    const char * const *sa = (const char * const *)a;
+    const char * const *sb = (const char * const *)b;
+    return strcmp(*sa, *sb);
+}
+
+// Cleanup streaming state
+static void cleanup_streaming_state(void) {
+    if (stream_state.mutex && xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        // Close current file if open
+        if (stream_state.current_file) {
+            fclose(stream_state.current_file);
+            stream_state.current_file = NULL;
+        }
+        
+        // Free file names list
+        if (stream_state.file_names) {
+            for (size_t i = 0; i < stream_state.file_count; i++) {
+                if (stream_state.file_names[i]) {
+                    free(stream_state.file_names[i]);
+                }
+            }
+            free(stream_state.file_names);
+            stream_state.file_names = NULL;
+        }
+        
+        stream_state.file_count = 0;
+        stream_state.current_file_idx = 0;
+        stream_state.total_samples_sent = 0;
+        stream_state.total_samples_available = 0;
+        stream_state.transfer_complete = false;
+        
+        xSemaphoreGive(stream_state.mutex);
+    } else {
+        // If mutex doesn't exist or can't take it, cleanup without lock
+        if (stream_state.current_file) {
+            fclose(stream_state.current_file);
+            stream_state.current_file = NULL;
+        }
+        
+        if (stream_state.file_names) {
+            for (size_t i = 0; i < stream_state.file_count; i++) {
+                if (stream_state.file_names[i]) {
+                    free(stream_state.file_names[i]);
+                }
+            }
+            free(stream_state.file_names);
+            stream_state.file_names = NULL;
+        }
+        
+        stream_state.file_count = 0;
+        stream_state.current_file_idx = 0;
+        stream_state.total_samples_sent = 0;
+        stream_state.total_samples_available = 0;
+        stream_state.transfer_complete = false;
+    }
 }
 
 // HTTP handlers
@@ -229,12 +315,40 @@ static esp_err_t root_handler(httpd_req_t *req) {
 
 static esp_err_t status_handler(httpd_req_t *req) {
     char json_buf[512];
+    size_t samples = 0;
+    size_t size_bytes = 0;
+    uint32_t checksum = 0;  // Simple checksum for verification
+    
+    // Get current streaming state
+    if (is_syncing && stream_state.mutex && 
+        xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        // Use total_samples_sent if transfer has started, otherwise use total_samples_available
+        if (stream_state.total_samples_sent > 0) {
+            samples = stream_state.total_samples_sent;
+        } else if (stream_state.total_samples_available > 0) {
+            samples = stream_state.total_samples_available;
+        } else {
+            // Estimate: each file typically contains ~1000-2000 samples
+            // For accurate count, we'd need to scan files, but this is just for display
+            samples = stream_state.file_count * 1500;  // Rough estimate
+        }
+        size_bytes = samples * sizeof(bno055_sample_t);
+        
+        // Simple checksum: file count + sample count (for basic verification)
+        checksum = (uint32_t)(stream_state.file_count * 1000 + samples);
+        
+        xSemaphoreGive(stream_state.mutex);
+    }
+    
+    // Match JavaScript field names: samples, size_bytes, checksum
     snprintf(json_buf, sizeof(json_buf),
-        "{\"syncing\":%s,\"samples\":%zu,\"size_bytes\":%zu,\"checksum\":%" PRIu32 ",\"connected_clients\":%u}",
+        "{\"syncing\":%s,\"files\":%zu,\"samples\":%zu,\"size_bytes\":%zu,\"checksum\":%" PRIu32 ",\"transfer_complete\":%s,\"connected_clients\":%u}",
         is_syncing ? "true" : "false",
-        sync_buffer_count,
-        sync_buffer_count * sizeof(bno055_sample_t),
-        sync_checksum,
+        stream_state.file_count,
+        samples,
+        size_bytes,
+        checksum,
+        (is_syncing && stream_state.transfer_complete) ? "true" : "false",
         connected_clients);
     
     httpd_resp_set_type(req, "application/json");
@@ -250,54 +364,257 @@ static esp_err_t data_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    if (!is_syncing || !sync_buffer || sync_buffer_count == 0) {
+    if (!is_syncing || stream_state.file_count == 0) {
         ESP_LOGW(TAG, "Data request rejected: No data available");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No data available. Start sync first.");
         return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "Sending %zu samples (%zu bytes)", 
-             sync_buffer_count, sync_buffer_count * sizeof(bno055_sample_t));
+    ESP_LOGI(TAG, "Starting streaming transfer: %zu files, ~%zu samples available", 
+             stream_state.file_count, stream_state.total_samples_available);
     
     httpd_resp_set_type(req, "application/x-protobuf");
     httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=session_data.pb");
     
-    // Send in chunks to avoid memory issues
-    size_t chunk_size = 64;  // samples per chunk
-    size_t sent = 0;
+    // Lock streaming state
+    if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to acquire streaming mutex");
+        return ESP_ERR_TIMEOUT;
+    }
     
-    while (sent < sync_buffer_count) {
-        // Check if sync was stopped or buffer became invalid
-        if (!is_syncing || !sync_buffer) {
+    // Reset transfer state for new request
+    stream_state.current_file_idx = 0;
+    stream_state.total_samples_sent = 0;
+    stream_state.transfer_complete = false;
+    
+    // Open first file
+    const char *mount_point = "/sdcard";
+    char file_path[160];
+    if (stream_state.file_count > 0 && stream_state.file_names[0]) {
+        snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[0]);
+        stream_state.current_file = fopen(file_path, "rb");
+        if (!stream_state.current_file) {
+            ESP_LOGE(TAG, "Failed to open file: %s", file_path);
+            xSemaphoreGive(stream_state.mutex);
+            return ESP_FAIL;
+        }
+        ESP_LOGI(TAG, "Opened file: %s", stream_state.file_names[0]);
+    } else {
+        xSemaphoreGive(stream_state.mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    xSemaphoreGive(stream_state.mutex);
+    
+    // Stream data from SD card files in chunks
+    while (true) {
+        // Check if sync was stopped
+        if (!is_syncing) {
             ESP_LOGW(TAG, "Sync interrupted during transfer");
+            if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                if (stream_state.current_file) {
+                    fclose(stream_state.current_file);
+                    stream_state.current_file = NULL;
+                }
+                xSemaphoreGive(stream_state.mutex);
+            }
             return ESP_FAIL;
         }
         
-        size_t to_send = sync_buffer_count - sent;
-        if (to_send > chunk_size) to_send = chunk_size;
-        
-        // Validate buffer bounds
-        if (sent + to_send > sync_buffer_count) {
-            ESP_LOGE(TAG, "Buffer bounds error: sent=%zu, to_send=%zu, total=%zu", 
-                     sent, to_send, sync_buffer_count);
-            return ESP_ERR_INVALID_SIZE;
+        // Lock to read chunk
+        if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            continue;  // Try again
         }
         
-        esp_err_t err = httpd_resp_send_chunk(req, 
-            (const char*)(sync_buffer + sent), 
-            to_send * sizeof(bno055_sample_t));
+        // Read chunk from current file
+        size_t samples_read = 0;
+        esp_err_t read_err = ESP_OK;
         
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to send chunk at offset %zu: %s", sent, esp_err_to_name(err));
-            return err;
+        // Read up to STREAM_CHUNK_SAMPLES from current file
+        // This loop handles protobuf batches that may be smaller or larger than our chunk buffer
+        while (samples_read < STREAM_CHUNK_SAMPLES && stream_state.current_file) {
+            size_t decoded = 0;
+            size_t remaining_space = STREAM_CHUNK_SAMPLES - samples_read;
+            
+            read_err = protobuf_read_delimited(stream_state.current_file, 
+                                                stream_chunk_buffer + samples_read,
+                                                remaining_space,
+                                                &decoded);
+            
+            if (read_err == ESP_ERR_NOT_FOUND) {
+                // EOF on current file - move to next file
+                fclose(stream_state.current_file);
+                stream_state.current_file = NULL;
+                stream_state.current_file_idx++;
+                
+                if (stream_state.current_file_idx >= stream_state.file_count) {
+                    // All files processed
+                    stream_state.transfer_complete = true;
+                    xSemaphoreGive(stream_state.mutex);
+                    break;
+                }
+                
+                // Open next file
+                snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, 
+                        stream_state.file_names[stream_state.current_file_idx]);
+                stream_state.current_file = fopen(file_path, "rb");
+                if (!stream_state.current_file) {
+                    ESP_LOGE(TAG, "Failed to open file: %s", file_path);
+                    xSemaphoreGive(stream_state.mutex);
+                    return ESP_FAIL;
+                }
+                ESP_LOGI(TAG, "Opened next file: %s", stream_state.file_names[stream_state.current_file_idx]);
+                continue;  // Read from new file
+            }
+            
+            if (read_err == ESP_ERR_NO_MEM) {
+                // Memory allocation failed for protobuf batch
+                // protobuf_read_delimited already read the 4-byte length prefix but failed to allocate buffer
+                // File pointer is now at start of protobuf data - we need to skip it
+                ESP_LOGW(TAG, "Memory allocation failed for protobuf batch - skipping message to continue");
+                
+                // Skip the protobuf message to continue reading
+                // Note: protobuf_read_delimited already consumed the 4-byte length prefix,
+                // so we need to seek back 4 bytes, then use skip function
+                long current_pos = ftell(stream_state.current_file);
+                if (current_pos >= 4) {
+                    // Seek back to re-read the length prefix
+                    fseek(stream_state.current_file, -4, SEEK_CUR);
+                    esp_err_t skip_err = protobuf_skip_delimited(stream_state.current_file);
+                    if (skip_err == ESP_OK) {
+                        ESP_LOGI(TAG, "Successfully skipped protobuf message after memory error");
+                        continue;  // Try reading next message
+                    } else {
+                        ESP_LOGE(TAG, "Failed to skip protobuf message: %s", esp_err_to_name(skip_err));
+                    }
+                }
+                
+                // If skip failed, close file and move to next
+                ESP_LOGE(TAG, "Cannot recover from memory allocation failure - moving to next file");
+                fclose(stream_state.current_file);
+                stream_state.current_file = NULL;
+                stream_state.current_file_idx++;
+                
+                if (stream_state.current_file_idx >= stream_state.file_count) {
+                    stream_state.transfer_complete = true;
+                    xSemaphoreGive(stream_state.mutex);
+                    break;
+                }
+                
+                // Try next file
+                snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, 
+                        stream_state.file_names[stream_state.current_file_idx]);
+                stream_state.current_file = fopen(file_path, "rb");
+                if (!stream_state.current_file) {
+                    ESP_LOGE(TAG, "Failed to open next file: %s", file_path);
+                    xSemaphoreGive(stream_state.mutex);
+                    return ESP_FAIL;
+                }
+                ESP_LOGI(TAG, "Opened next file after memory error: %s", stream_state.file_names[stream_state.current_file_idx]);
+                continue;
+            }
+            
+            if (read_err != ESP_OK) {
+                // Other errors (corrupted data, I/O error, etc.)
+                ESP_LOGW(TAG, "Error reading protobuf batch: %s - attempting to continue", esp_err_to_name(read_err));
+                // For corrupted data, we can't easily skip - log and try next file
+                // Close current file and move to next
+                fclose(stream_state.current_file);
+                stream_state.current_file = NULL;
+                stream_state.current_file_idx++;
+                
+                if (stream_state.current_file_idx >= stream_state.file_count) {
+                    // No more files - transfer ends (with some data potentially lost)
+                    ESP_LOGW(TAG, "Transfer ended due to read error - some data may be incomplete");
+                    stream_state.transfer_complete = true;
+                    xSemaphoreGive(stream_state.mutex);
+                    break;
+                }
+                
+                // Try next file
+                snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, 
+                        stream_state.file_names[stream_state.current_file_idx]);
+                stream_state.current_file = fopen(file_path, "rb");
+                if (!stream_state.current_file) {
+                    ESP_LOGE(TAG, "Failed to open next file: %s", file_path);
+                    xSemaphoreGive(stream_state.mutex);
+                    return ESP_FAIL;
+                }
+                ESP_LOGI(TAG, "Opened next file after error: %s", stream_state.file_names[stream_state.current_file_idx]);
+                continue;  // Try reading from next file
+            }
+            
+            // Successfully decoded samples
+            if (decoded > 0) {
+                samples_read += decoded;
+            } else {
+                // No samples decoded but no error - should not happen, but break to avoid infinite loop
+                ESP_LOGW(TAG, "protobuf_read_delimited returned OK but decoded 0 samples");
+                break;
+            }
         }
-        sent += to_send;
-        vTaskDelay(pdMS_TO_TICKS(1));  // Yield to prevent watchdog
+        
+        xSemaphoreGive(stream_state.mutex);
+        
+        // If we have data, send it
+        if (samples_read > 0) {
+            esp_err_t send_err = httpd_resp_send_chunk(req, 
+                (const char*)stream_chunk_buffer, 
+                samples_read * sizeof(bno055_sample_t));
+            
+            if (send_err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to send chunk: %s", esp_err_to_name(send_err));
+                return send_err;
+            }
+            
+            // Update sent count
+            if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                stream_state.total_samples_sent += samples_read;
+                xSemaphoreGive(stream_state.mutex);
+            }
+            
+            vTaskDelay(pdMS_TO_TICKS(1));  // Yield to prevent watchdog
+        }
+        
+        // Check if transfer complete
+        if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            bool complete = stream_state.transfer_complete;
+            if (complete && stream_state.current_file) {
+                fclose(stream_state.current_file);
+                stream_state.current_file = NULL;
+            }
+            xSemaphoreGive(stream_state.mutex);
+            
+            if (complete) {
+                break;  // All data sent
+            }
+        }
+        
+        // If no data read and not complete, check for errors
+        if (samples_read == 0) {
+            if (read_err == ESP_OK) {
+                // No error but no data - wait a bit (shouldn't happen often)
+                vTaskDelay(pdMS_TO_TICKS(10));
+            } else if (read_err == ESP_ERR_NOT_FOUND) {
+                // EOF handled above - this shouldn't reach here
+                break;
+            } else {
+                // Error occurred - already handled above, but ensure we don't loop forever
+                ESP_LOGW(TAG, "No data read due to error: %s", esp_err_to_name(read_err));
+                vTaskDelay(pdMS_TO_TICKS(100));  // Wait before retry
+            }
+        }
     }
     
     // End chunked response
     httpd_resp_send_chunk(req, NULL, 0);
-    ESP_LOGI(TAG, "Data transfer complete");
+    
+    if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        ESP_LOGI(TAG, "Data transfer complete: %zu samples sent", stream_state.total_samples_sent);
+        stream_state.transfer_complete = true;
+        xSemaphoreGive(stream_state.mutex);
+    }
+    
     return ESP_OK;
 }
 
@@ -309,58 +626,106 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    if (!is_syncing || !sync_buffer || sync_buffer_count == 0) {
+    if (!is_syncing || stream_state.file_count == 0) {
         ESP_LOGW(TAG, "JSON data request rejected: No data available");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No data available");
         return ESP_FAIL;
     }
     
-    // Limit JSON output to prevent memory issues
+    // Limit JSON output to prevent memory issues (preview only)
     size_t max_samples = 200;
-    size_t samples_to_send = (sync_buffer_count < max_samples) ? sync_buffer_count : max_samples;
+    size_t samples_sent = 0;
     
     httpd_resp_set_type(req, "application/json");
     
-    // Send header with checksum for verification
+    // Send header
     char header[256];
     snprintf(header, sizeof(header), 
-        "{\"total_samples\":%zu,\"samples_in_response\":%zu,\"checksum\":%" PRIu32 ",\"data\":[",
-        sync_buffer_count, samples_to_send, sync_checksum);
+        "{\"files\":%zu,\"samples_in_response\":%zu,\"note\":\"Preview limited to %zu samples\",\"data\":[",
+        stream_state.file_count, max_samples, max_samples);
     httpd_resp_send_chunk(req, header, strlen(header));
     
-    // Send samples one by one
-    char sample_buf[256];
-    for (size_t i = 0; i < samples_to_send; i++) {
-        // Check if sync was stopped or buffer became invalid during transfer
-        if (!is_syncing || !sync_buffer || i >= sync_buffer_count) {
-            ESP_LOGW(TAG, "Sync interrupted during JSON transfer at sample %zu", i);
-            return ESP_FAIL;
+    // Read samples from first file(s) for preview
+    const char *mount_point = "/sdcard";
+    char file_path[160];
+    FILE *preview_file = NULL;
+    size_t file_idx = 0;
+    
+    while (samples_sent < max_samples && file_idx < stream_state.file_count) {
+        if (preview_file == NULL) {
+            snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[file_idx]);
+            preview_file = fopen(file_path, "rb");
+            if (!preview_file) {
+                ESP_LOGW(TAG, "Failed to open file for JSON preview: %s", file_path);
+                file_idx++;
+                continue;
+            }
         }
         
-        bno055_sample_t *s = &sync_buffer[i];
-        snprintf(sample_buf, sizeof(sample_buf),
-            "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
-            "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
-            "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f}",
-            (i > 0) ? "," : "",
-            (unsigned)s->t_ms, s->ax, s->ay, s->az,
-            s->gx, s->gy, s->gz,
-            s->qw, s->qx, s->qy, s->qz);
-        
-        esp_err_t err = httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to send JSON chunk at sample %zu: %s", i, esp_err_to_name(err));
-            return err;
+        // Read samples from current file
+        while (samples_sent < max_samples) {
+            size_t decoded = 0;
+            esp_err_t read_err = protobuf_read_delimited(preview_file, 
+                                                          stream_chunk_buffer, 
+                                                          STREAM_CHUNK_SAMPLES,
+                                                          &decoded);
+            
+            if (read_err == ESP_ERR_NOT_FOUND) {
+                // EOF on current file
+                fclose(preview_file);
+                preview_file = NULL;
+                file_idx++;
+                break;  // Move to next file
+            }
+            
+            if (read_err != ESP_OK) {
+                ESP_LOGW(TAG, "Error reading for JSON preview: %s", esp_err_to_name(read_err));
+                if (preview_file) {
+                    fclose(preview_file);
+                    preview_file = NULL;
+                }
+                break;
+            }
+            
+            // Send decoded samples as JSON
+            for (size_t i = 0; i < decoded && samples_sent < max_samples; i++) {
+                bno055_sample_t *s = &stream_chunk_buffer[i];
+                char sample_buf[256];
+                snprintf(sample_buf, sizeof(sample_buf),
+                    "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+                    "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
+                    "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f}",
+                    (samples_sent > 0) ? "," : "",
+                    (unsigned)s->t_ms, s->ax, s->ay, s->az,
+                    s->gx, s->gy, s->gz,
+                    s->qw, s->qx, s->qy, s->qz);
+                
+                esp_err_t err = httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to send JSON chunk: %s", esp_err_to_name(err));
+                    if (preview_file) {
+                        fclose(preview_file);
+                    }
+                    return err;
+                }
+                
+                samples_sent++;
+                
+                // Yield occasionally to prevent watchdog
+                if (samples_sent % 50 == 0) vTaskDelay(pdMS_TO_TICKS(1));
+            }
         }
-        
-        // Yield occasionally to prevent watchdog
-        if (i % 50 == 0) vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    
+    if (preview_file) {
+        fclose(preview_file);
     }
     
     // Send footer
     httpd_resp_send_chunk(req, "]}", 2);
     httpd_resp_send_chunk(req, NULL, 0);  // End chunked response
     
+    ESP_LOGI(TAG, "JSON preview sent: %zu samples", samples_sent);
     return ESP_OK;
 }
 
@@ -428,140 +793,106 @@ esp_err_t wifi_server_start_sync(void) {
         return ESP_ERR_INVALID_STATE;
     }
     
-    ESP_LOGI(TAG, "Starting data sync...");
+    ESP_LOGI(TAG, "Starting data sync (streaming mode)...");
+    
+    // Initialize streaming state if needed
+    esp_err_t ret = init_streaming_state();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
+    // Cleanup any previous state
+    cleanup_streaming_state();
     
     // Give scheduler a chance to run
     vTaskDelay(pdMS_TO_TICKS(10));
     
-    // Free any previous buffer (cleanup from previous sync attempt)
-    if (sync_buffer) {
-        if (sync_buffer_use_heap_caps) {
-            heap_caps_free(sync_buffer);
-        } else {
-            free(sync_buffer);
-        }
-        sync_buffer = NULL;
+    // Collect .pb file names from SD card (protobuf format)
+    const char *mount_point = "/sdcard";
+    DIR *dir = opendir(mount_point);
+    if (!dir) {
+        ESP_LOGE(TAG, "opendir(%s) failed", mount_point);
+        return ESP_FAIL;
     }
-    sync_buffer_count = 0;
-    sync_checksum = 0;
-    sync_buffer_use_heap_caps = false;
     
-    // Log memory status before allocation
-    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    ESP_LOGI(TAG, "Memory before sync: PSRAM=%zu bytes, Internal=%zu bytes", free_psram, free_internal);
-    
-    // Validate we have enough memory before attempting allocation
-    size_t buffer_size = SYNC_BUFFER_MAX_SAMPLES * sizeof(bno055_sample_t);
-    if (free_psram < buffer_size && free_internal < (256 * sizeof(bno055_sample_t))) {
-        ESP_LOGE(TAG, "Insufficient memory for sync: PSRAM=%zu, Internal=%zu", free_psram, free_internal);
+    size_t names_cap = 16;
+    stream_state.file_names = malloc(names_cap * sizeof(char *));
+    if (!stream_state.file_names) {
+        closedir(dir);
         return ESP_ERR_NO_MEM;
     }
+    stream_state.file_count = 0;
     
-    ESP_LOGI(TAG, "Allocating %zu bytes from PSRAM for sync buffer...", buffer_size);
-    
-    // Yield before allocation to prevent watchdog issues
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
-    // Try PSRAM first (8MB available on ESP32-S3-WROOM-1)
-    sync_buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
-    sync_buffer_use_heap_caps = (sync_buffer != NULL);
-    
-    if (!sync_buffer) {
-        ESP_LOGW(TAG, "PSRAM allocation failed (free: %zu), trying smaller buffer...", free_psram);
-        // Try a smaller buffer
-        buffer_size = 1024 * sizeof(bno055_sample_t);  // ~90KB
-        sync_buffer = heap_caps_malloc(buffer_size, MALLOC_CAP_SPIRAM);
-        sync_buffer_use_heap_caps = (sync_buffer != NULL);
-    }
-    
-    if (!sync_buffer) {
-        // Last resort: try internal RAM with small buffer
-        ESP_LOGW(TAG, "PSRAM still failed, trying internal RAM...");
-        buffer_size = 256 * sizeof(bno055_sample_t);  // ~22KB
-        sync_buffer = malloc(buffer_size);
-        sync_buffer_use_heap_caps = false;
-    }
-    
-    if (!sync_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate sync buffer - out of memory");
-        return ESP_ERR_NO_MEM;
-    }
-    
-    size_t max_samples = buffer_size / sizeof(bno055_sample_t);
-    ESP_LOGI(TAG, "Sync buffer allocated: %zu bytes for %zu samples", buffer_size, max_samples);
-    
-    // Yield before SD card read to prevent watchdog
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
-    // Read data from SD card with error handling
-    ESP_LOGI(TAG, "Reading from SD card...");
-    esp_err_t ret = storage_read_all_bin_into_buffer(sync_buffer, max_samples, &sync_buffer_count);
-    
-    // Yield after SD read
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
-    // Handle errors and edge cases
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD card read failed: %s", esp_err_to_name(ret));
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+#if defined(DT_REG)
+        if (entry->d_type != DT_REG) continue;
+#endif
+        const char *n = entry->d_name;
+        // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
+        bool is_protobuf = (strstr(n, ".pb") != NULL) || (strstr(n, ".PB") != NULL) ||
+                          (strstr(n, ".BIN") != NULL) || (strstr(n, ".bin") != NULL);
+        if (!is_protobuf) continue;
         
-        // Cleanup on error
-        if (sync_buffer) {
-            if (sync_buffer_use_heap_caps) {
-                heap_caps_free(sync_buffer);
-            } else {
-                free(sync_buffer);
-            }
-            sync_buffer = NULL;
+        size_t L = strnlen(n, 255);
+        if (L == 0 || L >= 64) continue;
+        
+        if (stream_state.file_count == names_cap) {
+            size_t new_cap = names_cap * 2;
+            char **tmp = realloc(stream_state.file_names, new_cap * sizeof(char *));
+            if (!tmp) break;
+            stream_state.file_names = tmp;
+            names_cap = new_cap;
         }
-        sync_buffer_count = 0;
-        sync_checksum = 0;
-        sync_buffer_use_heap_caps = false;
         
-        // Don't set is_syncing on error - allow retry
-        return ret;
+        stream_state.file_names[stream_state.file_count] = malloc(L + 1);
+        if (!stream_state.file_names[stream_state.file_count]) break;
+        memcpy(stream_state.file_names[stream_state.file_count], n, L);
+        stream_state.file_names[stream_state.file_count][L] = '\0';
+        stream_state.file_count++;
     }
+    closedir(dir);
     
-    // Handle case when no data available (but read succeeded)
-    if (sync_buffer_count == 0) {
-        ESP_LOGW(TAG, "No session data available on SD card");
+    if (stream_state.file_count == 0) {
+        ESP_LOGW(TAG, "No .pb files found on SD card");
         ESP_LOGW(TAG, "Start a recording session first, then sync");
-        
-        // Cleanup empty buffer
-        if (sync_buffer) {
-            if (sync_buffer_use_heap_caps) {
-                heap_caps_free(sync_buffer);
-            } else {
-                free(sync_buffer);
-            }
-            sync_buffer = NULL;
-        }
-        sync_buffer_use_heap_caps = false;
-        
-        // Don't set is_syncing - no data to sync
+        cleanup_streaming_state();
         return ESP_ERR_NOT_FOUND;
     }
     
-    // Validate data integrity
-    if (sync_buffer_count > max_samples) {
-        ESP_LOGE(TAG, "Data corruption: read %zu samples but buffer only holds %zu", 
-                 sync_buffer_count, max_samples);
-        sync_buffer_count = max_samples;  // Limit to buffer size
+    // Sort files ascending by filename
+    qsort(stream_state.file_names, stream_state.file_count, sizeof(char *), cmp_file_names);
+    
+    // Estimate total samples from file sizes (quick scan without reading all data)
+    // Protobuf format: ~110 bytes per sample on average
+    stream_state.total_samples_available = 0;
+    char file_path[160];
+    for (size_t i = 0; i < stream_state.file_count; i++) {
+        snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[i]);
+        FILE *f = fopen(file_path, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long file_size = ftell(f);
+            fclose(f);
+            if (file_size > 0) {
+                // Estimate: ~110 bytes per sample in protobuf format
+                stream_state.total_samples_available += (size_t)(file_size / 110);
+            }
+        }
     }
     
-    ESP_LOGI(TAG, "Read %zu samples from SD card (protobuf format)", sync_buffer_count);
+    stream_state.current_file_idx = 0;
+    stream_state.current_file = NULL;
+    stream_state.total_samples_sent = 0;
+    stream_state.transfer_complete = false;
     
-    // Compute checksum for verification
-    sync_checksum = compute_checksum(sync_buffer, sync_buffer_count);
-    
-    // Mark as syncing only after successful read and validation
+    // Mark as syncing
     is_syncing = true;
     
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "SYNC READY");
-    ESP_LOGI(TAG, "  Samples: %zu", sync_buffer_count);
-    ESP_LOGI(TAG, "  Size: %zu bytes", sync_buffer_count * sizeof(bno055_sample_t));
-    ESP_LOGI(TAG, "  CHECKSUM: %" PRIu32, sync_checksum);
+    ESP_LOGI(TAG, "SYNC READY (Streaming Mode)");
+    ESP_LOGI(TAG, "  Files: %zu", stream_state.file_count);
+    ESP_LOGI(TAG, "  Mode: Stream from SD card (no RAM limit)");
     ESP_LOGI(TAG, "Connect to WiFi: GoldenForm (pw: goldenform123)");
     ESP_LOGI(TAG, "Open: http://192.168.4.1");
     ESP_LOGI(TAG, "========================================");
@@ -570,26 +901,16 @@ esp_err_t wifi_server_start_sync(void) {
 }
 
 esp_err_t wifi_server_stop_sync(void) {
-    if (!is_syncing && !sync_buffer) {
+    if (!is_syncing) {
         return ESP_OK;  // Already stopped
     }
     
     is_syncing = false;
     
-    // Safely free buffer using correct function based on allocation method
-    if (sync_buffer) {
-        if (sync_buffer_use_heap_caps) {
-            heap_caps_free(sync_buffer);
-        } else {
-            free(sync_buffer);
-        }
-        sync_buffer = NULL;
-    }
-    sync_buffer_count = 0;
-    sync_checksum = 0;
-    sync_buffer_use_heap_caps = false;
+    // Cleanup streaming state
+    cleanup_streaming_state();
     
-    // Log memory after free
+    // Log memory after cleanup
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     ESP_LOGI(TAG, "Sync stopped - PSRAM: %zu bytes, Internal: %zu bytes", free_psram, free_internal);
@@ -610,6 +931,17 @@ esp_err_t wifi_server_deinit(void) {
     
     esp_wifi_stop();
     esp_wifi_deinit();
+    
+    // Cleanup streaming resources
+    cleanup_streaming_state();
+    if (stream_chunk_buffer) {
+        free(stream_chunk_buffer);
+        stream_chunk_buffer = NULL;
+    }
+    if (stream_state.mutex) {
+        vSemaphoreDelete(stream_state.mutex);
+        stream_state.mutex = NULL;
+    }
     
     current_state = WIFI_SERVER_STATE_IDLE;
     ESP_LOGI(TAG, "WiFi server stopped");

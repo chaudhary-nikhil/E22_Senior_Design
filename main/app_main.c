@@ -473,7 +473,8 @@ void app_main(void) {
     led_set(false);
     current_state = STATE_IDLE;
 
-    // Main loop
+    // Main loop - uses vTaskDelayUntil() for precise timing-critical IMU sampling
+    // This ensures consistent sample intervals even if other tasks run
     TickType_t last_wake = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ);
     

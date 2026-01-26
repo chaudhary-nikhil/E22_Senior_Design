@@ -12,7 +12,7 @@ extern "C" {
 
 // Storage configuration
 #define STORAGE_MAX_FILENAME_LEN 32
-#define STORAGE_DEFAULT_FILENAME "imu_data.bin"
+#define STORAGE_DEFAULT_FILENAME "imu_data.pb"
 
 // Storage state
 typedef enum {
@@ -132,7 +132,7 @@ esp_err_t storage_delete_all_files(void);
 esp_err_t storage_list_files(char files[][32], uint32_t max_files, uint32_t *actual_count);
 
 /**
- * @brief List only .BIN files (protobuf format)
+ * @brief List only .pb files (protobuf format, also supports legacy .BIN/.bin)
  */
 esp_err_t storage_list_bin_files(char files[][32], uint32_t max_files, 
                                   uint32_t *actual_count, bool sort_asc);
@@ -154,14 +154,14 @@ esp_err_t storage_read_bin_file_into_buffer(const char *filename,
                                             size_t *out_len);
 
 /**
- * @brief Iterate over all BIN files with callback
+ * @brief Iterate over all .pb files with callback (protobuf format)
  */
 esp_err_t storage_iterate_bin_files(storage_samples_cb_t cb,
                                     void *ctx,
                                     size_t chunk);
 
 /**
- * @brief Read ALL .BIN files into a single buffer
+ * @brief Read ALL .pb files into a single buffer (protobuf format, supports legacy .BIN/.bin)
  * 
  * Reads and decodes protobuf data from all session files.
  * Used during WiFi sync to prepare data for transfer.
