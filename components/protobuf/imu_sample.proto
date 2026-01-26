@@ -1,0 +1,56 @@
+// Protocol Buffer definition for IMU sample data
+// Used for efficient binary serialization to SD card
+
+syntax = "proto3";
+
+package formsync;
+
+// IMU sample matching bno055_sample_t structure
+message ImuSample {
+  uint32 t_ms = 1;           // Timestamp in milliseconds
+  
+  // Accelerometer (m/s²)
+  float ax = 2;
+  float ay = 3;
+  float az = 4;
+  
+  // Gyroscope (deg/s)
+  float gx = 5;
+  float gy = 6;
+  float gz = 7;
+  
+  // Magnetometer (μT)
+  float mx = 8;
+  float my = 9;
+  float mz = 10;
+  
+  // Euler angles (degrees)
+  float roll = 11;
+  float pitch = 12;
+  float yaw = 13;
+  
+  // Quaternion
+  float qw = 14;
+  float qx = 15;
+  float qy = 16;
+  float qz = 17;
+  
+  // Linear acceleration (m/s²)
+  float lia_x = 18;
+  float lia_y = 19;
+  float lia_z = 20;
+  
+  // Temperature (°C)
+  float temp = 21;
+  
+  // Calibration status (0-3)
+  uint32 sys_cal = 22;
+  uint32 gyro_cal = 23;
+  uint32 accel_cal = 24;
+  uint32 mag_cal = 25;
+}
+
+// Container for multiple samples (for batch writes)
+message ImuSampleBatch {
+  repeated ImuSample samples = 1;
+}
