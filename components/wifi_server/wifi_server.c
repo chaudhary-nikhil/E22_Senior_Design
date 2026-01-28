@@ -20,7 +20,6 @@
 #include "storage.h"
 #include "bno055.h"
 #include "protobuf_utils.h"
-#include "protobuf_utils.h"
 
 static const char *TAG = "WIFI_SERVER";
 
@@ -46,8 +45,9 @@ static streaming_state_t stream_state = {0};
 
 // Small buffer for reading chunks from SD card (much smaller than full session)
 // This buffer is used to accumulate samples from protobuf batches before sending
-// Each protobuf batch can contain up to MAX_BATCH_SAMPLES (256), so we need at least that
-#define STREAM_CHUNK_SAMPLES 256  // Must be >= MAX_BATCH_SAMPLES to avoid truncation
+// Each protobuf batch can contain up to 256 samples, so we need at least that
+#define STREAM_CHUNK_SAMPLES 256  // Must be >= max batch size to avoid truncation
+#define MAX_BATCH_SAMPLES 256     // Maximum samples per protobuf batch
 static bno055_sample_t *stream_chunk_buffer = NULL;
 
 // Initialize streaming state
@@ -436,10 +436,38 @@ static esp_err_t data_handler(httpd_req_t *req) {
             size_t decoded = 0;
             size_t remaining_space = STREAM_CHUNK_SAMPLES - samples_read;
             
-            read_err = protobuf_read_delimited(stream_state.current_file, 
-                                                stream_chunk_buffer + samples_read,
-                                                remaining_space,
-                                                &decoded);
+            // Only peek if we have limited space remaining (to avoid expensive peeks on every batch)
+            // If we have plenty of space (>= MAX_BATCH_SAMPLES), just read directly
+            if (remaining_space < MAX_BATCH_SAMPLES) {
+                // Limited space - peek to check if batch will fit
+                size_t batch_sample_count = 0;
+                esp_err_t peek_err = protobuf_peek_batch_size(stream_state.current_file, &batch_sample_count);
+                
+                if (peek_err == ESP_ERR_NOT_FOUND) {
+                    // EOF on current file - handle below
+                    read_err = ESP_ERR_NOT_FOUND;
+                    decoded = 0;
+                } else if (peek_err == ESP_OK && batch_sample_count > remaining_space) {
+                    // Batch won't fit in remaining space - break to send current chunk
+                    // The batch will be read in the next iteration when we have full buffer space
+                    ESP_LOGD(TAG, "Batch size %zu exceeds remaining space %zu - sending current chunk first", 
+                             batch_sample_count, remaining_space);
+                    break;
+                } else {
+                    // Batch will fit, or peek failed (try reading anyway)
+                    // Read the batch (will handle errors in read_err)
+                    read_err = protobuf_read_delimited(stream_state.current_file, 
+                                                        stream_chunk_buffer + samples_read,
+                                                        remaining_space,
+                                                        &decoded);
+                }
+            } else {
+                // Plenty of space - read directly without peeking (more efficient)
+                read_err = protobuf_read_delimited(stream_state.current_file, 
+                                                    stream_chunk_buffer + samples_read,
+                                                    remaining_space,
+                                                    &decoded);
+            }
             
             if (read_err == ESP_ERR_NOT_FOUND) {
                 // EOF on current file - move to next file
@@ -547,6 +575,7 @@ static esp_err_t data_handler(httpd_req_t *req) {
             // Successfully decoded samples
             if (decoded > 0) {
                 samples_read += decoded;
+                ESP_LOGD(TAG, "Read batch: %zu samples (total in chunk: %zu)", decoded, samples_read);
             } else {
                 // No samples decoded but no error - should not happen, but break to avoid infinite loop
                 ESP_LOGW(TAG, "protobuf_read_delimited returned OK but decoded 0 samples");
@@ -570,6 +599,7 @@ static esp_err_t data_handler(httpd_req_t *req) {
             // Update sent count
             if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                 stream_state.total_samples_sent += samples_read;
+                ESP_LOGI(TAG, "Sent chunk: %zu samples (total sent: %zu)", samples_read, stream_state.total_samples_sent);
                 xSemaphoreGive(stream_state.mutex);
             }
             
@@ -863,20 +893,49 @@ esp_err_t wifi_server_start_sync(void) {
     // Sort files ascending by filename
     qsort(stream_state.file_names, stream_state.file_count, sizeof(char *), cmp_file_names);
     
-    // Estimate total samples from file sizes (quick scan without reading all data)
-    // Protobuf format: ~110 bytes per sample on average
+    // Count actual samples by reading all files (accurate count, not estimate)
+    // This ensures the status endpoint shows the correct count
     stream_state.total_samples_available = 0;
     char file_path[160];
-    for (size_t i = 0; i < stream_state.file_count; i++) {
-        snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[i]);
-        FILE *f = fopen(file_path, "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long file_size = ftell(f);
-            fclose(f);
-            if (file_size > 0) {
-                // Estimate: ~110 bytes per sample in protobuf format
-                stream_state.total_samples_available += (size_t)(file_size / 110);
+    bno055_sample_t *count_buffer = malloc(256 * sizeof(bno055_sample_t));
+    if (count_buffer) {
+        for (size_t i = 0; i < stream_state.file_count; i++) {
+            snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[i]);
+            FILE *f = fopen(file_path, "rb");
+            if (f) {
+                size_t file_samples = 0;
+                while (true) {
+                    size_t decoded = 0;
+                    esp_err_t read_err = protobuf_read_delimited(f, count_buffer, 256, &decoded);
+                    if (read_err == ESP_ERR_NOT_FOUND) {
+                        break;  // EOF
+                    }
+                    if (read_err == ESP_OK && decoded > 0) {
+                        file_samples += decoded;
+                    } else {
+                        break;  // Error or no more data
+                    }
+                }
+                fclose(f);
+                stream_state.total_samples_available += file_samples;
+                ESP_LOGI(TAG, "File %s: %zu samples", stream_state.file_names[i], file_samples);
+            }
+        }
+        free(count_buffer);
+    } else {
+        // Fallback to estimation if memory allocation fails
+        ESP_LOGW(TAG, "Failed to allocate count buffer, using estimation");
+        for (size_t i = 0; i < stream_state.file_count; i++) {
+            snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[i]);
+            FILE *f = fopen(file_path, "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long file_size = ftell(f);
+                fclose(f);
+                if (file_size > 0) {
+                    // Estimate: ~109 bytes per sample in protobuf format (more accurate)
+                    stream_state.total_samples_available += (size_t)(file_size / 109);
+                }
             }
         }
     }

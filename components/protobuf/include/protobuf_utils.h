@@ -96,6 +96,19 @@ esp_err_t protobuf_read_delimited(FILE *file, bno055_sample_t *samples,
                                    size_t max_samples, size_t *decoded_count);
 
 /**
+ * @brief Peek at the sample count in the next length-delimited protobuf batch
+ * 
+ * Reads the length prefix and decodes just enough to get the sample count,
+ * then seeks back to the original position. Used to check if a batch will fit
+ * in available buffer space before reading it.
+ * 
+ * @param file File pointer (must be positioned at start of 4-byte length prefix)
+ * @param sample_count Output: number of samples in the batch
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND at EOF, ESP_FAIL on error
+ */
+esp_err_t protobuf_peek_batch_size(FILE *file, size_t *sample_count);
+
+/**
  * @brief Skip a length-delimited protobuf message in a file
  * 
  * Reads the 4-byte length prefix and seeks past the protobuf data.

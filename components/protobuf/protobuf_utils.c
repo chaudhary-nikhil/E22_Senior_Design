@@ -302,6 +302,80 @@ esp_err_t protobuf_read_delimited(FILE *file, bno055_sample_t *samples,
 }
 
 /**
+ * @brief Peek at the sample count in the next length-delimited protobuf batch
+ * 
+ * Reads the length prefix and decodes just enough to get the sample count,
+ * then seeks back to the original position. Used to check if a batch will fit
+ * in available buffer space before reading it.
+ * 
+ * @param file File pointer (must be positioned at start of 4-byte length prefix)
+ * @param sample_count Output: number of samples in the batch
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND at EOF, ESP_FAIL on error
+ */
+esp_err_t protobuf_peek_batch_size(FILE *file, size_t *sample_count) {
+    if (!file || !sample_count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Save current position
+    long start_pos = ftell(file);
+    if (start_pos < 0) {
+        return ESP_FAIL;
+    }
+    
+    // Read 4-byte length prefix
+    uint32_t len = 0;
+    if (fread(&len, sizeof(len), 1, file) != 1) {
+        return ESP_ERR_NOT_FOUND;  // EOF
+    }
+    
+    // Sanity check on length
+    if (len == 0 || len > 1024 * 1024) {
+        fseek(file, start_pos, SEEK_SET);  // Restore position
+        return ESP_FAIL;
+    }
+    
+    // Allocate buffer to read the batch
+    uint8_t *buffer = malloc(len);
+    if (!buffer) {
+        fseek(file, start_pos, SEEK_SET);  // Restore position
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Read encoded data
+    if (fread(buffer, 1, len, file) != len) {
+        free(buffer);
+        fseek(file, start_pos, SEEK_SET);  // Restore position
+        return ESP_FAIL;
+    }
+    
+    // Decode just to get sample count (allocate minimal batch structure)
+    formsync_ImuSampleBatch *batch = calloc(1, sizeof(formsync_ImuSampleBatch));
+    if (!batch) {
+        free(buffer);
+        fseek(file, start_pos, SEEK_SET);  // Restore position
+        return ESP_ERR_NO_MEM;
+    }
+    
+    pb_istream_t stream = pb_istream_from_buffer(buffer, len);
+    bool decode_ok = pb_decode(&stream, formsync_ImuSampleBatch_fields, batch);
+    
+    if (decode_ok) {
+        *sample_count = batch->samples_count;
+    } else {
+        *sample_count = 0;
+    }
+    
+    free(batch);
+    free(buffer);
+    
+    // Restore file position
+    fseek(file, start_pos, SEEK_SET);
+    
+    return decode_ok ? ESP_OK : ESP_FAIL;
+}
+
+/**
  * @brief Skip a length-delimited protobuf message in a file
  * 
  * Used when we can't allocate memory to read a message - we skip it to continue
