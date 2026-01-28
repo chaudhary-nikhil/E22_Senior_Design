@@ -18,14 +18,14 @@ static const char *TAG = "APP";
 void app_main(void) {
     ESP_LOGI(TAG, "FormSync FW starting");
 
-    // Init I2C (SDA=21, SCL=22 @ 100kHz for BNO055 compatibility)
-    ESP_ERROR_CHECK(bus_i2c_init(I2C_NUM_0, 21, 22, 100000));
+    // Init I2C (SDA=GPIO4, SCL=GPIO5 @ 100kHz for BNO055 compatibility)
+    ESP_ERROR_CHECK(bus_i2c_init(I2C_NUM_0, 4, 5, 100000));
 
     // Init BNO055 IMU (with graceful error handling)
     esp_err_t bno_err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
     if (bno_err != ESP_OK) {
         ESP_LOGE(TAG, "BNO055 initialization failed: %s", esp_err_to_name(bno_err));
-        ESP_LOGE(TAG, "Please check BNO055 wiring: SDA=21, SCL=22, VCC=3.3V, GND=GND");
+        ESP_LOGE(TAG, "Please check BNO055 wiring: SDA=GPIO4, SCL=GPIO5, VCC=3.3V, GND=GND");
         ESP_LOGE(TAG, "Continuing without BNO055 - no data will be logged");
         // Don't crash, just continue without IMU
     } else {

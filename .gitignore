@@ -56,3 +56,7 @@ fp-info-cache
 .DS_Store
 Thumbs.db
 .vscode/
+
+./**/build/
+./**/sdkconfig
+./**/sdkconfig.old

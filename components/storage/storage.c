@@ -53,6 +53,11 @@ static uint32_t file_index_in_session = 0;                // 0,1,2,...
 static const char mount_point[] = "/sdcard";
 static sdmmc_card_t* card = NULL;
 
+#define STORAGE_SD_SPI_MOSI_GPIO 47   // Adafruit SI / SD_MOSI
+#define STORAGE_SD_SPI_MISO_GPIO 14   // Adafruit SO / SD_MISO
+#define STORAGE_SD_SPI_SCK_GPIO  21   // Adafruit CLK / SD_SCK
+#define STORAGE_SD_SPI_CS_GPIO   48   // Adafruit CS / SD_CS
+
 // -------- recent in-RAM ring for last K samples (decoupled from Wi-Fi) -----
 #define RECENT_RING_CAP 256
 static bno055_sample_t s_recent_ring[RECENT_RING_CAP];
@@ -435,11 +440,13 @@ esp_err_t storage_list_files(char files[][32], uint32_t max_files, uint32_t* act
 // =======================================================
 
 static esp_err_t mount_sd_card(void) {
-    // SPI bus for SD (SPI2 / HSPI)
+
+    // ===== SPI (SDSPI) mode =====
+    // Use SPI2 / HSPI bus for SD
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = 23,
-        .miso_io_num = 19,
-        .sclk_io_num = 18,
+        .mosi_io_num = STORAGE_SD_SPI_MOSI_GPIO,
+        .miso_io_num = STORAGE_SD_SPI_MISO_GPIO,
+        .sclk_io_num = STORAGE_SD_SPI_SCK_GPIO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
