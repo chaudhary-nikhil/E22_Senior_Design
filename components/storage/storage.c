@@ -53,28 +53,6 @@ static uint32_t file_index_in_session = 0;                // 0,1,2,...
 static const char mount_point[] = "/sdcard";
 static sdmmc_card_t* card = NULL;
 
-// =======================================================
-// SD Card wiring (SPI only)
-// =======================================================
-// This project originally used a TFT module’s SD-over-SPI pins (SD_CS/SD_MOSI/SD_MISO/SD_SCK).
-// We are using the Adafruit "MicroSD SPI or SDIO Card Breakout Board" in **SPI mode**.
-//
-// SPI (SDSPI) wiring:
-//    - Breakout CLK -> ESP32 SCK  (SPI clock)
-//    - Breakout SO  -> ESP32 MISO (SD -> MCU)
-//    - Breakout SI  -> ESP32 MOSI (MCU -> SD)
-//    - Breakout CS  -> ESP32 CS   (chip select)
-//
-// IMPORTANT:
-// - You MUST set the GPIO numbers below to match how you physically wired the breakout.
-// - Default values below are placeholders / common defaults; adjust for your board.
-
-// ---- SPI pin mapping (Adafruit: CLK/SO/SI/CS) ----
-// Old TFT wiring (and usable for Adafruit breakout in SPI mode):
-//   - CS  = GPIO48
-//   - MOSI= GPIO47
-//   - MISO= GPIO14
-//   - SCK = GPIO21
 #define STORAGE_SD_SPI_MOSI_GPIO 47   // Adafruit SI / SD_MOSI
 #define STORAGE_SD_SPI_MISO_GPIO 14   // Adafruit SO / SD_MISO
 #define STORAGE_SD_SPI_SCK_GPIO  21   // Adafruit CLK / SD_SCK
@@ -462,11 +440,6 @@ esp_err_t storage_list_files(char files[][32], uint32_t max_files, uint32_t* act
 // =======================================================
 
 static esp_err_t mount_sd_card(void) {
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = true,
-        .max_files = 10,
-        .allocation_unit_size = 16 * 1024
-    };
 
     // ===== SPI (SDSPI) mode =====
     // Use SPI2 / HSPI bus for SD
@@ -479,30 +452,27 @@ static esp_err_t mount_sd_card(void) {
         .max_transfer_sz = 4000,
     };
 
-    ESP_LOGI(TAG, "Mounting SD over SPI: MOSI=%d MISO=%d SCK=%d CS=%d",
-             STORAGE_SD_SPI_MOSI_GPIO, STORAGE_SD_SPI_MISO_GPIO,
-             STORAGE_SD_SPI_SCK_GPIO, STORAGE_SD_SPI_CS_GPIO);
-
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = STORAGE_SD_SPI_CS_GPIO;
+    slot_config.gpio_cs = 5;
     slot_config.host_id = SPI2_HOST;
 
-    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
-    if (ret != ESP_OK) {
-        // If mount fails, free bus to avoid leaking the SPI bus reservation
-        spi_bus_free(SPI2_HOST);
-        return ret;
-    }
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = true,
+        .max_files = 10,
+        .allocation_unit_size = 16 * 1024
+    };
 
-    ESP_LOGI(TAG, "SD card mounted at %s (SPI)", mount_point);
-    return ESP_OK;
+    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
+    }
+    return ret;
 }
 
 static esp_err_t unmount_sd_card(void) {
