@@ -70,10 +70,15 @@ static sdmmc_card_t* card = NULL;
 // - Default values below are placeholders / common defaults; adjust for your board.
 
 // ---- SPI pin mapping (Adafruit: CLK/SO/SI/CS) ----
-#define STORAGE_SD_SPI_MOSI_GPIO 23   // Adafruit SI
-#define STORAGE_SD_SPI_MISO_GPIO 19   // Adafruit SO
-#define STORAGE_SD_SPI_SCK_GPIO  18   // Adafruit CLK
-#define STORAGE_SD_SPI_CS_GPIO    5   // Adafruit CS
+// Old TFT wiring (and usable for Adafruit breakout in SPI mode):
+//   - CS  = GPIO48
+//   - MOSI= GPIO47
+//   - MISO= GPIO14
+//   - SCK = GPIO21
+#define STORAGE_SD_SPI_MOSI_GPIO 47   // Adafruit SI / SD_MOSI
+#define STORAGE_SD_SPI_MISO_GPIO 14   // Adafruit SO / SD_MISO
+#define STORAGE_SD_SPI_SCK_GPIO  21   // Adafruit CLK / SD_SCK
+#define STORAGE_SD_SPI_CS_GPIO   48   // Adafruit CS / SD_CS
 
 // -------- recent in-RAM ring for last K samples (decoupled from Wi-Fi) -----
 #define RECENT_RING_CAP 256
