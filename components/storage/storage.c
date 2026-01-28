@@ -458,6 +458,7 @@ static esp_err_t mount_sd_card(void) {
         return ret;
     }
 
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = 5;
     slot_config.host_id = SPI2_HOST;
