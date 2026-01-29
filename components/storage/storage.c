@@ -60,7 +60,12 @@ static uint32_t file_index_in_session = 0;
 
 // Mount point and card
 static const char mount_point[] = "/sdcard";
-static sdmmc_card_t *card = NULL;
+static sdmmc_card_t* card = NULL;
+
+#define STORAGE_SD_SPI_MOSI_GPIO 47   // Adafruit SI / SD_MOSI
+#define STORAGE_SD_SPI_MISO_GPIO 14   // Adafruit SO / SD_MISO
+#define STORAGE_SD_SPI_SCK_GPIO  21   // Adafruit CLK / SD_SCK
+#define STORAGE_SD_SPI_CS_GPIO   48   // Adafruit CS / SD_CS
 
 // ============== Background flush task ==============
 static TaskHandle_t flush_task_handle = NULL;
@@ -488,6 +493,250 @@ esp_err_t storage_list_files(char files[][32], uint32_t max_files, uint32_t *act
     return ESP_OK;
 }
 
+// =======================================================
+// Internal helpers
+// =======================================================
+
+static esp_err_t mount_sd_card(void) {
+
+    // ===== SPI (SDSPI) mode =====
+    // Use SPI2 / HSPI bus for SD
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = STORAGE_SD_SPI_MOSI_GPIO,
+        .miso_io_num = STORAGE_SD_SPI_MISO_GPIO,
+        .sclk_io_num = STORAGE_SD_SPI_SCK_GPIO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4000,
+    };
+
+    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = 5;
+    slot_config.host_id = SPI2_HOST;
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = true,
+        .max_files = 10,
+        .allocation_unit_size = 16 * 1024
+    };
+
+    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
+    }
+    return ret;
+}
+
+static esp_err_t unmount_sd_card(void) {
+    if (card != NULL) {
+        esp_err_t ret = esp_vfs_fat_sdcard_unmount(mount_point, card);
+        card = NULL;
+        ESP_LOGI(TAG, "SD card unmounted");
+        // Free the SPI bus created in mount_sd_card()
+        spi_bus_free(SPI2_HOST);
+        return ret;
+    }
+    return ESP_OK;
+}
+
+
+// --------- CSV header now matches bno055_sample_t -----------
+static esp_err_t create_csv_header(FILE* file) {
+    if (file == NULL) return ESP_ERR_INVALID_ARG;
+
+    int ret = fprintf(file,
+        "timestamp_ms,"
+        "ax_mps2,ay_mps2,az_mps2,"
+        "gx_dps,gy_dps,gz_dps,"
+        "mx_uT,my_uT,mz_uT,"
+        "roll_deg,pitch_deg,yaw_deg,"
+        "qw,qx,qy,qz,"
+        "temp_c,"
+        "sys_cal,gyro_cal,accel_cal,mag_cal\n");
+    if (ret < 0) return ESP_FAIL;
+
+    fflush(file);
+    fsync(fileno(file));
+    return ESP_OK;
+}
+
+/**
+ * @brief Open a new data file using a short 8.3 name, write header if CSV, update bookkeeping.
+ * (Kept function name for minimal changes to your code.)
+ */
+static esp_err_t open_new_csv_file(void) {
+    // Close any existing file first (safety)
+    if (current_file) {
+        fflush(current_file);
+        fsync(fileno(current_file));
+        fclose(current_file);
+        current_file = NULL;
+    }
+
+    // Name pattern: S<5-digit time><2-digit index>.{CSV|BIN}  -> always 8.3
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    uint32_t t5 = now_ms % 100000;            // last 5 digits
+    uint32_t idx2 = file_index_in_session % 100;
+
+    char filename[13];  // "S12345A7.CSV"/"S12345A7.BIN"
+    if (STORAGE_TO_BINARY) {
+        snprintf(filename, sizeof(filename), "S%05" PRIu32 "%02" PRIu32 ".BIN", t5, idx2);
+    } else {
+        snprintf(filename, sizeof(filename), "S%05" PRIu32 "%02" PRIu32 ".CSV", t5, idx2);
+    }
+
+    char full_path[96];
+    int n = snprintf(full_path, sizeof(full_path), "%s/%s", mount_point, filename);
+    if (n < 0 || (size_t)n >= sizeof(full_path)) {
+        ESP_LOGE(TAG, "Full path too long");
+        return ESP_FAIL;
+    }
+
+    current_file = fopen(full_path, "wb");  // works for CSV or BIN
+    if (!current_file) {
+        ESP_LOGE(TAG, "Failed to create file: %s (errno=%d, %s)",
+                full_path, errno, strerror(errno));
+        return ESP_FAIL;
+    }
+
+    // Add a stdio buffer to reduce syscalls
+    static char filebuf[4096];
+    setvbuf(current_file, filebuf, _IOFBF, sizeof(filebuf));
+
+    if (!STORAGE_TO_BINARY) {
+        // CSV header
+        esp_err_t ret = create_csv_header(current_file);
+        if (ret != ESP_OK) {
+            fclose(current_file);
+            current_file = NULL;
+            return ret;
+        }
+    }
+
+    // Bookkeeping
+    snprintf(current_filename, sizeof(current_filename), "%s", filename);
+    current_file_samples = 0;
+    current_file_size = 0;
+    current_file_open_ms = now_ms;
+
+    ESP_LOGI(TAG, "Opened new %s: %s", STORAGE_TO_BINARY ? "BIN" : "CSV", current_filename);
+    return ESP_OK;
+}
+
+// ---------------- batch flush implementation -----------------
+
+static esp_err_t flush_batch_locked(bool force)
+{
+    if (!current_file || s_batch_len == 0) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = ESP_OK;
+
+    if (STORAGE_TO_BINARY) {
+        size_t n = fwrite(s_batch, sizeof(bno055_sample_t), s_batch_len, current_file);
+        if (n != s_batch_len) {
+            ESP_LOGE(TAG, "BIN flush failed (wrote %u of %u)", (unsigned)n, (unsigned)s_batch_len);
+            err = ESP_FAIL;
+        } else {
+            current_file_size += (uint32_t)(n * sizeof(bno055_sample_t));
+        }
+    } else {
+        // CSV: write one line per struct, sum bytes for size
+        uint32_t bytes_total = 0;
+        for (size_t i = 0; i < s_batch_len; ++i) {
+            bno055_sample_t *s = &s_batch[i];
+            int w = fprintf(current_file,
+                "%" PRIu32 ","
+                "%.6f,%.6f,%.6f,"
+                "%.6f,%.6f,%.6f,"
+                "%.6f,%.6f,%.6f,"
+                "%.6f,%.6f,%.6f,"
+                "%.7f,%.7f,%.7f,%.7f,"
+                "%.2f,"
+                "%u,%u,%u,%u\n",
+                s->t_ms,
+                s->ax, s->ay, s->az,
+                s->gx, s->gy, s->gz,
+                s->mx, s->my, s->mz,
+                s->roll, s->pitch, s->yaw,
+                s->qw, s->qx, s->qy, s->qz,
+                s->temp,
+                (unsigned)s->sys_cal, (unsigned)s->gyro_cal, (unsigned)s->accel_cal, (unsigned)s->mag_cal
+            );
+            if (w < 0) { err = ESP_FAIL; break; }
+            bytes_total += (uint32_t)w;
+        }
+        current_file_size += bytes_total;
+    }
+
+    if (err == ESP_OK) {
+        fflush(current_file);
+        fsync(fileno(current_file));
+        s_batch_len = 0;
+    }
+    return err;
+}
+
+// =======================================================
+// Added helpers: listing to text + BLE-friendly streaming
+// (unchanged from your file except minor comment)
+// =======================================================
+
+static __attribute__((unused)) esp_err_t list_files_to_text(char *out, size_t out_cap, uint32_t *count_out) {
+    if (!out || out_cap == 0 || !count_out) return ESP_ERR_INVALID_ARG;
+    if (!storage_is_available()) return ESP_ERR_INVALID_STATE;
+
+    DIR* dir = opendir(mount_point);
+    if (!dir) {
+        ESP_LOGE(TAG, "opendir(%s) failed", mount_point);
+        return ESP_FAIL;
+    }
+
+    size_t used = 0;
+    uint32_t count = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL) {
+#if defined(DT_REG)
+        bool is_reg = (entry->d_type == DT_REG);
+#else
+        bool is_reg = true;
+#endif
+        if (!is_reg) continue;
+
+        const char* name = entry->d_name;
+        if (!(strstr(name, ".csv") || strstr(name, ".CSV") ||
+              strstr(name, ".bin") || strstr(name, ".BIN"))) continue;
+
+        size_t name_len = strnlen(name, 255);
+        if (used + name_len + 1 >= out_cap) break;  // +1 for '\n'
+
+        memcpy(out + used, name, name_len);
+        used += name_len;
+        out[used++] = '\n';
+        count++;
+    }
+    closedir(dir);
+
+    if (used < out_cap) out[used] = '\0';
+    *count_out = count;
+    return ESP_OK;
+}
+
+// ... (ble_chunk_and_send, storage_stream_file_over_ble, storage_read_file_into_buffer)
+//     keep exactly as in your file above (no changes needed)
+
+
+// read sd part 
+// ---- NEW: list only .BIN files (optionally sort) ----
 static int name_cmp_asc(const void *a, const void *b) {
     const char *sa = (const char*)a;
     const char *sb = (const char*)b;
