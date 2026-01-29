@@ -26,30 +26,13 @@
 #include "driver/gpio.h"
 #include "led_strip.h"
 #include "sdkconfig.h"
-
 #include "bus_i2c.h"
 #include "bno055.h"
 #include "storage.h"
+#include "wifi_server.h"
 
 #define DEBUG_SD_CARD 0
 #define PRINT_INTERVAL 100
-
-static const char *TAG = "APP";
-
-void app_main(void) {
-    ESP_LOGI(TAG, "FormSync FW starting");
-
-    // Init I2C (SDA=GPIO4, SCL=GPIO5 @ 100kHz for BNO055 compatibility)
-    ESP_ERROR_CHECK(bus_i2c_init(I2C_NUM_0, 4, 5, 100000));
-
-    // Init BNO055 IMU (with graceful error handling)
-    esp_err_t bno_err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
-    if (bno_err != ESP_OK) {
-        ESP_LOGE(TAG, "BNO055 initialization failed: %s", esp_err_to_name(bno_err));
-        ESP_LOGE(TAG, "Please check BNO055 wiring: SDA=GPIO4, SCL=GPIO5, VCC=3.3V, GND=GND");
-        ESP_LOGE(TAG, "Continuing without BNO055 - no data will be logged");
-        // Don't crash, just continue without IMU
-#include "wifi_server.h"
 
 static const char *TAG = "GOLDENFORM";
 
@@ -433,9 +416,10 @@ static void init_bno055_address_pin(void) {
 
 // ============== Main Application ==============
 void app_main(void) {
-    ESP_LOGI(TAG, "==========================================");
-    ESP_LOGI(TAG, "GoldenForm Firmware (ESP32-S3-WROOM-1)");
-    ESP_LOGI(TAG, "==========================================");
+    ESP_LOGI(TAG, "GoldenForm Firmware (ESP32-S3-WROOM-1 starting)");
+
+     // Init I2C (SDA=GPIO4, SCL=GPIO5 @ 100kHz for BNO055 compatibility)
+     ESP_ERROR_CHECK(bus_i2c_init(I2C_NUM_0, 4, 5, 100000));
 
     // Initialize GPIO (button, LED)
     init_gpio();
