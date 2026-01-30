@@ -1,19 +1,6 @@
 /**
  * @file app_main.c
  * @brief GoldenForm Firmware - ESP32-S3-WROOM-1
- * 
- * State Machine:
- *   IDLE    → (button) → LOGGING  : LED ON,  collecting IMU data to SD
- *   LOGGING → (button) → STOPPED  : LED OFF, SD session closed
- *   STOPPED → (button) → SYNCING  : LED BLINK, WiFi serving data
- *   SYNCING → (button) → IDLE     : LED OFF, ready for new session
- * 
- * Pin Assignments (from schematic, configured in Kconfig):
- *   BNO055 I2C:  SDA=GPIO4, SCL=GPIO5, ADDR=GPIO6, INT=GPIO7
- *   SD Card:     MOSI=GPIO47, MISO=GPIO14, SCK=GPIO21, CS=GPIO48
- *   LEDs:        LED1=GPIO1, LED2=GPIO2, LED3=GPIO8 (not connected yet)
- *   Button:      GPIO0 (BOOT button on module)
- *   Haptic:      GPIO38 (not implemented yet)
  */
 
 #include <stdio.h>
@@ -480,7 +467,8 @@ void app_main(void) {
     // This ensures consistent sample intervals even if other tasks run
     TickType_t last_wake = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ);
-    
+
+    int count = 0;
     while (1) {
         // Handle button press
         if (button_pressed) {
@@ -490,12 +478,52 @@ void app_main(void) {
 
         // Collect IMU data if logging
         if (current_state == STATE_LOGGING && bno055_available) {
+            count++;
             bno055_sample_t sample;
             err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
             
             if (err == ESP_OK) {
+                char json_data[512];
+                if(count == PRINT_INTERVAL) {
+                    snprintf(json_data, sizeof(json_data),
+                    "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
+                    (unsigned) sample.t_ms, sample.ax, sample.ay, sample.az, sample.gx, sample.gy, sample.gz,
+                    sample.mx, sample.my, sample.mz, sample.roll, sample.pitch, sample.yaw,
+                    sample.qw, sample.qx, sample.qy, sample.qz, sample.lia_x, sample.lia_y, sample.lia_z, sample.temp,
+                    sample.sys_cal, sample.gyro_cal, sample.accel_cal, sample.mag_cal);
+                    count = 0;
+                }
+
                 // Store to SD card
                 if (storage_available && storage_is_recording()) {
+
+                    if(DEBUG_SD_CARD) {
+                        sample.ax = 1.0f;
+                        sample.ay = 1.0f;
+                        sample.az = 1.0f;
+                        sample.gx = 1.0f;
+                        sample.gy = 1.0f;
+                        sample.gz = 1.0f;
+                        sample.mx = 1.0f;
+                        sample.my = 1.0f;
+                        sample.mz = 1.0f;
+                        sample.roll = 1.0f;
+                        sample.pitch = 1.0f;
+                        sample.yaw = 1.0f;
+                        sample.qw = 1.0f;
+                        sample.qx = 1.0f;
+                        sample.qy = 1.0f;
+                        sample.qz = 1.0f;
+                        sample.lia_x = 1.0f;
+                        sample.lia_y = 1.0f;
+                        sample.lia_z = 1.0f;
+                        sample.temp = 1.0f;
+                        sample.sys_cal = 1;
+                        sample.gyro_cal = 1;
+                        sample.accel_cal = 1;
+                        sample.mag_cal = 1;
+                    }
+                    
                     err = storage_enqueue_bno_sample(&sample);
                     if (err == ESP_OK) {
                         session_sample_count++;
