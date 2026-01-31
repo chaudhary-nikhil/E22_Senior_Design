@@ -55,8 +55,6 @@ fp-info-cache
 *.kicad_pro.user
 .DS_Store
 Thumbs.db
-.vscode/
 
 ./**/build/
-./**/sdkconfig
 ./**/sdkconfig.old
