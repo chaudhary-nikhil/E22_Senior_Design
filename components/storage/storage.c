@@ -8,6 +8,7 @@
 #include "driver/sdmmc_host.h"
 #include "driver/spi_common.h"
 #include "driver/sdspi_host.h"
+#include "driver/gpio.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -695,6 +696,7 @@ esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
 // ============== Internal helper functions ==============
 
 static esp_err_t mount_sd_card(void) {
+    // Configure SPI bus with internal pullups enabled
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = CONFIG_FORMSYNC_SD_MOSI_GPIO,
         .miso_io_num = CONFIG_FORMSYNC_SD_MISO_GPIO,
@@ -702,32 +704,45 @@ static esp_err_t mount_sd_card(void) {
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
+        .flags = SPICOMMON_BUSFLAG_MASTER,
     };
 
     ESP_LOGI(TAG, "SD SPI pins: MOSI=%d, MISO=%d, SCK=%d, CS=%d",
              CONFIG_FORMSYNC_SD_MOSI_GPIO, CONFIG_FORMSYNC_SD_MISO_GPIO,
              CONFIG_FORMSYNC_SD_SCK_GPIO, CONFIG_FORMSYNC_SD_CS_GPIO);
 
-    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
+    // Enable internal pullups on MISO (required for SD card)
+    gpio_set_pull_mode(CONFIG_FORMSYNC_SD_MISO_GPIO, GPIO_PULLUP_ONLY);
+    
+    // Use SPI_DMA_CH_AUTO for ESP32-S3 compatibility (or disable DMA with 0)
+    esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize SPI bus: %s", esp_err_to_name(ret));
         return ret;
     }
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.max_freq_khz = 400;  // Start very slow (400kHz) for initialization
+    
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = CONFIG_FORMSYNC_SD_CS_GPIO;
     slot_config.host_id = SPI2_HOST;
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = true,
-        .max_files = 10,
+        .max_files = 5,
         .allocation_unit_size = 16 * 1024
     };
 
+    ESP_LOGI(TAG, "Attempting to mount SD card...");
     ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+    
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
+        // Print card info
+        sdmmc_card_print_info(stdout, card);
+    } else {
+        ESP_LOGE(TAG, "Failed to mount SD card: %s", esp_err_to_name(ret));
     }
     return ret;
 }
@@ -873,7 +888,7 @@ static esp_err_t flush_psram_to_sd(void) {
     current_file_samples += popped;
     
     // Estimate file size (actual size tracked by seeking would be expensive)
-    current_file_size += popped * 110;  // ~110 bytes per sample in protobuf
+    current_file_size += popped * 125;  // ~125 bytes per sample in protobuf
 
     // Periodic progress logging (every 1000 samples)
     if (total_session_samples % 1000 < popped) {

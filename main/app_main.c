@@ -35,12 +35,11 @@ static const char *TAG = "GOLDENFORM";
 // Button: Using BOOT button (GPIO0) on ESP32-S3 module
 #define BUTTON_GPIO         0
 
-// LED: Using onboard RGB LED on GPIO48 (ESP32-S3-WROOM-1 dev board)
-// RGB LED is on GPIO48, using red channel for status indication
-// NOTE: GPIO48 is also configured for SD card CS in Kconfig (CONFIG_FORMSYNC_SD_CS_GPIO=48)
-// If SD card is actually using GPIO48, there will be a hardware conflict.
-// On dev boards, verify SD card CS pin - it may be on a different GPIO.
-#define LED_GPIO            48
+// LED Configuration
+// Set LED_ENABLED to 0 to disable LED (required when no LED is wired or GPIO conflicts)
+// GPIO48 is used for SD card CS, so LED is disabled to avoid conflict
+#define LED_ENABLED         0
+#define LED_GPIO            48  // Not used when LED_ENABLED=0
 
 // ============== Application State Machine ==============
 typedef enum {
@@ -64,12 +63,12 @@ static bool bno055_available = false;
 static bool storage_available = false;
 static bool wifi_available = false;
 
-// LED blink task handle
+// LED variables (only used when LED_ENABLED=1)
+#if LED_ENABLED
 static TaskHandle_t led_blink_task_handle = NULL;
 static volatile bool led_blink_stop = false;
-
-// NeoPixel LED strip handle (RGB LED on GPIO48)
 static led_strip_handle_t led_strip = NULL;
+#endif
 
 // ============== Button ISR ==============
 static void IRAM_ATTR button_isr_handler(void* arg) {
@@ -81,92 +80,53 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
 }
 
 // ============== LED Control ==============
-// ESP32-S3-WROOM-1 dev board has RGB NeoPixel LED on GPIO48
-// Using RMT driver to control the NeoPixel LED (WS2812 protocol)
-// NOTE: GPIO48 is shared with SD card CS - LED disabled during recording
+// LED control functions (only compiled when LED_ENABLED=1)
+#if LED_ENABLED
 static void led_set(bool on) {
     if (led_strip == NULL) {
-        ESP_LOGW(TAG, "LED strip not initialized");
         return;
     }
-    
-    // Safety check: Don't use LED if SD card is recording (GPIO48 conflict)
-    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
-    if (storage_available && storage_is_recording()) {
-        // LED disabled during recording to avoid GPIO48 conflict with SD card CS
-        return;
-    }
-    #endif
     
     if (on) {
-        // Set LED to red (R=255, G=0, B=0) for status indication
-        // Note: led_strip_set_pixel uses RGB order: (strip, index, red, green, blue)
         esp_err_t ret = led_strip_set_pixel(led_strip, 0, 255, 0, 0);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set LED pixel: %s", esp_err_to_name(ret));
-            return;
-        }
-        ret = led_strip_refresh(led_strip);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to refresh LED strip: %s", esp_err_to_name(ret));
-            return;
+        if (ret == ESP_OK) {
+            led_strip_refresh(led_strip);
         }
         ESP_LOGI(TAG, "LED ON (GPIO%d - Red)", LED_GPIO);
     } else {
-        // Turn LED off
-        esp_err_t ret = led_strip_clear(led_strip);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to clear LED strip: %s", esp_err_to_name(ret));
-            return;
-        }
+        led_strip_clear(led_strip);
         ESP_LOGI(TAG, "LED OFF (GPIO%d)", LED_GPIO);
     }
 }
+#else
+// LED disabled - empty function
+static void led_set(bool on) {
+    (void)on;  // Suppress unused parameter warning
+}
+#endif
 
+#if LED_ENABLED
 static void led_blink_task(void *arg) {
     ESP_LOGI(TAG, "LED blink task started");
     led_blink_stop = false;
     
     if (led_strip == NULL) {
-        ESP_LOGE(TAG, "LED strip not initialized in blink task");
         led_blink_task_handle = NULL;
         vTaskDelete(NULL);
         return;
     }
     
     while (!led_blink_stop) {
-        // Safety check: Don't use LED if SD card is recording (GPIO48 conflict)
-        #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
-        if (storage_available && storage_is_recording()) {
-            // Skip LED operations during recording
-            vTaskDelay(pdMS_TO_TICKS(500));
-            continue;
-        }
-        #endif
-        
-        // LED ON (red) - using NeoPixel API
-        // Note: led_strip_set_pixel uses RGB order: (strip, index, red, green, blue)
-        esp_err_t ret = led_strip_set_pixel(led_strip, 0, 255, 0, 0);
-        if (ret == ESP_OK) {
-            ret = led_strip_refresh(led_strip);
-        }
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set LED in blink task: %s", esp_err_to_name(ret));
-        }
+        led_strip_set_pixel(led_strip, 0, 255, 0, 0);
+        led_strip_refresh(led_strip);
         vTaskDelay(pdMS_TO_TICKS(250));
         if (led_blink_stop) break;
         
-        // LED OFF - using NeoPixel API
-        ret = led_strip_clear(led_strip);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to clear LED in blink task: %s", esp_err_to_name(ret));
-        }
+        led_strip_clear(led_strip);
         vTaskDelay(pdMS_TO_TICKS(250));
     }
     
-    // Ensure LED is off when stopping
     led_strip_clear(led_strip);
-    ESP_LOGI(TAG, "LED blink task stopped");
     led_blink_task_handle = NULL;
     vTaskDelete(NULL);
 }
@@ -174,7 +134,6 @@ static void led_blink_task(void *arg) {
 static void led_blink_start(void) {
     if (led_blink_task_handle == NULL) {
         led_blink_stop = false;
-        // Increased stack size to 2048 for safety
         xTaskCreate(led_blink_task, "led_blink", 2048, NULL, 5, &led_blink_task_handle);
     }
 }
@@ -182,16 +141,19 @@ static void led_blink_start(void) {
 static void led_blink_stop_and_wait(void) {
     if (led_blink_task_handle != NULL) {
         led_blink_stop = true;
-        // Wait for task to finish (max 1 second)
         for (int i = 0; i < 20 && led_blink_task_handle != NULL; i++) {
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
-    // Ensure LED is off
     if (led_strip != NULL) {
         led_strip_clear(led_strip);
     }
 }
+#else
+// LED disabled - empty functions
+static void led_blink_start(void) { }
+static void led_blink_stop_and_wait(void) { }
+#endif
 
 // ============== State Transitions ==============
 static void transition_to_logging(void) {
@@ -213,18 +175,15 @@ static void transition_to_logging(void) {
         }
     }
     
-    // NOTE: LED disabled during recording due to GPIO48 conflict with SD card CS
-    // LED and SD card CS both use GPIO48 - LED operations interfere with SD card
-    // LED will be re-enabled when recording stops
-    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
-    ESP_LOGI(TAG, "LED disabled during recording (GPIO48 conflict with SD CS)");
-    #else
-    // Turn LED ON solid - logging in progress (only if no conflict)
+    // Turn LED ON if enabled
     led_set(true);
-    #endif
     current_state = STATE_LOGGING;
     
-    ESP_LOGI(TAG, "LED ON (GPIO%d) - Recording - Press button to STOP", LED_GPIO);
+#if LED_ENABLED
+    ESP_LOGI(TAG, "LED ON - Recording - Press button to STOP");
+#else
+    ESP_LOGI(TAG, "Recording - Press button to STOP");
+#endif
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -242,15 +201,11 @@ static void transition_to_stopped(void) {
         storage_stop_session();
     }
     
-    // Re-enable LED now that SD card is idle (GPIO48 conflict resolved)
-    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
-    // LED can now be used again since SD card is not actively writing
-    #endif
     // Turn LED OFF - stopped
     led_set(false);
     current_state = STATE_STOPPED;
     
-    ESP_LOGI(TAG, "LED OFF (GPIO%d) - Press button to SYNC via WiFi", LED_GPIO);
+    ESP_LOGI(TAG, "Press button to SYNC via WiFi");
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -347,44 +302,34 @@ static void init_gpio(void) {
     gpio_install_isr_service(0);
     gpio_isr_handler_add(BUTTON_GPIO, button_isr_handler, NULL);
     
-    // Configure LED - Initialize NeoPixel RGB LED on GPIO48
-    // ESP32-S3-WROOM-1 dev board has RGB NeoPixel LED on GPIO48
+    // Configure LED (only if enabled)
+#if LED_ENABLED
     ESP_LOGI(TAG, "Initializing NeoPixel LED strip on GPIO%d...", LED_GPIO);
     
-    // LED strip configuration
     led_strip_config_t strip_config = {
         .strip_gpio_num = LED_GPIO,
-        .max_leds = 1,  // Only one LED on the board
+        .max_leds = 1,
     };
     
-    // RMT configuration for NeoPixel
     led_strip_rmt_config_t rmt_config = {
-        .resolution_hz = 10 * 1000 * 1000, // 10MHz
+        .resolution_hz = 10 * 1000 * 1000,
         .flags.with_dma = false,
     };
     
-    // Create LED strip handle
     esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize LED strip: %s", esp_err_to_name(ret));
         led_strip = NULL;
     } else {
-        // Small delay to ensure LED strip is ready
         vTaskDelay(pdMS_TO_TICKS(10));
-        // Initialize LED to OFF (IDLE state)
         led_strip_clear(led_strip);
-        // Small delay after clear to ensure command is sent
         vTaskDelay(pdMS_TO_TICKS(10));
-        ESP_LOGI(TAG, "NeoPixel LED strip initialized successfully on GPIO%d", LED_GPIO);
+        ESP_LOGI(TAG, "NeoPixel LED strip initialized on GPIO%d", LED_GPIO);
     }
-    
-    ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d (BOOT), LED=GPIO%d (RGB@IO48 NeoPixel)", BUTTON_GPIO, LED_GPIO);
-    ESP_LOGI(TAG, "LED states: IDLE=OFF, LOGGING=ON (Red), STOPPED=OFF, SYNCING=BLINK (Red)");
-    
-    // Warn about potential pin conflict with SD card CS
-    #if CONFIG_FORMSYNC_SD_CS_GPIO == LED_GPIO
-    ESP_LOGW(TAG, "WARNING: GPIO%d is used for both LED and SD card CS - verify hardware connections!", LED_GPIO);
-    #endif
+    ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d (BOOT), LED=GPIO%d", BUTTON_GPIO, LED_GPIO);
+#else
+    ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d (BOOT), LED=disabled (GPIO%d reserved for SD CS)", BUTTON_GPIO, LED_GPIO);
+#endif
 }
 
 static void init_bno055_address_pin(void) {
@@ -404,9 +349,6 @@ static void init_bno055_address_pin(void) {
 // ============== Main Application ==============
 void app_main(void) {
     ESP_LOGI(TAG, "GoldenForm Firmware (ESP32-S3-WROOM-1 starting)");
-
-     // Init I2C (SDA=GPIO4, SCL=GPIO5 @ 100kHz for BNO055 compatibility)
-     ESP_ERROR_CHECK(bus_i2c_init(I2C_NUM_0, 4, 5, 100000));
 
     // Initialize GPIO (button, LED)
     init_gpio();

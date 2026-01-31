@@ -12,8 +12,9 @@ static const char *TAG = "PROTOBUF";
 // Maximum samples per batch (must match .options file max_count)
 #define MAX_BATCH_SAMPLES 256
 
-// Estimated size per sample in protobuf format (with some margin)
-#define ESTIMATED_SAMPLE_SIZE 120
+// Estimated size per sample in protobuf format (with margin for 2-byte tags on fields 16+)
+// Actual size ~125 bytes: fields 1-15 (~74B) + fields 16-25 (~48B) + submessage wrapper (~3B)
+#define ESTIMATED_SAMPLE_SIZE 140
 
 // Helper to copy bno055_sample_t to formsync_ImuSample
 static void sample_to_proto(const bno055_sample_t *sample, formsync_ImuSample *msg)
