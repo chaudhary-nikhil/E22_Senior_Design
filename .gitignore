@@ -51,10 +51,12 @@ _autosave-*
 *-autosave.kicad_sch
 *-autosave.kicad_pcb
 fp-info-cache
-*.kicad_prl
+*.kicad_prl 
 *.kicad_pro.user
 .DS_Store
 Thumbs.db
 
 ./**/build/
 ./**/sdkconfig.old
+
+9600/
