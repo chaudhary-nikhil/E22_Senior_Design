@@ -59,4 +59,6 @@ Thumbs.db
 ./**/build/
 ./**/sdkconfig.old
 
+./**/*.lck
+
 9600/
