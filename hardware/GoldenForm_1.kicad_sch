@@ -8442,7 +8442,7 @@
 				)
 			)
 		)
-		(property "Value" "LED_1"
+		(property "Value" "LED_2"
 			(at 106.6165 57.404 0)
 			(effects
 				(font
