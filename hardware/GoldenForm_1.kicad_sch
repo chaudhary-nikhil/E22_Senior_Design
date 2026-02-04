@@ -2137,7 +2137,7 @@
 					)
 				)
 			)
-			(property "Footprint" "Library:SON50P250X250X80-11N"
+			(property "Footprint" "MyFootprints:SON50P250X250X80-11N"
 				(at 0 0 0)
 				(effects
 					(font
@@ -2217,8 +2217,8 @@
 			)
 			(symbol "RT6150B-33GQW_0_0"
 				(rectangle
-					(start -12.7 -15.24)
-					(end 12.7 12.7)
+					(start -12.7 12.7)
+					(end 12.7 -15.24)
 					(stroke
 						(width 0.254)
 						(type default)
@@ -2292,24 +2292,6 @@
 						)
 					)
 					(number "7"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-				)
-				(pin output line
-					(at 17.78 10.16 180)
-					(length 5.08)
-					(name "VOUT"
-						(effects
-							(font
-								(size 1.016 1.016)
-							)
-						)
-					)
-					(number "1"
 						(effects
 							(font
 								(size 1.016 1.016)
@@ -2418,6 +2400,26 @@
 						)
 					)
 					(number "9"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+				)
+			)
+			(symbol "RT6150B-33GQW_1_0"
+				(pin power_out line
+					(at 17.78 10.16 180)
+					(length 5.08)
+					(name "VOUT"
+						(effects
+							(font
+								(size 1.016 1.016)
+							)
+						)
+					)
+					(number "1"
 						(effects
 							(font
 								(size 1.016 1.016)
@@ -4489,131 +4491,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "power:+3.3V"
-			(power)
-			(pin_numbers
-				(hide yes)
-			)
-			(pin_names
-				(offset 0)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(property "Reference" "#PWR"
-				(at 0 -3.81 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Value" "+3.3V"
-				(at 0 3.556 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(property "ki_keywords" "global power"
-				(at 0 0 0)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-					(hide yes)
-				)
-			)
-			(symbol "+3.3V_0_1"
-				(polyline
-					(pts
-						(xy -0.762 1.27) (xy 0 2.54)
-					)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy 0 2.54) (xy 0.762 1.27)
-					)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy 0 0) (xy 0 2.54)
-					)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "+3.3V_1_1"
-				(pin power_in line
-					(at 0 0 90)
-					(length 0)
-					(name "~"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "power:GND"
 			(power)
 			(pin_numbers
@@ -5007,16 +4884,16 @@
 		(uuid "3514fb3c-7604-4fc4-9df5-42269e058426")
 	)
 	(junction
-		(at 100.33 153.67)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "440f3553-201f-4983-b241-0a1bc8f22c0e")
-	)
-	(junction
 		(at 95.25 82.55)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "4cb77770-2752-4c64-a494-1269d53bd082")
+	)
+	(junction
+		(at 100.33 153.67)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "6cc5ea22-3236-4a74-bc19-a1ab56b81366")
 	)
 	(junction
 		(at 143.51 100.33)
@@ -5468,16 +5345,6 @@
 	)
 	(wire
 		(pts
-			(xy 100.33 149.86) (xy 100.33 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "34b85448-6364-4920-9abf-2aa072762b7e")
-	)
-	(wire
-		(pts
 			(xy 121.92 69.85) (xy 128.27 69.85)
 		)
 		(stroke
@@ -5728,6 +5595,16 @@
 	)
 	(wire
 		(pts
+			(xy 100.33 153.67) (xy 99.06 153.67)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "60326e2d-7634-4c4d-a1d1-4d127d7ef5d9")
+	)
+	(wire
+		(pts
 			(xy 236.22 118.11) (xy 231.14 118.11)
 		)
 		(stroke
@@ -5825,16 +5702,6 @@
 			(type default)
 		)
 		(uuid "693507a3-12a7-4e2b-86cb-47d1aaa1c711")
-	)
-	(wire
-		(pts
-			(xy 100.33 153.67) (xy 104.14 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "699be7f7-07cf-41a7-975a-a5ae4f4ddf87")
 	)
 	(wire
 		(pts
@@ -6358,6 +6225,16 @@
 	)
 	(wire
 		(pts
+			(xy 104.14 153.67) (xy 100.33 153.67)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "ba97e0ea-b5d1-43ad-9c83-0801c01daf6a")
+	)
+	(wire
+		(pts
 			(xy 63.5 86.36) (xy 63.5 88.9)
 		)
 		(stroke
@@ -6385,16 +6262,6 @@
 			(type default)
 		)
 		(uuid "c0bddee8-879d-48d8-9bbf-5b1899bb807e")
-	)
-	(wire
-		(pts
-			(xy 99.06 153.67) (xy 100.33 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "c0eb48b8-d74f-4bc9-b1c9-f085dd618a96")
 	)
 	(wire
 		(pts
@@ -7666,6 +7533,28 @@
 	)
 	(global_label "V_DD"
 		(shape input)
+		(at 104.14 153.67 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "ab6defd8-33c5-4e9e-8e7b-71e89179988d")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 111.7214 153.67 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+				(hide yes)
+			)
+		)
+	)
+	(global_label "V_DD"
+		(shape input)
 		(at 228.6 29.21 90)
 		(fields_autoplaced yes)
 		(effects
@@ -7789,28 +7678,6 @@
 		(uuid "b85ccc83-0aa0-4218-90f4-cb7f3af55ba2")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
 			(at 171.8347 95.25 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-				(hide yes)
-			)
-		)
-	)
-	(global_label "V_DD"
-		(shape input)
-		(at 104.14 153.67 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "b942b1af-f9ce-4445-96bf-76d35b03173a")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 111.7214 153.67 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -12591,72 +12458,6 @@
 			(project ""
 				(path "/64cfd788-f968-4e49-826d-6322743ab44f"
 					(reference "C5")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:+3.3V")
-		(at 100.33 149.86 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "e804f9f7-3537-4ea0-8108-e55340c3c4bc")
-		(property "Reference" "#PWR012"
-			(at 100.33 153.67 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "+3.3V"
-			(at 100.33 144.78 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 100.33 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 100.33 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
-			(at 100.33 149.86 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "967a2867-3a19-4585-b49c-d0b58402b5ca")
-		)
-		(instances
-			(project ""
-				(path "/64cfd788-f968-4e49-826d-6322743ab44f"
-					(reference "#PWR012")
 					(unit 1)
 				)
 			)
