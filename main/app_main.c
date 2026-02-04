@@ -41,6 +41,11 @@ static const char *TAG = "GOLDENFORM";
 #define LED_ENABLED         0
 #define LED_GPIO            48  // Not used when LED_ENABLED=0
 
+// Status LEDs on GPIO 40, 41, 42
+#define POWER_LED_GPIO      40  // Always on when powered
+#define STATUS_LED_GPIO     41  // ON during logging, BLINKS during syncing
+#define ERROR_LED_GPIO      42  // ON when any error occurs (IMU, SD card, WiFi)
+
 // ============== Application State Machine ==============
 typedef enum {
     STATE_IDLE,         // Not doing anything
@@ -62,6 +67,16 @@ static uint32_t session_start_time = 0;
 static bool bno055_available = false;
 static bool storage_available = false;
 static bool wifi_available = false;
+static bool system_has_error = false;
+
+// ============== Error LED Control ==============
+static void error_led_set(bool on) {
+    gpio_set_level(ERROR_LED_GPIO, on ? 1 : 0);
+    if (on) {
+        system_has_error = true;
+        ESP_LOGW(TAG, "Error LED ON (GPIO%d)", ERROR_LED_GPIO);
+    }
+}
 
 // LED variables (only used when LED_ENABLED=1)
 #if LED_ENABLED
@@ -155,6 +170,45 @@ static void led_blink_start(void) { }
 static void led_blink_stop_and_wait(void) { }
 #endif
 
+// ============== Status LED (GPIO 41) Blink Control for Syncing ==============
+static TaskHandle_t status_led_blink_task_handle = NULL;
+static volatile bool status_led_blink_stop = false;
+
+static void status_led_blink_task(void *arg) {
+    ESP_LOGI(TAG, "Status LED blink task started (GPIO%d)", STATUS_LED_GPIO);
+    status_led_blink_stop = false;
+    
+    while (!status_led_blink_stop) {
+        gpio_set_level(STATUS_LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (status_led_blink_stop) break;
+        
+        gpio_set_level(STATUS_LED_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    
+    gpio_set_level(STATUS_LED_GPIO, 0);
+    status_led_blink_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void status_led_blink_start(void) {
+    if (status_led_blink_task_handle == NULL) {
+        status_led_blink_stop = false;
+        xTaskCreate(status_led_blink_task, "status_led_blink", 2048, NULL, 5, &status_led_blink_task_handle);
+    }
+}
+
+static void status_led_blink_stop_and_wait(void) {
+    if (status_led_blink_task_handle != NULL) {
+        status_led_blink_stop = true;
+        for (int i = 0; i < 20 && status_led_blink_task_handle != NULL; i++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+    gpio_set_level(STATUS_LED_GPIO, 0);
+}
+
 // ============== State Transitions ==============
 static void transition_to_logging(void) {
     ESP_LOGI(TAG, "========================================");
@@ -166,24 +220,23 @@ static void transition_to_logging(void) {
     
     // Ensure any previous blink task is stopped
     led_blink_stop_and_wait();
+    status_led_blink_stop_and_wait();
     
     // Start SD card session
     if (storage_available) {
         esp_err_t err = storage_start_session();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start storage session: %s", esp_err_to_name(err));
+            error_led_set(true);
         }
     }
     
-    // Turn LED ON if enabled
+    // Turn ON status LED (GPIO 41) - solid on for logging
+    gpio_set_level(STATUS_LED_GPIO, 1);
     led_set(true);
     current_state = STATE_LOGGING;
     
-#if LED_ENABLED
-    ESP_LOGI(TAG, "LED ON - Recording - Press button to STOP");
-#else
-    ESP_LOGI(TAG, "Recording - Press button to STOP");
-#endif
+    ESP_LOGI(TAG, "Status LED ON (GPIO%d) - Recording - Press button to STOP", STATUS_LED_GPIO);
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -201,11 +254,12 @@ static void transition_to_stopped(void) {
         storage_stop_session();
     }
     
-    // Turn LED OFF - stopped
+    // Turn OFF status LED (GPIO 41)
+    gpio_set_level(STATUS_LED_GPIO, 0);
     led_set(false);
     current_state = STATE_STOPPED;
     
-    ESP_LOGI(TAG, "Press button to SYNC via WiFi");
+    ESP_LOGI(TAG, "Status LED OFF (GPIO%d) - Press button to SYNC via WiFi", STATUS_LED_GPIO);
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -216,13 +270,14 @@ static void transition_to_syncing(void) {
     
     current_state = STATE_SYNCING;
     
-    // Start LED blink to indicate syncing mode
+    // Start status LED blink (GPIO 41) to indicate syncing mode
+    status_led_blink_start();
     led_blink_start();
     
     // Check WiFi availability before starting sync
     if (!wifi_available) {
         ESP_LOGW(TAG, "WiFi not available - cannot sync data");
-        ESP_LOGI(TAG, "LED BLINKING - WiFi unavailable, press button to return to IDLE");
+        ESP_LOGI(TAG, "Status LED BLINKING (GPIO%d) - WiFi unavailable, press button to return to IDLE", STATUS_LED_GPIO);
         ESP_LOGI(TAG, "========================================");
         return;
     }
@@ -232,6 +287,7 @@ static void transition_to_syncing(void) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start sync: %s", esp_err_to_name(err));
         ESP_LOGW(TAG, "WiFi server may still be running - visit http://192.168.4.1");
+        error_led_set(true);
     } else {
         ESP_LOGI(TAG, "Data loaded into PSRAM buffer");
         ESP_LOGI(TAG, "Connect to WiFi: %s (password: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
@@ -246,7 +302,7 @@ static void transition_to_syncing(void) {
         }
     }
     
-    ESP_LOGI(TAG, "LED BLINKING - Press button to return to IDLE");
+    ESP_LOGI(TAG, "Status LED BLINKING (GPIO%d) - Press button to return to IDLE", STATUS_LED_GPIO);
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -254,19 +310,22 @@ static void transition_to_idle(void) {
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, ">>> STATE: IDLE");
     
-    // Stop LED blink task first
+    // Stop LED blink tasks
     led_blink_stop_and_wait();
+    status_led_blink_stop_and_wait();
     
     // Stop WiFi sync and free PSRAM buffer
     if (wifi_available) {
         wifi_server_stop_sync();
     }
     
+    // Ensure status LED is off
+    gpio_set_level(STATUS_LED_GPIO, 0);
     led_set(false);
     current_state = STATE_IDLE;
     session_sample_count = 0;
     
-    ESP_LOGI(TAG, "LED OFF - Press button to start LOGGING");
+    ESP_LOGI(TAG, "Status LED OFF (GPIO%d) - Press button to start LOGGING", STATUS_LED_GPIO);
     ESP_LOGI(TAG, "========================================");
 }
 
@@ -301,6 +360,25 @@ static void init_gpio(void) {
     gpio_config(&btn_cfg);
     gpio_install_isr_service(0);
     gpio_isr_handler_add(BUTTON_GPIO, button_isr_handler, NULL);
+    
+    // Configure status LEDs on GPIO 40, 41, 42
+    gpio_config_t led_cfg = {
+        .pin_bit_mask = (1ULL << POWER_LED_GPIO) | (1ULL << STATUS_LED_GPIO) | (1ULL << ERROR_LED_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&led_cfg);
+    
+    // Power LED (GPIO 40) - always on
+    gpio_set_level(POWER_LED_GPIO, 1);
+    // Status LED (GPIO 41) - off initially (ON=logging, BLINK=syncing)
+    gpio_set_level(STATUS_LED_GPIO, 0);
+    // Error LED (GPIO 42) - off initially (turns on when errors occur)
+    gpio_set_level(ERROR_LED_GPIO, 0);
+    ESP_LOGI(TAG, "LEDs initialized: Power=GPIO%d (ON), Status=GPIO%d (OFF), Error=GPIO%d (OFF)", 
+             POWER_LED_GPIO, STATUS_LED_GPIO, ERROR_LED_GPIO);
     
     // Configure LED (only if enabled)
 #if LED_ENABLED
@@ -371,6 +449,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "BNO055 initialized at 0x%02X", BNO055_ADDR_A);
     } else {
         ESP_LOGW(TAG, "BNO055 not found - continuing without IMU");
+        error_led_set(true);
     }
 
     // Initialize SD card storage
@@ -380,6 +459,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "SD card storage initialized");
     } else {
         ESP_LOGW(TAG, "SD card not available - continuing without storage");
+        error_led_set(true);
     }
 
     // Initialize WiFi server
@@ -389,6 +469,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "WiFi AP initialized: %s", WIFI_AP_SSID);
     } else {
         ESP_LOGW(TAG, "WiFi init failed - continuing without WiFi");
+        error_led_set(true);
     }
 
     // Print status
@@ -397,6 +478,9 @@ void app_main(void) {
     ESP_LOGI(TAG, "  BNO055 IMU: %s", bno055_available ? "OK" : "NOT FOUND");
     ESP_LOGI(TAG, "  SD Card: %s", storage_available ? "OK" : "NOT FOUND");
     ESP_LOGI(TAG, "  WiFi AP: %s", wifi_available ? "OK" : "FAILED");
+    if (system_has_error) {
+        ESP_LOGW(TAG, "  Error LED: ON (one or more subsystems failed)");
+    }
     ESP_LOGI(TAG, "==========================================");
     ESP_LOGI(TAG, "Press BOOT button to start LOGGING");
     ESP_LOGI(TAG, "==========================================");
