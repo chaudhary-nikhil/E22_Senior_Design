@@ -19,7 +19,6 @@
 #include "wifi_server.h"
 
 #define DEBUG_SD_CARD 0
-#define PRINT_INTERVAL 100
 
 static const char *TAG = "GOLDENFORM";
 
@@ -494,7 +493,6 @@ void app_main(void) {
     TickType_t last_wake = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ);
 
-    int count = 0;
     while (1) {
         // Handle button press
         if (button_pressed) {
@@ -502,28 +500,29 @@ void app_main(void) {
             handle_button_press();
         }
 
-        // Collect IMU data if logging
-        if (current_state == STATE_LOGGING && bno055_available) {
-            count++;
+        // Read IMU whenever sensor is available (for UART live stream + optional SD logging)
+        if (bno055_available) {
             bno055_sample_t sample;
             err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
-            
             if (err == ESP_OK) {
-                char json_data[512];
-                if(count == PRINT_INTERVAL) {
+                // Stream JSON to UART for live visualizer (every 2 samples ~50 Hz at 100 Hz rate)
+                static uint32_t uart_stream_count = 0;
+                uart_stream_count++;
+                if (uart_stream_count >= 2) {
+                    uart_stream_count = 0;
+                    char json_data[512];
                     snprintf(json_data, sizeof(json_data),
-                    "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
-                    (unsigned) sample.t_ms, sample.ax, sample.ay, sample.az, sample.gx, sample.gy, sample.gz,
-                    sample.mx, sample.my, sample.mz, sample.roll, sample.pitch, sample.yaw,
-                    sample.qw, sample.qx, sample.qy, sample.qz, sample.lia_x, sample.lia_y, sample.lia_z, sample.temp,
-                    sample.sys_cal, sample.gyro_cal, sample.accel_cal, sample.mag_cal);
-                    count = 0;
+                        "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%.1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
+                        (unsigned) sample.t_ms, sample.ax, sample.ay, sample.az, sample.gx, sample.gy, sample.gz,
+                        sample.mx, sample.my, sample.mz, sample.roll, sample.pitch, sample.yaw,
+                        sample.qw, sample.qx, sample.qy, sample.qz, sample.lia_x, sample.lia_y, sample.lia_z, sample.temp,
+                        sample.sys_cal, sample.gyro_cal, sample.accel_cal, sample.mag_cal);
+                    printf("%s\n", json_data);
                 }
 
-                // Store to SD card
-                if (storage_available && storage_is_recording()) {
-
-                    if(DEBUG_SD_CARD) {
+                // When logging, also store to SD card
+                if (current_state == STATE_LOGGING && storage_available && storage_is_recording()) {
+                    if (DEBUG_SD_CARD) {
                         sample.ax = 1.0f;
                         sample.ay = 1.0f;
                         sample.az = 1.0f;
@@ -549,12 +548,9 @@ void app_main(void) {
                         sample.accel_cal = 1;
                         sample.mag_cal = 1;
                     }
-                    
                     err = storage_enqueue_bno_sample(&sample);
                     if (err == ESP_OK) {
                         session_sample_count++;
-                        
-                        // Log progress every 100 samples
                         if (session_sample_count % 100 == 0) {
                             ESP_LOGI(TAG, "Logging: %u samples", session_sample_count);
                         }

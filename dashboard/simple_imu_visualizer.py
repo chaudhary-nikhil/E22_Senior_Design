@@ -7,6 +7,7 @@ feedback in the terminal to help with sensor calibration.
 """
 
 import serial
+import serial.tools.list_ports
 import json
 import threading
 import time
@@ -624,32 +625,62 @@ def broadcast_data(json_data):
         global latest_data_json
         latest_data_json = json_data
 
-# --- Serial Receiver (MODIFIED to be quiet) ---
-def serial_receiver(processor: StrokeProcessor):
-    global serial_port, last_cal_print_time, last_cal_status
-    
-    possible_ports = ['/dev/cu.usbserial-0001', '/dev/cu.usbserial-0002', '/dev/cu.usbserial-0003'] # macOS
-    if sys.platform.startswith('linux'):
-        possible_ports = [f'/dev/ttyUSB{i}' for i in range(4)]
-    elif sys.platform.startswith('win'):
-        possible_ports = [f'COM{i}' for i in range(1, 10)]
+def get_serial_port_list():
+    """Discover serial ports, excluding Bluetooth. Prefer known USB-serial (ESP32)."""
+    # Skip Bluetooth and virtual ports that are never the ESP32
+    skip_substrings = (
+        "Bluetooth", "BLTH", "Bluetooth-Incoming", "BTSerial",
+        "debug", "Dial-in", "modem", "rfcomm",
+    )
+    def is_likely_esp32(port_path):
+        p = port_path.upper()
+        for skip in skip_substrings:
+            if skip.upper() in p:
+                return False
+        return True
+    ports = [p.device for p in serial.tools.list_ports.comports() if is_likely_esp32(p.device)]
+    # Prefer known USB-serial adapters (idf.py / ESP32 typical names)
+    def priority(path):
+        if "SLAB_USBtoUART" in path or "usbserial" in path or "wchusbserial" in path:
+            return 0
+        if sys.platform == "darwin" and path.startswith("/dev/cu."):
+            return 1
+        return 2
+    ports.sort(key=lambda x: (priority(x), x))
+    return ports
 
-    while True: 
+
+# --- Serial Receiver (MODIFIED to be quiet) ---
+def serial_receiver(processor: StrokeProcessor, preferred_port=None):
+    global serial_port, last_cal_print_time, last_cal_status
+
+    while True:
         if serial_port is None:
+            if preferred_port:
+                possible_ports = [preferred_port]
+                print(f"Using port: {preferred_port}", flush=True)
+            else:
+                possible_ports = get_serial_port_list()
             print("Attempting to connect to ESP32...", flush=True)
+            if not possible_ports:
+                print("No serial ports found. Is the ESP32 plugged in (USB data cable)?", flush=True)
+            else:
+                print(f"Trying ports: {possible_ports}", flush=True)
             for port in possible_ports:
                 try:
-                    if sys.platform.startswith('win') or os.path.exists(port):
-                        serial_port = serial.Serial(port, 115200, timeout=1)
-                        print(f"Connected to ESP32 on {port}", flush=True)
-                        break
+                    serial_port = serial.Serial(port, 115200, timeout=1)
+                    print(f"Connected to ESP32 on {port}", flush=True)
+                    break
                 except serial.SerialException as e:
-                    print(f"Port {port} busy or unavailable: {e}", flush=True)
+                    print(f"  {port}: {e}", flush=True)
+                    serial_port = None
                 except Exception as e:
-                    print(f"Failed to connect to {port}: {e}", flush=True)
-            
+                    print(f"  {port}: {e}", flush=True)
+                    serial_port = None
+
             if serial_port is None:
-                print("ERROR: Could not find ESP32. Retrying in 5 seconds.", flush=True)
+                print("ERROR: Could not open any port. Unplug other serial apps (monitor, Arduino IDE) or specify port: python3 simple_imu_visualizer.py <port>", flush=True)
+                print("Retrying in 5 seconds.", flush=True)
                 time.sleep(5)
                 continue
     
@@ -759,18 +790,28 @@ if __name__ == "__main__":
     print("ESP32 IMU 3D Visualizer - Stroke Integration Version")
     print("===================================================", flush=True)
     
-    default_port = 8003
-    port = int(os.environ.get("PORT", default_port))
-    if len(sys.argv) > 1:
-        try:
-            port = int(sys.argv[1])
-        except ValueError:
-            print(f"Invalid port argument '{sys.argv[1]}', using port {port}", flush=True)
+    default_http_port = 8003
+    http_port = int(os.environ.get("PORT", default_http_port))
+    serial_port_arg = None
+    if len(sys.argv) >= 2:
+        arg1 = sys.argv[1]
+        if arg1.startswith("/dev/") or arg1.upper().startswith("COM"):
+            serial_port_arg = arg1
+            if len(sys.argv) >= 3:
+                try:
+                    http_port = int(sys.argv[2])
+                except ValueError:
+                    pass
+        else:
+            try:
+                http_port = int(arg1)
+            except ValueError:
+                print(f"Invalid argument '{arg1}'. Use: python3 simple_imu_visualizer.py [serial_port] [http_port]", flush=True)
     
     stroke_processor = StrokeProcessor()
     stroke_processor_instance = stroke_processor
     
-    receiver_thread = threading.Thread(target=serial_receiver, args=(stroke_processor,), daemon=True)
+    receiver_thread = threading.Thread(target=serial_receiver, args=(stroke_processor, serial_port_arg), daemon=True)
     receiver_thread.start()
     
-    start_web_server(port)
+    start_web_server(http_port)
