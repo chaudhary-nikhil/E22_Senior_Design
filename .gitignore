@@ -23,8 +23,9 @@ venv/
 *.sublime-workspace
 .DS_Store
 
-# ESP-IDF specific
+# ESP-IDF specific (framework clone, not submodule)
 .esp-idf/
+esp-idf/
 *.bin
 *.elf
 *.map
