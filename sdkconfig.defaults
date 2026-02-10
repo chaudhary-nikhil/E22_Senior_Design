@@ -61,3 +61,6 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 # USB (ESP32-S3 has native USB - GPIO19/20)
 # Keep these free for USB if using USB-OTG
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# SD card: SPI memory only (no SDIO) — avoids CMD5 and "command not supported" log
+CONFIG_SD_ENABLE_SDIO_SUPPORT=n

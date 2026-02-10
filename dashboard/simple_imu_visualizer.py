@@ -69,12 +69,17 @@ class StrokeProcessor:
     - world_az < 0: Accelerating DOWNWARD
     - At water impact: Upward deceleration force creates POSITIVE world_az spike
     """
-    def __init__(self):
+    def __init__(self, batch_mode=False):
+        """
+        batch_mode: When True (post-session playback), use slightly more lenient thresholds
+        to improve stroke detection on recorded data which may differ from live stream.
+        """
         self.position = [0.0, 0.0, 0.0]  # x, y, z
         self.velocity = [0.0, 0.0, 0.0]  # vx, vy, vz
         self.last_timestamp_ms = None
         self.in_stroke = False
         self.just_reset = False
+        self.batch_mode = batch_mode
         
         # Kalman Filters for Acceleration (X, Y, Z)
         # TUNING for HUMAN MOTION:
@@ -105,15 +110,15 @@ class StrokeProcessor:
         # WATER ENTRY IMPACT DETECTION
         # Research: SwimBIT uses ~1.6g envelope; Frontiers uses 0.9g for wrist
         # Water entry produces a short, high-magnitude transient (impact/resistance).
-        # We intentionally use a conservative threshold to avoid missing "soft" entries.
-        self.WATER_ENTRY_ACCEL_THRESHOLD = 6.0  # m/s² - total acceleration magnitude at impact
+        # batch_mode: slightly lower to catch softer entries in post-session data
+        self.WATER_ENTRY_ACCEL_THRESHOLD = 5.5 if batch_mode else 6.0  # m/s² - total acceleration magnitude at impact
         
         # DOWNWARD MOTION VERIFICATION (checked BEFORE impact, not at impact)
         # Must confirm hand WAS moving DOWN before counting impact as stroke
         # Research: Prevents false positives from recovery phase (arm going up in air)
         self.DOWNWARD_ACCEL_THRESHOLD = -0.8  # m/s² - world_az threshold for "moving down"
         self.DOWNWARD_SAMPLE_WINDOW = 8  # Check last 8 samples (~80ms at 100Hz)
-        self.DOWNWARD_REQUIRED_COUNT = 4  # At least 4 of last 8 must show downward motion
+        self.DOWNWARD_REQUIRED_COUNT = 3 if batch_mode else 4  # At least N of last 8 must show downward motion
         
         # DIRECTION REVERSAL DETECTION (key to detecting water impact)
         # At impact: world_az changes from negative (down) to positive (deceleration)
@@ -130,7 +135,8 @@ class StrokeProcessor:
         # ANGULAR VELOCITY FOR ENTRY DETECTION
         # Hand rotating into water shows characteristic gyro pattern
         # Research: SwimBIT uses roll angle; typical entry shows 1-3 rad/s rotation
-        self.ENTRY_GYRO_THRESHOLD = 0.8  # rad/s - hand rotating during entry (lowered for reliability)
+        # batch_mode: slightly lower for post-session data (may have different characteristics)
+        self.ENTRY_GYRO_THRESHOLD = 0.6 if batch_mode else 0.8  # rad/s - hand rotating during entry
         
         # STROKE TIMING CONSTRAINTS
         # Research: Typical stroke rate 40-80 strokes/min = 0.75-1.5s interval
@@ -416,6 +422,12 @@ class StrokeProcessor:
                 # Clear buffer to prevent immediate re-trigger
                 self.recent_world_az.clear()
                 self.glide_sample_count = 0
+                # Reset position at each water entry for accurate per-stroke hand motion
+                # (hand motion shown from this stroke's entry to the next)
+                self.position = [0.0, 0.0, 0.0]
+                self.velocity = [0.0, 0.0, 0.0]
+                self.in_stroke = True
+                self.stroke_start_time = t_ms
             
             # =================================================================
             # POSITION TRACKING STATE (separate from stroke counting)
@@ -502,6 +514,7 @@ class StrokeProcessor:
             "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
             "tracking_active": self.in_stroke,
             "stroke_count": self.stroke_count,
+            "just_reset": self.just_reset,  # Confirms reset to client
             
             # Stroke detection debug info (helps with threshold tuning)
             "stroke_debug": {

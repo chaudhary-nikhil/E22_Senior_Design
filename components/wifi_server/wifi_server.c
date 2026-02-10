@@ -662,100 +662,87 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
     
-    // Limit JSON output to prevent memory issues (preview only)
-    size_t max_samples = 200;
+    // Stream full session as JSON (all files, all samples)
     size_t samples_sent = 0;
-    
+
     httpd_resp_set_type(req, "application/json");
-    
-    // Send header
-    char header[256];
-    snprintf(header, sizeof(header), 
-        "{\"files\":%zu,\"samples_in_response\":%zu,\"note\":\"Preview limited to %zu samples\",\"data\":[",
-        stream_state.file_count, max_samples, max_samples);
+
+    // Send header (samples_in_response filled by client from data.length)
+    char header[128];
+    snprintf(header, sizeof(header), "{\"files\":%zu,\"data\":[", stream_state.file_count);
     httpd_resp_send_chunk(req, header, strlen(header));
-    
-    // Read samples from first file(s) for preview
+
     const char *mount_point = "/sdcard";
     char file_path[160];
-    FILE *preview_file = NULL;
+    FILE *json_file = NULL;
     size_t file_idx = 0;
-    
-    while (samples_sent < max_samples && file_idx < stream_state.file_count) {
-        if (preview_file == NULL) {
+
+    while (file_idx < stream_state.file_count) {
+        if (json_file == NULL) {
             snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[file_idx]);
-            preview_file = fopen(file_path, "rb");
-            if (!preview_file) {
-                ESP_LOGW(TAG, "Failed to open file for JSON preview: %s", file_path);
+            json_file = fopen(file_path, "rb");
+            if (!json_file) {
+                ESP_LOGW(TAG, "Failed to open file for JSON: %s", file_path);
                 file_idx++;
                 continue;
             }
         }
-        
-        // Read samples from current file
-        while (samples_sent < max_samples) {
-            size_t decoded = 0;
-            esp_err_t read_err = protobuf_read_delimited(preview_file, 
-                                                          stream_chunk_buffer, 
-                                                          STREAM_CHUNK_SAMPLES,
-                                                          &decoded);
-            
-            if (read_err == ESP_ERR_NOT_FOUND) {
-                // EOF on current file
-                fclose(preview_file);
-                preview_file = NULL;
-                file_idx++;
-                break;  // Move to next file
+
+        size_t decoded = 0;
+        esp_err_t read_err = protobuf_read_delimited(json_file,
+                                                      stream_chunk_buffer,
+                                                      STREAM_CHUNK_SAMPLES,
+                                                      &decoded);
+
+        if (read_err == ESP_ERR_NOT_FOUND) {
+            fclose(json_file);
+            json_file = NULL;
+            file_idx++;
+            continue;
+        }
+
+        if (read_err != ESP_OK) {
+            ESP_LOGW(TAG, "Error reading for JSON: %s", esp_err_to_name(read_err));
+            if (json_file) {
+                fclose(json_file);
+                json_file = NULL;
             }
-            
-            if (read_err != ESP_OK) {
-                ESP_LOGW(TAG, "Error reading for JSON preview: %s", esp_err_to_name(read_err));
-                if (preview_file) {
-                    fclose(preview_file);
-                    preview_file = NULL;
-                }
-                break;
+            break;
+        }
+
+        for (size_t i = 0; i < decoded; i++) {
+            bno055_sample_t *s = &stream_chunk_buffer[i];
+            char sample_buf[256];
+            snprintf(sample_buf, sizeof(sample_buf),
+                "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+                "\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,"
+                "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
+                "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f}",
+                (samples_sent > 0) ? "," : "",
+                (unsigned)s->t_ms, s->ax, s->ay, s->az,
+                s->lia_x, s->lia_y, s->lia_z,
+                s->gx, s->gy, s->gz,
+                s->qw, s->qx, s->qy, s->qz);
+
+            esp_err_t err = httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to send JSON chunk: %s", esp_err_to_name(err));
+                if (json_file) fclose(json_file);
+                return err;
             }
-            
-            // Send decoded samples as JSON
-            for (size_t i = 0; i < decoded && samples_sent < max_samples; i++) {
-                bno055_sample_t *s = &stream_chunk_buffer[i];
-                char sample_buf[256];
-                snprintf(sample_buf, sizeof(sample_buf),
-                    "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
-                    "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
-                    "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f}",
-                    (samples_sent > 0) ? "," : "",
-                    (unsigned)s->t_ms, s->ax, s->ay, s->az,
-                    s->gx, s->gy, s->gz,
-                    s->qw, s->qx, s->qy, s->qz);
-                
-                esp_err_t err = httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to send JSON chunk: %s", esp_err_to_name(err));
-                    if (preview_file) {
-                        fclose(preview_file);
-                    }
-                    return err;
-                }
-                
-                samples_sent++;
-                
-                // Yield occasionally to prevent watchdog
-                if (samples_sent % 50 == 0) vTaskDelay(pdMS_TO_TICKS(1));
-            }
+            samples_sent++;
+            if (samples_sent % 100 == 0) vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
-    
-    if (preview_file) {
-        fclose(preview_file);
+
+    if (json_file) {
+        fclose(json_file);
     }
-    
-    // Send footer
+
     httpd_resp_send_chunk(req, "]}", 2);
-    httpd_resp_send_chunk(req, NULL, 0);  // End chunked response
-    
-    ESP_LOGI(TAG, "JSON preview sent: %zu samples", samples_sent);
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    ESP_LOGI(TAG, "JSON session sent: %zu samples (full session)", samples_sent);
     return ESP_OK;
 }
 

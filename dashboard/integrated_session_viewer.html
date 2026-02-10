@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFi Session Viewer - Integrated Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            padding-bottom: 40px;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            grid-template-rows: 40vh 1fr;
+            gap: 15px;
+            min-height: calc(100vh - 80px);
+            padding-bottom: 30px;
+        }
+        
+        .visualization {
+            grid-row: 1 / 2;
+            grid-column: 1 / 2;
+            position: relative;
+        }
+        
+        .charts {
+            grid-row: 2 / 3;
+            grid-column: 1 / 2;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            background: #2a2a2a;
+            padding: 15px;
+            padding-bottom: 10px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .chart-container {
+            background: #333;
+            padding: 12px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        
+        .chart-container h4 {
+            margin: 0 0 10px 0;
+            color: #fff;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        .chart-wrapper {
+            flex: 1;
+            position: relative;
+            min-height: 0;
+        }
+        
+        .controls {
+            grid-row: 1 / 3;
+            grid-column: 2 / 3;
+            padding: 20px;
+            background: #2a2a2a;
+            border-radius: 10px;
+            overflow-y: auto;
+            min-width: 280px;
+        }
+        
+        .stroke-analysis-panel {
+            background: linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%);
+            border: 1px solid #3d6a9f;
+        }
+        
+        .stroke-analysis-rows { margin-top: 8px; font-size: 0.9em; }
+        .stroke-row { display: flex; justify-content: space-between; margin: 4px 0; gap: 12px; }
+        .stroke-row span:first-child { flex-shrink: 0; white-space: nowrap; }
+        .stroke-row span:last-child { color: #4fc3f7; text-align: right; }
+        
+        .metric {
+            margin: 10px 0;
+            padding: 10px 12px;
+            background: #333;
+            border-radius: 6px;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            font-size: 13px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+        
+        .metric strong { font-weight: 600; }
+
+        .metric input[type="range"],
+        .metric input[type="number"] {
+            width: 100%;
+            margin-top: 6px;
+        }
+        
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            text-align: center;
+            font-weight: bold;
+        }
+        
+        .connected {
+            background: #2d5a2d;
+            color: #90ee90;
+        }
+        
+        .disconnected {
+            background: #5a2d2d;
+            color: #ee9090;
+        }
+        
+        button {
+            width: 100%;
+            background: #2f7dd1;
+            color: white;
+            border: 1px solid rgba(255,255,255,0.12);
+            padding: 12px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 6px 0;
+            font-size: 14px;
+            font-weight: 600;
+            transition: transform 0.05s ease, background 0.15s ease, opacity 0.15s ease;
+        }
+        
+        button:hover {
+            background: #2468ad;
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+        
+        button:disabled {
+            background: #3f3f3f;
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+        
+        #canvas {
+            border: 1px solid #555;
+            border-radius: 10px 10px 0 0;
+            width: 100%;
+            flex: 1;
+            min-height: 200px;
+            display: block;
+            background: #1a1a1a;
+        }
+        
+        .visualization {
+            background: #1a1a1a;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .playback-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: #252525;
+            border-radius: 0 0 10px 10px;
+            margin-top: 8px;
+            flex-shrink: 0;
+        }
+        
+        .play-btn {
+            width: 48px;
+            height: 48px;
+            font-size: 20px;
+            padding: 0;
+            border-radius: 50%;
+            background: #2f7dd1 !important;
+            flex-shrink: 0;
+        }
+        
+        .play-btn:hover {
+            background: #3d8ee5 !important;
+        }
+        
+        .playback-bar button:not(.play-btn) {
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            margin: 0;
+            flex-shrink: 0;
+        }
+        
+        .playback-bar .progress-bar {
+            flex: 1;
+            height: 10px;
+            background: #444;
+            border-radius: 5px;
+            cursor: pointer;
+            position: relative;
+            min-width: 80px;
+        }
+        
+        .playback-bar .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4facfe, #00f2fe);
+            border-radius: 5px;
+            width: 0%;
+            transition: width 0.1s;
+        }
+        
+        .playback-time {
+            font-size: 0.95em;
+            min-width: 6em;
+            font-variant-numeric: tabular-nums;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="visualization">
+            <canvas id="canvas" width="800" height="400"></canvas>
+            <!-- Prominent playback bar below 3D view for easy access -->
+            <div class="playback-bar">
+                <button class="play-btn" id="play-pause-btn" onclick="togglePlayback()" title="Play / Pause">▶</button>
+                <button onclick="resetPlayback()" title="Reset to start">⏮</button>
+                <button onclick="skipBackward()" title="Skip back 1s">⏪</button>
+                <button onclick="skipForward()" title="Skip forward 1s">⏩</button>
+                <div class="progress-bar" onclick="seekPlayback(event)" title="Click to seek">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <span id="playback-time" class="playback-time">0:00 / 0:00</span>
+            </div>
+        </div>
+        
+        <div class="charts">
+            <div class="chart-container">
+                <h4>Acceleration (m/s²)</h4>
+                <div class="chart-wrapper">
+                    <canvas id="accelChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h4>Angular Velocity (rad/s)</h4>
+                <div class="chart-wrapper">
+                    <canvas id="gyroChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <h3>WiFi Session Viewer</h3>
+            
+            <div id="status" class="status disconnected">
+                Not Loaded
+            </div>
+
+            <button onclick="loadSessionFromWiFi()">Load Session from ESP32</button>
+            
+            <div class="metric session-summary">
+                <strong>Session Summary</strong><br>
+                Samples: <span id="sample-count">0</span><br>
+                Duration: <span id="duration">0:00</span><br>
+                <strong style="margin-top: 6px; display: block;">Total Strokes: <span id="session-stroke-count">0</span></strong><br>
+                Rate: <span id="session-rate">--</span><br>
+                Consistency: <span id="session-consistency">--</span>
+            </div>
+            
+            <details class="metric" style="cursor: pointer;">
+                <summary><strong>IMU Data (at playback)</strong></summary>
+                <div style="margin-top: 8px;">
+                    <strong>Accel (m/s²):</strong> X <span id="ax">0.000</span> Y <span id="ay">0.000</span> Z <span id="az">0.000</span><br>
+                    <strong>Gyro (rad/s):</strong> X <span id="gx">0.000</span> Y <span id="gy">0.000</span> Z <span id="gz">0.000</span><br>
+                    <strong>Position (m):</strong> X <span id="px">0.000</span> Y <span id="py">0.000</span> Z <span id="pz">0.000</span><br>
+                    <strong>Quaternion:</strong> W <span id="qw">1.000</span> X <span id="qx">0.000</span> Y <span id="qy">0.000</span> Z <span id="qz">0.000</span>
+                </div>
+            </details>
+
+            <div class="metric">
+                <strong>Visualizer Position Scale</strong><br>
+                <input 
+                    type="range" 
+                    id="scaleSlider" 
+                    min="0.1" 
+                    max="10" 
+                    step="0.1" 
+                    value="5"
+                    oninput="updateScale(this.value)">
+                <input 
+                    type="number" 
+                    id="scaleInput"
+                    min="0.1"
+                    max="10"
+                    step="0.1"
+                    value="5"
+                    oninput="updateScale(this.value)">
+                <div>Current scale: <span id="scaleValue">5.0×</span></div>
+            </div>
+            
+            <div class="metric">
+                <strong>Session Time</strong><br>
+                <span id="timestamp" style="font-size: 1.3em; font-family: 'Courier New', monospace;">00:00</span>
+            </div>
+
+            <div class="metric">
+                <strong>Calibration (0=Bad, 3=Good)</strong><br>
+                System: <span id="cal-sys">0</span><br>
+                Gyro:   <span id="cal-gyro">0</span><br>
+                Accel:  <span id="cal-accel">0</span><br>
+                Mag:    <span id="cal-mag">0</span>
+            </div>
+            
+            <div class="status disconnected" id="tracking-status">
+                Tracking: Inactive
+            </div>
+            
+            <div class="metric">
+                <strong>Stroke Count (at playback)</strong><br>
+                <span id="stroke-count" style="font-size: 1.8em; font-weight: bold;">0</span>
+                <span style="font-size: 0.85em; color: #888;"> / <span id="stroke-count-total">0</span> total</span>
+            </div>
+            
+            <!-- Stroke Analysis Panel - shows per-stroke metrics during playback -->
+            <div class="metric stroke-analysis-panel">
+                <strong style="color: #7eb8ff;">Stroke Analysis</strong>
+                <div class="stroke-analysis-rows">
+                    <div class="stroke-row"><span>Last stroke duration:</span><span id="last-stroke-time">--</span></div>
+                    <div class="stroke-row"><span>Last stroke length:</span><span id="stroke-length">--</span></div>
+                    <div class="stroke-row"><span>Rate (completed):</span><span id="stroke-rate">--</span></div>
+                    <div class="stroke-row"><span>Consistency:</span><span id="stroke-consistency">--</span></div>
+                </div>
+            </div>
+            
+            <!-- Stroke Comparison Controls -->
+            <div class="metric" style="background: #2d3a2d; border: 1px solid #4a5a4a;">
+                <strong style="color: #a5d6a7;">3D View</strong>
+                <p style="font-size: 0.8em; color: #aaa; margin: 4px 0;">Trail resets at each stroke for per-stroke hand motion.</p>
+                <div style="margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="overlay-strokes" onchange="toggleStrokeOverlay()" checked>
+                        <span style="font-size: 0.9em;">Overlay past strokes</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 6px;">
+                        <input type="checkbox" id="show-water-plane" onchange="toggleWaterPlane()">
+                        <span style="font-size: 0.9em;">Show water reference</span>
+                    </label>
+                    <div style="margin-top: 8px; font-size: 0.85em; color: #888;">
+                        Strokes shown: <span id="strokes-displayed">0</span>/10
+                    </div>
+                </div>
+            </div>
+            
+            <button id="btn-connect" onclick="loadSessionFromWiFi()" style="display: none;">Load Session</button>
+            <button id="btn-disconnect" onclick="disconnect()" style="display: none;">Disconnect</button>
+            <button id="btn-reset-view" onclick="resetView()">Reset View</button>
+            <button id="btn-clear-strokes" onclick="clearStrokes()">Clear Strokes</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Global variables
+        let scene, camera, renderer, imuCube, trail = [];
+        let controls = null;
+        let positionLine = null;     // Line from origin to cube (shows current position)
+        let liveTrailLine = null;    // Live trail showing current stroke path
+        let eventSource = null;
+        let isConnected = false;
+        let positionScale = 5.0; // default: up close / visible trail
+        let strokeTrails = []; // Array of completed stroke trail objects
+        let currentStrokePoints = []; // Points for current stroke (Vector3 array)
+        let currentStrokeAccelMags = []; // Acceleration magnitudes for phase coloring
+        let lastStrokeCount = 0;
+        let initialQuaternion = null; // Store initial orientation when calibrated
+        let isCalibrated = false;
+        let resetPending = false; // Flag to handle async reset
+        const DEBUG_LOG_STREAM = false;
+
+        // StrokeProcessor runs in Python (wifi_session_processor.py)
+        // Data is fetched from ESP32 and processed server-side
+        
+        // Stroke analysis data
+        let strokeHistory = []; // Array of {points, accelMags, startTime, endTime, length, duration}
+        let strokeStartTime = null; // When current stroke started
+        let waterPlane = null; // Reference water plane mesh
+        let showOverlay = true; // Whether to show past strokes
+        const MAX_STROKES_DISPLAYED = 10; // Maximum strokes to keep for comparison
+        const MIN_STROKE_POINTS = 10; // Minimum points to consider a valid stroke (filters noise)
+        
+        // Session timer variables
+        let sessionStartTime = null;
+        let sessionTimerInterval = null;
+        
+        function formatSessionTime(totalSeconds) {
+            const s = Number.isFinite(totalSeconds) ? totalSeconds : 0;
+            const mins = Math.floor(Math.max(0, s) / 60);
+            const secs = Math.floor(Math.max(0, s) % 60);
+            return String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+        }
+        
+        function updateSessionTimer() {
+            if (sessionStartTime === null) return;
+            const elapsed = (Date.now() - sessionStartTime) / 1000;
+            document.getElementById('timestamp').textContent = formatSessionTime(elapsed);
+        }
+        
+        function startSessionTimer() {
+            if (sessionStartTime === null) {
+                sessionStartTime = Date.now();
+            }
+            if (sessionTimerInterval === null) {
+                sessionTimerInterval = setInterval(updateSessionTimer, 100);
+            }
+        }
+        
+        function stopSessionTimer() {
+            if (sessionTimerInterval !== null) {
+                clearInterval(sessionTimerInterval);
+                sessionTimerInterval = null;
+            }
+        }
+        
+        function resetSessionTimer() {
+            stopSessionTimer();
+            sessionStartTime = null;
+            document.getElementById('timestamp').textContent = '00:00';
+        }
+        
+        // Chart variables - for playback, charts show data from start to currentIndex
+        let accelChart, gyroChart;
+        let playbackStrokeSegments = []; // Pre-computed stroke segments from processedData
+        
+        // Initialize 3D scene
+        function initScene() {
+            try {
+                const canvas = document.getElementById('canvas');
+                if (!canvas) {
+                    console.error('Canvas element not found!');
+                    return;
+                }
+                
+                if (typeof THREE === 'undefined') {
+                    console.error('Three.js library not loaded!');
+                    return;
+                }
+                
+                console.log('Initializing 3D scene...');
+                
+                // Scene
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x1a1a1a);
+                
+                // Camera
+                camera = new THREE.PerspectiveCamera(75, canvas.width / canvas.height, 0.1, 1000);
+                camera.position.set(3, 3, 3);
+                camera.lookAt(0, 0, 0);
+                
+                // Check WebGL support
+                const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                if (!gl) {
+                    console.error('WebGL is not supported in this browser!');
+                    canvas.style.background = '#5a2d2d';
+                    canvas.style.display = 'flex';
+                    canvas.style.alignItems = 'center';
+                    canvas.style.justifyContent = 'center';
+                    canvas.style.color = '#fff';
+                    canvas.style.fontSize = '18px';
+                    canvas.textContent = 'WebGL not supported. Please enable hardware acceleration in your browser settings.';
+                    return;
+                }
+                
+                // Renderer - use actual canvas display size
+                try {
+                    renderer = new THREE.WebGLRenderer({ 
+                        canvas: canvas, 
+                        antialias: true,
+                        powerPreference: "high-performance"
+                    });
+                } catch (e) {
+                    console.error('Failed to create WebGL renderer:', e);
+                    canvas.style.background = '#5a2d2d';
+                    canvas.style.display = 'flex';
+                    canvas.style.alignItems = 'center';
+                    canvas.style.justifyContent = 'center';
+                    canvas.style.color = '#fff';
+                    canvas.style.fontSize = '18px';
+                    canvas.textContent = 'Failed to initialize WebGL renderer.';
+                    return;
+                }
+                
+                const rect = canvas.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    renderer.setSize(rect.width, rect.height);
+                    camera.aspect = rect.width / rect.height;
+                    camera.updateProjectionMatrix();
+                } else {
+                    // Fallback to canvas dimensions
+                    renderer.setSize(canvas.width, canvas.height);
+                    camera.aspect = canvas.width / canvas.height;
+                    camera.updateProjectionMatrix();
+                }
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                console.log('Renderer initialized with size:', renderer.domElement.width, 'x', renderer.domElement.height);
+
+                // Controls (mouse/touch orbit) so "Reset View" actually matters
+                if (THREE.OrbitControls) {
+                    controls = new THREE.OrbitControls(camera, renderer.domElement);
+                    controls.enableDamping = true;
+                    controls.dampingFactor = 0.08;
+                    controls.target.set(0, 0, 0);
+                    controls.update();
+                    controls.saveState(); // default "Reset View" state
+                } else {
+                    console.warn('OrbitControls not available; Reset View will only re-position camera.');
+                }
+                
+                // Add grid
+                const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+                scene.add(gridHelper);
+                
+                // Add axes
+                const axesHelper = new THREE.AxesHelper(2);
+                scene.add(axesHelper);
+                
+                // Create IMU cube - size appropriate for hand visualization
+                // At 5x scale, 0.3 units = ~6cm in real space (reasonable for hand-mounted sensor)
+                const geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+                const material = new THREE.MeshLambertMaterial({ color: 0xff4444 });
+                imuCube = new THREE.Mesh(geometry, material);
+                imuCube.position.set(0, 0, 0);
+                imuCube.castShadow = true;
+                scene.add(imuCube);
+                
+                // Add position indicator line (from origin to cube) - helps see movement
+                const posLineGeom = new THREE.BufferGeometry();
+                posLineGeom.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 0,0,0], 3));
+                positionLine = new THREE.Line(posLineGeom, new THREE.LineBasicMaterial({ 
+                    color: 0x00ff00, 
+                    linewidth: 2,
+                    opacity: 0.6,
+                    transparent: true
+                }));
+                scene.add(positionLine);
+                
+                // Live trail line (shows current stroke path in real-time)
+                const liveTrailGeom = new THREE.BufferGeometry();
+                liveTrailGeom.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+                liveTrailLine = new THREE.Line(liveTrailGeom, new THREE.LineBasicMaterial({
+                    color: 0xffff00,
+                    linewidth: 3,
+                    opacity: 0.9,
+                    transparent: true
+                }));
+                scene.add(liveTrailLine);
+                
+                console.log('IMU cube and indicators added to scene');
+                
+                // Create water reference plane (horizontal, semi-transparent blue)
+                const waterGeom = new THREE.PlaneGeometry(4, 4);
+                const waterMat = new THREE.MeshBasicMaterial({
+                    color: 0x1e88e5,
+                    transparent: true,
+                    opacity: 0.15,
+                    side: THREE.DoubleSide
+                });
+                waterPlane = new THREE.Mesh(waterGeom, waterMat);
+                waterPlane.rotation.x = -Math.PI / 2; // Make horizontal
+                waterPlane.position.y = 0; // At origin height
+                waterPlane.visible = false; // Hidden by default
+                scene.add(waterPlane);
+                
+                // Add grid on water plane for depth reference
+                const waterGrid = new THREE.GridHelper(4, 20, 0x2196f3, 0x1565c0);
+                waterGrid.position.y = 0.01;
+                waterGrid.visible = false;
+                waterGrid.name = 'waterGrid';
+                scene.add(waterGrid);
+                
+                // Add lighting
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                scene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(5, 5, 5);
+                directionalLight.castShadow = true;
+                scene.add(directionalLight);
+                
+                // Start render loop
+                animate();
+                console.log('3D scene initialized successfully');
+            } catch (error) {
+                console.error('Error initializing 3D scene:', error);
+            }
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            if (renderer && scene && camera) {
+                if (controls) controls.update();
+                renderer.render(scene, camera);
+            }
+        }
+        
+        // Initialize charts
+        function initCharts() {
+            const accelCanvas = document.getElementById('accelChart');
+            const gyroCanvas = document.getElementById('gyroChart');
+            if (!accelCanvas || !gyroCanvas) return;
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                scales: {
+                    x: {
+                        ticks: { 
+                            color: '#fff',
+                            maxRotation: 45,
+                            minRotation: 45,
+                            autoSkip: true,
+                            maxTicksLimit: 10
+                        },
+                        grid: { color: '#444' }
+                    },
+                    y: {
+                        ticks: { 
+                            color: '#fff'
+                        },
+                        grid: { color: '#444' }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: { color: '#fff' }
+                    }
+                },
+                layout: {
+                    padding: {
+                        bottom: 10
+                    }
+                }
+            };
+            
+            const accelCtx = accelCanvas.getContext('2d');
+            accelChart = new Chart(accelCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'X',
+                            data: [],
+                            borderColor: 'rgb(255, 99, 132)',
+                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                            tension: 0.4,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Y',
+                            data: [],
+                            borderColor: 'rgb(54, 162, 235)',
+                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                            tension: 0.4,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Z',
+                            data: [],
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                            tension: 0.4,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        }
+                    ]
+                },
+                options: {
+                    ...commonOptions,
+                    scales: {
+                        ...commonOptions.scales,
+                        y: {
+                            ...commonOptions.scales.y,
+                            min: -2,
+                            max: 12,
+                            ticks: {
+                                color: '#fff',
+                                stepSize: 2
+                            }
+                        }
+                    }
+                }
+            });
+            
+            const gyroCtx = gyroCanvas.getContext('2d');
+            gyroChart = new Chart(gyroCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'X',
+                            data: [],
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.1)',
+                            tension: 0.4,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Y',
+                            data: [],
+                            borderColor: 'rgb(153, 102, 255)',
+                            backgroundColor: 'rgba(153, 102, 255, 0.1)',
+                            tension: 0.4,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Z',
+                            data: [],
+                            borderColor: 'rgb(201, 203, 207)',
+                            backgroundColor: 'rgba(201, 203, 207, 0.1)',
+                            tension: 0.4,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        }
+                    ]
+                },
+                options: {
+                    ...commonOptions,
+                    scales: {
+                        ...commonOptions.scales,
+                        y: {
+                            ...commonOptions.scales.y,
+                            min: -1,
+                            max: 1,
+                            ticks: {
+                                color: '#fff',
+                                stepSize: 0.25
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Build charts and trails from processedData[0..currentIndex] - sync with playback
+        function updateChartsForPlayback(upToIndex) {
+            if (!accelChart || !gyroChart || processedData.length === 0) return;
+            const idx = Math.max(0, Math.floor(upToIndex));
+            const n = Math.min(idx + 1, processedData.length);
+            const t0 = processedData[0]?.timestamp || 0;
+            
+            const labels = [];
+            const ax = [], ay = [], az = [];
+            const gx = [], gy = [], gz = [];
+            for (let i = 0; i < n; i++) {
+                const d = processedData[i];
+                labels.push(((d.timestamp - t0) / 1000).toFixed(1) + 's');
+                ax.push(d.acceleration?.ax ?? 0);
+                ay.push(d.acceleration?.ay ?? 0);
+                az.push(d.acceleration?.az ?? 0);
+                gx.push(d.angular_velocity?.gx ?? 0);
+                gy.push(d.angular_velocity?.gy ?? 0);
+                gz.push(d.angular_velocity?.gz ?? 0);
+            }
+            
+            accelChart.data.labels = labels;
+            accelChart.data.datasets[0].data = ax;
+            accelChart.data.datasets[1].data = ay;
+            accelChart.data.datasets[2].data = az;
+            gyroChart.data.labels = labels;
+            gyroChart.data.datasets[0].data = gx;
+            gyroChart.data.datasets[1].data = gy;
+            gyroChart.data.datasets[2].data = gz;
+            accelChart.update('none');
+            gyroChart.update('none');
+        }
+        
+        // Build playback trail from start to currentIndex (reset each update)
+        function updatePlaybackTrail(upToIndex) {
+            if (!liveTrailLine || !scene || processedData.length === 0) return;
+            const n = Math.min(Math.max(0, upToIndex) + 1, processedData.length);
+            if (n < 2) {
+                liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+                liveTrailLine.geometry.attributes.position.needsUpdate = true;
+                return;
+            }
+            const flatPositions = [];
+            for (let i = 0; i < n; i++) {
+                const d = processedData[i];
+                const px = d.position?.px ?? 0, py = d.position?.py ?? 0, pz = d.position?.pz ?? 0;
+                const sx = -px * positionScale, sy = pz * positionScale, sz = py * positionScale;
+                flatPositions.push(sx, sy, sz);
+            }
+            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flatPositions, 3));
+            liveTrailLine.geometry.attributes.position.needsUpdate = true;
+        }
+        
+        // Pre-compute stroke segments from processedData (stroke_count increases)
+        function buildPlaybackStrokeSegments() {
+            playbackStrokeSegments = [];
+            let lastCount = 0;
+            let segmentStart = 0;
+            for (let i = 0; i < processedData.length; i++) {
+                const c = processedData[i].stroke_count ?? 0;
+                if (c > lastCount) {
+                    if (lastCount > 0 && segmentStart < i) {
+                        playbackStrokeSegments.push({ startIdx: segmentStart, endIdx: i - 1, strokeNum: lastCount });
+                    }
+                    segmentStart = i;
+                    lastCount = c;
+                }
+            }
+            if (lastCount > 0 && segmentStart < processedData.length) {
+                playbackStrokeSegments.push({ startIdx: segmentStart, endIdx: processedData.length - 1, strokeNum: lastCount });
+            }
+        }
+        
+        // Update stroke overlays - only show strokes completed by currentIndex
+        function updateStrokeOverlaysForPlayback(upToIndex) {
+            if (!scene) return;
+            strokeTrails.forEach(t => {
+                scene.remove(t);
+                if (t.geometry) t.geometry.dispose();
+                if (t.material) t.material.dispose();
+            });
+            strokeTrails = [];
+            
+            const show = document.getElementById('overlay-strokes')?.checked ?? true;
+            if (!show) return;
+            
+            let shown = 0;
+            for (const seg of playbackStrokeSegments) {
+                if (seg.endIdx > upToIndex || shown >= MAX_STROKES_DISPLAYED) break;
+                const points = [];
+                const accelMags = [];
+                for (let i = seg.startIdx; i <= Math.min(seg.endIdx, upToIndex); i++) {
+                    const d = processedData[i];
+                    const px = d.position?.px ?? 0, py = d.position?.py ?? 0, pz = d.position?.pz ?? 0;
+                    points.push(new THREE.Vector3(-px * positionScale, pz * positionScale, py * positionScale));
+                    accelMags.push(d.stroke_debug?.accel_mag ?? 0);
+                }
+                if (points.length >= 2) {
+                    createPhaseColoredTrail({ points, accelMags });
+                    shown++;
+                }
+            }
+            document.getElementById('strokes-displayed').textContent = strokeTrails.length;
+        }
+        
+        // Update stroke metrics panel based on current playback position
+        function updateStrokeMetricsForPlayback(upToIndex) {
+            if (processedData.length === 0) return;
+            const idx = Math.max(0, Math.min(Math.floor(upToIndex), processedData.length - 1));
+            const d = processedData[idx];
+            const currentStrokeCount = d.stroke_count ?? 0;
+            document.getElementById('stroke-count').textContent = currentStrokeCount;
+            document.getElementById('stroke-count-total').textContent = sessionMetrics?.stroke_count ?? currentStrokeCount;
+            
+            const completed = playbackStrokeSegments.filter(s => s.endIdx <= upToIndex);
+            if (completed.length === 0) {
+                // No strokes completed yet at this playback position - show session-level metrics
+                if (sessionMetrics && sessionMetrics.stroke_count > 0) {
+                    document.getElementById('last-stroke-time').textContent = (sessionMetrics.avg_stroke_time != null) ? sessionMetrics.avg_stroke_time.toFixed(2) + ' s (avg)' : '--';
+                    document.getElementById('stroke-length').textContent = '--';
+                    document.getElementById('stroke-rate').textContent = (sessionMetrics.stroke_rate != null) ? sessionMetrics.stroke_rate.toFixed(1) + ' /min' : '--';
+                    document.getElementById('stroke-consistency').textContent = (sessionMetrics.consistency != null) ? sessionMetrics.consistency.toFixed(0) + '%' : '--';
+                } else {
+                    document.getElementById('last-stroke-time').textContent = '--';
+                    document.getElementById('stroke-length').textContent = '--';
+                    document.getElementById('stroke-rate').textContent = '--';
+                    document.getElementById('stroke-consistency').textContent = '--';
+                }
+                return;
+            }
+            const last = completed[completed.length - 1];
+            const t0 = processedData[0]?.timestamp || 0;
+            const startT = processedData[last.startIdx]?.timestamp || 0;
+            const endT = processedData[last.endIdx]?.timestamp || 0;
+            const duration = (endT - startT) / 1000;
+            document.getElementById('last-stroke-time').textContent = duration.toFixed(2) + ' s';
+            
+            let pathLen = 0;
+            for (let i = last.startIdx; i < last.endIdx; i++) {
+                const p1 = processedData[i].position, p2 = processedData[i + 1].position;
+                if (p1 && p2) pathLen += Math.hypot(p2.px - p1.px, p2.py - p1.py, p2.pz - p1.pz);
+            }
+            document.getElementById('stroke-length').textContent = pathLen.toFixed(2) + ' m';
+            
+            if (completed.length >= 2) {
+                const firstStart = processedData[completed[0].startIdx]?.timestamp || 0;
+                const lastEnd = processedData[completed[completed.length - 1].endIdx]?.timestamp || 0;
+                const totalSec = (lastEnd - firstStart) / 1000;
+                const rate = totalSec > 0 ? (completed.length / (totalSec / 60)) : 0;
+                document.getElementById('stroke-rate').textContent = rate.toFixed(1) + ' /min';
+                const durations = completed.map(s => {
+                    const st = processedData[s.startIdx]?.timestamp || 0;
+                    const en = processedData[s.endIdx]?.timestamp || 0;
+                    return (en - st) / 1000;
+                });
+                const avgD = durations.reduce((a, b) => a + b, 0) / durations.length;
+                const variance = durations.reduce((s, v) => s + (v - avgD) ** 2, 0) / durations.length;
+                const cv = avgD > 0 ? (Math.sqrt(variance) / avgD) * 100 : 0;
+                document.getElementById('stroke-consistency').textContent = Math.max(0, 100 - cv).toFixed(0) + '%';
+            } else {
+                document.getElementById('stroke-rate').textContent = '--';
+                document.getElementById('stroke-consistency').textContent = '--';
+            }
+        }
+        
+        // =====================================================================
+        // WIFI DATA LOADING & PLAYBACK (replaces SSE connection)
+        // =====================================================================
+        let sessionData = [];
+        let processedData = [];
+        let sessionMetrics = null;  // Server-computed metrics (stroke_count, duration, rate, etc.)
+        let currentIndex = 0;
+        let isPlaying = false;
+        let playbackInterval = null;
+        const ESP32_URL = 'http://192.168.4.1';
+
+        async function loadSessionFromWiFi() {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = 'Loading...';
+            statusEl.className = 'status disconnected';
+            
+            try {
+                // Fetch processed data from Python server (which fetches from ESP32 and processes)
+                const response = await fetch('/process', { mode: 'cors', cache: 'no-cache' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const result = await response.json();
+                
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+                
+                processedData = result.processed_data || [];
+                if (processedData.length === 0) {
+                    throw new Error('No processed data');
+                }
+                
+                sessionMetrics = result.metrics || null;
+                document.getElementById('sample-count').textContent = result.processed_samples || processedData.length;
+                
+                // Update session summary and stroke metrics
+                updateSessionSummary(sessionMetrics);
+                
+                statusEl.textContent = 'Loaded';
+                statusEl.className = 'status connected';
+                isConnected = true;
+                isCalibrated = true;
+                buildPlaybackStrokeSegments();
+                resetPlayback();
+            } catch (error) {
+                console.error('Load error:', error);
+                statusEl.textContent = 'Error: ' + (error.message || 'Failed to load');
+                statusEl.className = 'status disconnected';
+                isConnected = false;
+                alert('Could not load session data.\n\nMake sure:\n1. Connected to WiFi: GoldenForm\n2. ESP32 in SYNC mode\n3. Session recorded on SD card\n4. Python server running (wifi_session_processor.py)');
+            }
+        }
+
+        function updateSessionSummary(metrics) {
+            const totalStrokes = metrics?.stroke_count ?? (processedData.length > 0 ? (processedData[processedData.length - 1].stroke_count ?? 0) : 0);
+            document.getElementById('session-stroke-count').textContent = totalStrokes;
+            if (metrics) {
+                const duration = metrics.duration || 0;
+                document.getElementById('duration').textContent = formatSessionTime(duration);
+                document.getElementById('session-rate').textContent = (metrics.stroke_rate != null) ? metrics.stroke_rate.toFixed(1) + ' /min' : '--';
+                document.getElementById('session-consistency').textContent = (metrics.consistency != null) ? metrics.consistency.toFixed(0) + '%' : '--';
+            } else if (processedData.length > 0) {
+                const t0 = processedData[0]?.timestamp || 0;
+                const tEnd = processedData[processedData.length - 1]?.timestamp || 0;
+                document.getElementById('duration').textContent = formatSessionTime((tEnd - t0) / 1000);
+                document.getElementById('session-rate').textContent = '--';
+                document.getElementById('session-consistency').textContent = '--';
+            }
+        }
+
+        function togglePlayback() {
+            if (isPlaying) {
+                pausePlayback();
+            } else {
+                startPlayback();
+            }
+        }
+
+        function startPlayback() {
+            if (processedData.length === 0 || currentIndex >= processedData.length) return;
+            isPlaying = true;
+            document.getElementById('play-pause-btn').textContent = '⏸';
+            playbackStep();
+        }
+
+        function pausePlayback() {
+            isPlaying = false;
+            document.getElementById('play-pause-btn').textContent = '▶';
+            if (playbackInterval) {
+                clearTimeout(playbackInterval);
+                playbackInterval = null;
+            }
+        }
+
+        function playbackStep() {
+            if (!isPlaying || currentIndex >= processedData.length) {
+                pausePlayback();
+                return;
+            }
+            
+            updateVisualizationFromProcessed(currentIndex);
+            updatePlaybackTime();
+            
+            const currentT = processedData[currentIndex]?.timestamp || 0;
+            currentIndex++;
+            
+            if (currentIndex < processedData.length) {
+                const nextT = processedData[currentIndex]?.timestamp || 0;
+                const delay = Math.max(1, nextT - currentT);
+                playbackInterval = setTimeout(playbackStep, delay);
+            } else {
+                pausePlayback();
+            }
+        }
+
+        function resetPlayback() {
+            pausePlayback();
+            currentIndex = 0;
+            if (processedData.length > 0) {
+                updateVisualizationFromProcessed(0);
+            }
+            updatePlaybackTime();
+        }
+
+        function skipBackward() {
+            if (processedData.length === 0) return;
+            const targetT = Math.max(processedData[0]?.timestamp || 0, (processedData[currentIndex]?.timestamp || 0) - 1000);
+            while (currentIndex > 0 && (processedData[currentIndex]?.timestamp || 0) > targetT) {
+                currentIndex--;
+            }
+            if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
+            updatePlaybackTime();
+        }
+
+        function skipForward() {
+            if (processedData.length === 0) return;
+            const targetT = (processedData[currentIndex]?.timestamp || 0) + 1000;
+            while (currentIndex < processedData.length - 1 && (processedData[currentIndex]?.timestamp || 0) < targetT) {
+                currentIndex++;
+            }
+            if (processedData.length > 0) {
+                updateVisualizationFromProcessed(currentIndex);
+            }
+            updatePlaybackTime();
+        }
+
+        function seekPlayback(event) {
+            const bar = event.currentTarget;
+            const rect = bar.getBoundingClientRect();
+            if (rect.width <= 0 || processedData.length === 0) return;
+            const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+            currentIndex = Math.floor(fraction * processedData.length);
+            currentIndex = Math.max(0, Math.min(processedData.length - 1, currentIndex));
+            if (processedData.length > 0) {
+                updateVisualizationFromProcessed(currentIndex);
+            }
+            updatePlaybackTime();
+        }
+
+        function updatePlaybackTime() {
+            if (processedData.length === 0) {
+                document.getElementById('playback-time').textContent = '0:00 / 0:00';
+                document.getElementById('progress-fill').style.width = '0%';
+                return;
+            }
+            const currentT = processedData[currentIndex]?.timestamp || 0;
+            const t0 = processedData[0]?.timestamp || 0;
+            const tEnd = processedData[processedData.length - 1]?.timestamp || 0;
+            const totalT = tEnd - t0;
+            const currentSec = (currentT - t0) / 1000;
+            const totalSec = totalT / 1000;
+            document.getElementById('playback-time').textContent = `${formatSessionTime(currentSec)} / ${formatSessionTime(totalSec)}`;
+            document.getElementById('progress-fill').style.width = `${(currentIndex / processedData.length) * 100}%`;
+        }
+
+        function updateVisualizationFromProcessed(index) {
+            if (index < 0 || index >= processedData.length) return;
+            const processed = processedData[index];
+            
+            updateDisplay(processed);
+            updateIMUVisualization(processed);
+            updateChartsForPlayback(index);
+            updatePlaybackTrail(index);
+            updateStrokeOverlaysForPlayback(index);
+            updateStrokeMetricsForPlayback(index);
+        }
+
+        // Legacy functions for compatibility (no-op for WiFi mode)
+        function connect() {
+            loadSessionFromWiFi();
+        }
+        
+        function disconnect() {
+            pausePlayback();
+            isConnected = false;
+            updateStatus('Disconnected', false);
+            stopSessionTimer();
+        }
+
+        function updateButtonStates() {
+            const btnConnect = document.getElementById('btn-connect');
+            const btnDisconnect = document.getElementById('btn-disconnect');
+            if (!btnConnect || !btnDisconnect) return;
+
+            btnConnect.disabled = isConnected;
+            btnDisconnect.disabled = !isConnected;
+        }
+        
+        // Update status display
+        function updateStatus(message, connected) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = connected ? 'status connected' : 'status disconnected';
+        }
+        
+        // Update data display
+        function updateDisplay(data) {
+            if (!data) return;
+            const acc = data.acceleration || {};
+            const ang = data.angular_velocity || {};
+            const pos = data.position || {};
+            const quat = data.quaternion || {};
+            document.getElementById('ax').textContent = (acc.ax ?? 0).toFixed(3);
+            document.getElementById('ay').textContent = (acc.ay ?? 0).toFixed(3);
+            document.getElementById('az').textContent = (acc.az ?? 0).toFixed(3);
+            document.getElementById('gx').textContent = (ang.gx ?? 0).toFixed(3);
+            document.getElementById('gy').textContent = (ang.gy ?? 0).toFixed(3);
+            document.getElementById('gz').textContent = (ang.gz ?? 0).toFixed(3);
+            document.getElementById('px').textContent = (pos.px ?? 0).toFixed(3);
+            document.getElementById('py').textContent = (pos.py ?? 0).toFixed(3);
+            document.getElementById('pz').textContent = (pos.pz ?? 0).toFixed(3);
+            document.getElementById('qw').textContent = (quat.qw ?? 1).toFixed(3);
+            document.getElementById('qx').textContent = (quat.qx ?? 0).toFixed(3);
+            document.getElementById('qy').textContent = (quat.qy ?? 0).toFixed(3);
+            document.getElementById('qz').textContent = (quat.qz ?? 0).toFixed(3);
+            
+            const t0 = processedData.length > 0 ? (processedData[0]?.timestamp || 0) : 0;
+            const sec = ((data.timestamp ?? 0) - t0) / 1000;
+            document.getElementById('timestamp').textContent = formatSessionTime(sec);
+
+            // Calibration Status
+            if (data.calibration) {
+                let sys = data.calibration.sys;
+                let accel = data.calibration.accel;
+                let gyro = data.calibration.gyro;
+                
+                document.getElementById('cal-sys').textContent = sys;
+                document.getElementById('cal-gyro').textContent = gyro;
+                document.getElementById('cal-accel').textContent = accel;
+                document.getElementById('cal-mag').textContent = data.calibration.mag;
+
+                // Tracking Status
+                const trackingStatus = document.getElementById('tracking-status');
+                if (data.tracking_active) {
+                    trackingStatus.textContent = "Tracking: ACTIVE (Moving)";
+                    trackingStatus.className = "status connected";
+                } else {
+                    // Determine WHY it's inactive
+                    if (accel < 2 || gyro < 2) {
+                        trackingStatus.textContent = "Tracking: PAUSED (Need Calib: Accel/Gyro >= 2)";
+                        trackingStatus.className = "status disconnected";
+                    } else {
+                        trackingStatus.textContent = "Tracking: READY (Move to Start)";
+                        trackingStatus.className = "status" // Neutral/Grey
+                        trackingStatus.style.backgroundColor = "#666";
+                        trackingStatus.style.color = "#fff";
+                    }
+                }
+            }
+        }
+        
+        // Update 3D visualization
+        function updateIMUVisualization(data) {
+            if (!data || !imuCube) return;
+            const cal = data.calibration || {};
+            const nowCalibrated = (cal.accel >= 2 && cal.gyro >= 2);
+            if (nowCalibrated && !isCalibrated) {
+                // Just calibrated - store initial quaternion as reference
+                // This makes the cube start "straight" relative to when it was calibrated
+                initialQuaternion = new THREE.Quaternion(
+                    data.quaternion.qx,
+                    data.quaternion.qy,
+                    data.quaternion.qz,
+                    data.quaternion.qw
+                ).inverse(); // Store inverse so we can "subtract" it later
+                isCalibrated = true;
+            }
+            
+            // =================================================================
+            // POSITION MAPPING (Python world-frame → Three.js scene)
+            // =================================================================
+            // Python: position[0]=X (left/right), position[1]=Y (forward), position[2]=Z (up/down)
+            // Three.js: X=left/right, Y=up/down, Z=forward/back
+            // Mapping: Three.js X = -px, Three.js Y = pz (vertical), Three.js Z = py
+            const pos = data.position || {};
+            const scaledX = -(pos.px ?? 0) * positionScale;
+            const scaledY = (pos.pz ?? 0) * positionScale;
+            const scaledZ = (pos.py ?? 0) * positionScale;
+            imuCube.position.set(scaledX, scaledY, scaledZ);
+            if (positionLine) {
+                const positions = positionLine.geometry.attributes.position.array;
+                positions[3] = scaledX;
+                positions[4] = scaledY;
+                positions[5] = scaledZ;
+                positionLine.geometry.attributes.position.needsUpdate = true;
+            }
+            
+            const q = data.quaternion || {};
+            let quaternion = new THREE.Quaternion(
+                q.qx ?? 0, q.qy ?? 0, q.qz ?? 0, q.qw ?? 1
+            );
+            
+            // Apply reference orientation so cube starts "straight" when calibrated
+            if (initialQuaternion) {
+                quaternion = quaternion.multiply(initialQuaternion);
+            }
+            
+            imuCube.setRotationFromQuaternion(quaternion);
+            
+            // =================================================================
+            // STROKE VISUALIZATION (Research-backed swimming analysis)
+            // =================================================================
+            const strokeCount = data.stroke_count || 0;
+            const isTracking = data.tracking_active || false;
+            const accelMag = data.stroke_debug ? data.stroke_debug.accel_mag : 0;
+            
+            // Change cube color based on tracking state (visual feedback)
+            // Red = idle, Green = tracking (capturing position data)
+            if (imuCube && imuCube.material) {
+                imuCube.material.color.setHex(isTracking ? 0x44ff44 : 0xff4444);
+            }
+            
+            // Handle reset synchronization
+            if (resetPending) {
+                if (strokeCount === 0) {
+                    resetPending = false;
+                    lastStrokeCount = 0;
+                }
+                document.getElementById('stroke-count').textContent = '0';
+            } else {
+                document.getElementById('stroke-count').textContent = strokeCount;
+            }
+            
+            // Track stroke start time for duration calculation
+            if (isTracking && strokeStartTime === null) {
+                strokeStartTime = Date.now();
+            }
+            
+            // If new stroke detected, save previous stroke with metrics
+            if (!resetPending && strokeCount > lastStrokeCount) {
+                // Only save if we have enough points (filters noise/false positives)
+                if (currentStrokePoints.length >= MIN_STROKE_POINTS) {
+                    const strokeData = saveStrokeWithMetrics(
+                        currentStrokePoints, 
+                        currentStrokeAccelMags,
+                        strokeStartTime,
+                        strokeCount - 1
+                    );
+                    updateStrokeAnalysisPanel(strokeData);
+                }
+                // Reset for new stroke
+                currentStrokePoints = [];
+                currentStrokeAccelMags = [];
+                strokeStartTime = null;
+                lastStrokeCount = strokeCount;
+            }
+            
+            // Add point to current stroke if tracking is active
+            if (isTracking) {
+                currentStrokePoints.push(new THREE.Vector3(scaledX, scaledY, scaledZ));
+                currentStrokeAccelMags.push(accelMag);
+                
+                // Limit current stroke points to prevent memory issues
+                if (currentStrokePoints.length > 500) {
+                    currentStrokePoints.shift();
+                    currentStrokeAccelMags.shift();
+                }
+            } else {
+                // Not tracking - reset stroke start time
+                if (currentStrokePoints.length < MIN_STROKE_POINTS) {
+                    // Discard incomplete stroke data
+                    currentStrokePoints = [];
+                    currentStrokeAccelMags = [];
+                }
+                strokeStartTime = null;
+            }
+            
+            // Charts and trail updated by updateChartsForPlayback/updatePlaybackTrail (playback-synced)
+        }
+        
+        // Save stroke with full metrics and create visualization
+        function saveStrokeWithMetrics(points, accelMags, startTime, strokeIndex) {
+            if (points.length < 2) return null;
+            
+            const endTime = Date.now();
+            const duration = startTime ? (endTime - startTime) / 1000 : 0;
+            
+            // Calculate stroke path length (sum of distances between consecutive points)
+            let pathLength = 0;
+            for (let i = 1; i < points.length; i++) {
+                pathLength += points[i].distanceTo(points[i-1]);
+            }
+            // Convert from scaled units back to approximate meters
+            pathLength = pathLength / positionScale;
+            
+            // Calculate stroke bounding box for analysis
+            const minPt = new THREE.Vector3(Infinity, Infinity, Infinity);
+            const maxPt = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+            for (const pt of points) {
+                minPt.min(pt);
+                maxPt.max(pt);
+            }
+            const strokeExtent = maxPt.clone().sub(minPt);
+            
+            // Store stroke data
+            const strokeData = {
+                points: points.slice(), // Copy points
+                accelMags: accelMags.slice(),
+                startTime: startTime,
+                endTime: endTime,
+                duration: duration,
+                pathLength: pathLength,
+                extent: strokeExtent,
+                index: strokeIndex
+            };
+            strokeHistory.push(strokeData);
+            
+            // Create phase-colored trail visualization
+            createPhaseColoredTrail(strokeData);
+            
+            // Keep only last MAX_STROKES_DISPLAYED
+            if (strokeHistory.length > MAX_STROKES_DISPLAYED) {
+                strokeHistory.shift();
+                // Remove oldest trail from scene
+                if (strokeTrails.length > MAX_STROKES_DISPLAYED) {
+                    const oldTrail = strokeTrails.shift();
+                    scene.remove(oldTrail);
+                    if (oldTrail.geometry) oldTrail.geometry.dispose();
+                    if (oldTrail.material) {
+                        if (Array.isArray(oldTrail.material)) {
+                            oldTrail.material.forEach(m => m.dispose());
+                        } else {
+                            oldTrail.material.dispose();
+                        }
+                    }
+                }
+            }
+            
+            document.getElementById('strokes-displayed').textContent = strokeTrails.length;
+            return strokeData;
+        }
+        
+        // Create a phase-colored trail (color based on acceleration magnitude)
+        // Research: High accel = catch/pull phase (blue), Low accel = recovery (green)
+        function createPhaseColoredTrail(strokeData) {
+            if (!strokeData || strokeData.points.length < 2) return;
+            
+            const points = strokeData.points;
+            const accelMags = strokeData.accelMags;
+            
+            // Find min/max acceleration for normalization
+            let minAccel = Infinity, maxAccel = -Infinity;
+            for (const a of accelMags) {
+                if (a < minAccel) minAccel = a;
+                if (a > maxAccel) maxAccel = a;
+            }
+            const accelRange = Math.max(maxAccel - minAccel, 0.1);
+            
+            // Create geometry with vertex colors
+            const positions = [];
+            const colors = [];
+            
+            for (let i = 0; i < points.length; i++) {
+                positions.push(points[i].x, points[i].y, points[i].z);
+                
+                // Map acceleration to color
+                // Low accel (recovery) = cyan/green, High accel (power phase) = orange/red
+                const normalizedAccel = (accelMags[i] - minAccel) / accelRange;
+                const color = new THREE.Color();
+                
+                if (normalizedAccel < 0.3) {
+                    // Recovery phase - cyan
+                    color.setHSL(0.5, 0.8, 0.5);
+                } else if (normalizedAccel < 0.6) {
+                    // Transition - yellow/green
+                    color.setHSL(0.15, 0.8, 0.5);
+                } else {
+                    // Power/catch phase - orange/red
+                    color.setHSL(0.05, 0.9, 0.55);
+                }
+                
+                colors.push(color.r, color.g, color.b);
+            }
+            
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            const material = new THREE.LineBasicMaterial({
+                vertexColors: true,
+                linewidth: 2,
+                opacity: showOverlay ? 0.7 : 0,
+                transparent: true
+            });
+            
+            const line = new THREE.Line(geometry, material);
+            line.visible = showOverlay;
+            scene.add(line);
+            strokeTrails.push(line);
+        }
+        
+        // Update the stroke analysis panel with metrics
+        function updateStrokeAnalysisPanel(strokeData) {
+            if (!strokeData) return;
+            
+            // Last stroke duration
+            const durationStr = strokeData.duration.toFixed(2) + 's';
+            document.getElementById('last-stroke-time').textContent = durationStr;
+            
+            // Stroke path length (approximate)
+            const lengthStr = strokeData.pathLength.toFixed(2) + 'm';
+            document.getElementById('stroke-length').textContent = lengthStr;
+            
+            // Calculate stroke rate (strokes per minute) from recent strokes
+            if (strokeHistory.length >= 2) {
+                const recentStrokes = strokeHistory.slice(-5);
+                let totalDuration = 0;
+                for (let i = 1; i < recentStrokes.length; i++) {
+                    const timeBetween = (recentStrokes[i].startTime - recentStrokes[i-1].endTime) / 1000;
+                    totalDuration += recentStrokes[i].duration + Math.max(0, timeBetween);
+                }
+                const avgStrokeTime = totalDuration / (recentStrokes.length - 1);
+                const strokesPerMin = avgStrokeTime > 0 ? (60 / avgStrokeTime).toFixed(1) : '--';
+                document.getElementById('stroke-rate').textContent = strokesPerMin + '/min';
+            }
+            
+            // Calculate consistency (standard deviation of stroke lengths)
+            if (strokeHistory.length >= 3) {
+                const lengths = strokeHistory.slice(-5).map(s => s.pathLength);
+                const avgLength = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+                const variance = lengths.reduce((sum, l) => sum + Math.pow(l - avgLength, 2), 0) / lengths.length;
+                const stdDev = Math.sqrt(variance);
+                const consistency = Math.max(0, 100 - (stdDev / avgLength) * 100);
+                
+                let consistencyStr = consistency.toFixed(0) + '%';
+                if (consistency >= 90) consistencyStr += ' ⭐';
+                else if (consistency >= 75) consistencyStr += ' ✓';
+                document.getElementById('stroke-consistency').textContent = consistencyStr;
+            } else {
+                document.getElementById('stroke-consistency').textContent = 'Need 3+ strokes';
+            }
+        }
+        
+        // Toggle stroke overlay visibility
+        function toggleStrokeOverlay() {
+            showOverlay = document.getElementById('overlay-strokes').checked;
+            if (processedData.length > 0) {
+                updateStrokeOverlaysForPlayback(currentIndex);
+            } else {
+                strokeTrails.forEach(trail => {
+                    if (trail.material) {
+                        trail.material.opacity = showOverlay ? 0.7 : 0;
+                        trail.visible = showOverlay;
+                    }
+                });
+            }
+        }
+        
+        // Toggle water reference plane
+        function toggleWaterPlane() {
+            const show = document.getElementById('show-water-plane').checked;
+            if (waterPlane) waterPlane.visible = show;
+            if (scene) {
+                const grid = scene.getObjectByName('waterGrid');
+                if (grid) grid.visible = show;
+            }
+        }
+        
+        function clearChartData() {
+            if (accelChart) {
+                accelChart.data.labels = [];
+                accelChart.data.datasets.forEach(ds => { ds.data = []; });
+                accelChart.update('none');
+            }
+            if (gyroChart) {
+                gyroChart.data.labels = [];
+                gyroChart.data.datasets.forEach(ds => { ds.data = []; });
+                gyroChart.update('none');
+            }
+        }
+        
+        // Reset camera view
+        function resetView() {
+            if (!camera) return;
+            // Reset scaling to a close, readable default
+            updateScale(5.0);
+            if (controls) {
+                controls.reset();
+                controls.update();
+                return;
+            }
+            // Fallback if controls aren't available
+            camera.position.set(3, 3, 3);
+            camera.lookAt(0, 0, 0);
+        }
+        
+        // Clear all stroke trails and reset count
+        function clearStrokes() {
+            // Safe to call even if scene isn't ready yet
+            if (!scene) {
+                strokeTrails = [];
+                strokeHistory = [];
+                currentStrokePoints = [];
+                currentStrokeAccelMags = [];
+                lastStrokeCount = 0;
+                strokeStartTime = null;
+                resetPending = true;
+                document.getElementById('stroke-count').textContent = '0';
+                resetAnalysisPanel();
+                fetch('/reset', { method: 'POST' })
+                    .catch(err => {
+                        console.log('Reset request failed:', err);
+                        resetPending = false;
+                    });
+                return;
+            }
+            
+            // Remove completed stroke trails
+            strokeTrails.forEach(trail => {
+                scene.remove(trail);
+                if (trail.geometry) trail.geometry.dispose();
+                if (trail.material) {
+                    if (Array.isArray(trail.material)) {
+                        trail.material.forEach(m => m.dispose());
+                    } else {
+                        trail.material.dispose();
+                    }
+                }
+            });
+            strokeTrails = [];
+            strokeHistory = [];
+            currentStrokePoints = [];
+            currentStrokeAccelMags = [];
+            lastStrokeCount = 0;
+            strokeStartTime = null;
+            
+            // Clear live trail line
+            if (liveTrailLine) {
+                liveTrailLine.geometry.setAttribute('position', 
+                    new THREE.Float32BufferAttribute([], 3));
+            }
+            
+            if (processedData.length > 0 && currentIndex < processedData.length) {
+                updateVisualizationFromProcessed(currentIndex);
+            }
+        }
+        
+        // Reset the stroke analysis panel to default values
+        function resetAnalysisPanel() {
+            document.getElementById('last-stroke-time').textContent = '--';
+            document.getElementById('stroke-length').textContent = '--';
+            document.getElementById('stroke-rate').textContent = '--';
+            document.getElementById('stroke-consistency').textContent = '--';
+            document.getElementById('strokes-displayed').textContent = '0';
+        }
+
+        function updateScale(value) {
+            const numeric = Math.max(0.1, Math.min(10, parseFloat(value) || 1));
+            positionScale = numeric;
+            document.getElementById('scaleSlider').value = numeric;
+            document.getElementById('scaleInput').value = numeric.toFixed(1);
+            document.getElementById('scaleValue').textContent = numeric.toFixed(1) + '×';
+        }
+        
+        // Initialize when page loads
+        window.addEventListener('load', function() {
+            // Delay scene initialization to ensure canvas is fully rendered
+            setTimeout(function() {
+                initScene();
+                initCharts();
+            }, 100);
+            // Default zoom: make trails visible immediately
+            updateScale(5.0);
+            updateButtonStates();
+            // WiFi mode: user clicks "Load Session from ESP32" button to load data
+        });
+        
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            if (!renderer || !camera) return;
+            const canvas = document.getElementById('canvas');
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+                camera.aspect = rect.width / rect.height;
+                camera.updateProjectionMatrix();
+                renderer.setSize(rect.width, rect.height);
+            }
+        });
+    </script>
+</body>
+</html>

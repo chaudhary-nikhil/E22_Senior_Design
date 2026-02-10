@@ -734,16 +734,31 @@ static esp_err_t mount_sd_card(void) {
         .allocation_unit_size = 16 * 1024
     };
 
-    ESP_LOGI(TAG, "Attempting to mount SD card...");
-    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
-    
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
-        // Print card info
-        sdmmc_card_print_info(stdout, card);
-    } else {
-        ESP_LOGE(TAG, "Failed to mount SD card: %s", esp_err_to_name(ret));
+    // Give SD card time to power up (many cards need 100-500ms after reset)
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    const int max_retries = 3;
+    for (int attempt = 1; attempt <= max_retries; attempt++) {
+        ESP_LOGI(TAG, "Attempting to mount SD card (attempt %d/%d)...", attempt, max_retries);
+        ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "SD card mounted at %s", mount_point);
+            sdmmc_card_print_info(stdout, card);
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "Mount failed: %s", esp_err_to_name(ret));
+        if (attempt < max_retries) {
+            spi_bus_free(SPI2_HOST);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_err_t bus_ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+            if (bus_ret != ESP_OK) {
+                ESP_LOGE(TAG, "SPI bus re-init failed: %s", esp_err_to_name(bus_ret));
+                return ret;
+            }
+        }
     }
+    ESP_LOGE(TAG, "Failed to mount SD card after %d attempts: %s", max_retries, esp_err_to_name(ret));
+    spi_bus_free(SPI2_HOST);
     return ret;
 }
 
