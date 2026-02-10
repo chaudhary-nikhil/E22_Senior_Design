@@ -537,32 +537,6 @@ class StrokeProcessor:
         return json.dumps(vis_data)
 
 
-=======
-            "stroke_count": self.stroke_count,
-            "just_reset": self.just_reset,  # Confirms reset to client
-            
-            # Stroke detection debug info (helps with threshold tuning)
-            "stroke_debug": {
-                "world_az": round(self.debug_world_az, 2),      # Vertical accel in world frame
-                "accel_mag": round(self.debug_accel_mag, 2),    # Total acceleration magnitude
-                "gyro_mag": round(self.debug_gyro_mag, 2),      # Angular velocity magnitude
-                "jerk": round(self.debug_jerk, 1),              # d|a|/dt (sharp change)
-                "was_downward": self.debug_was_downward,        # Was hand moving down before?
-                "is_impact": self.debug_is_impact,              # Impact via vertical reversal
-                "is_impact_by_jerk": self.debug_is_impact_by_jerk,  # Impact via sharp-change fallback
-                "turn_lockout": self.debug_in_turn_lockout,     # In post-turn lockout?
-                "is_gliding": self.is_gliding                   # In glide phase?
-            }
-        }
-        
-        # Clear the reset flag after sending once
-        if self.just_reset:
-            self.just_reset = False
-        
-        return json.dumps(vis_data)
-
-
->>>>>>> ff1b3cda742cf1c61e6fa4143f20f5cc4612cc85
 # --- HTTP Server (Unchanged) ---
 class SSEHandler(BaseHTTPRequestHandler):
     def do_GET(self):
