@@ -9,7 +9,7 @@
   "idf.port": "/dev/tty.usbmodem144401",
   "idf.flashType": "UART",
     "idf.monitorBaudRate": 115200,
-    "idf.adapterTargetName": "esp32",
+    "idf.adapterTargetName": "esp32s3",
     "idf.customAdapterTargetName": "esp32",
     "idf.terminal.integrated.env.osx": {
         "PATH": "${workspaceFolder}/esp-idf/tools:${env:PATH}",
