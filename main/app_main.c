@@ -517,7 +517,7 @@ void app_main(void) {
                         sample.mx, sample.my, sample.mz, sample.roll, sample.pitch, sample.yaw,
                         sample.qw, sample.qx, sample.qy, sample.qz, sample.lia_x, sample.lia_y, sample.lia_z, sample.temp,
                         sample.sys_cal, sample.gyro_cal, sample.accel_cal, sample.mag_cal);
-                    printf("%s\n", json_data);
+                    // printf("%s\n", json_data);
                 }
 
                 // When logging, also store to SD card
