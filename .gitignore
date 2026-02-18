@@ -38,6 +38,7 @@ esp-idf/
 # Session data
 sessions/
 dashboard/server/sessions/
+dashboard/.session_cache/
 
 # Flash download tool config
 flash_project_args
