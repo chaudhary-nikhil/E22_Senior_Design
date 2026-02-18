@@ -61,6 +61,12 @@ esp_err_t wifi_server_stop_sync(void);
 bool wifi_server_is_syncing(void);
 
 /**
+ * @brief Check if data transfer has completed (all data sent to client)
+ * @return true if transfer finished
+ */
+bool wifi_server_is_transfer_complete(void);
+
+/**
  * @brief Deinitialize WiFi server
  * @return esp_err_t ESP_OK on success
  */

@@ -204,6 +204,16 @@ typedef struct {
  */
 esp_err_t storage_get_stats(storage_stats_t *stats);
 
+/**
+ * @brief Get current session number (0 = no sessions recorded yet)
+ */
+uint32_t storage_get_session_number(void);
+
+/**
+ * @brief Reset session counter and delete all files (use after successful sync)
+ */
+void storage_reset_session_counter(void);
+
 #ifdef __cplusplus
 }
 #endif

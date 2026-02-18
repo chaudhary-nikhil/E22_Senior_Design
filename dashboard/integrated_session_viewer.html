@@ -3,226 +3,345 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WiFi Session Viewer - Integrated Visualization</title>
+    <title>GoldenForm Session Viewer</title>
     <style>
+        * { box-sizing: border-box; }
         body {
             margin: 0;
             padding: 20px;
             padding-bottom: 40px;
-            font-family: Arial, sans-serif;
-            background: #1a1a1a;
-            color: white;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #111;
+            color: #e0e0e0;
             overflow-y: auto;
             overflow-x: hidden;
         }
-        
+
         .container {
             display: grid;
-            grid-template-columns: 1fr 340px;
+            grid-template-columns: 1fr 360px;
             grid-template-rows: 40vh 1fr;
             gap: 15px;
             min-height: calc(100vh - 80px);
             padding-bottom: 30px;
         }
-        
+
         .visualization {
             grid-row: 1 / 2;
             grid-column: 1 / 2;
+            background: #1a1a1a;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
             position: relative;
         }
-        
+
         .charts {
             grid-row: 2 / 3;
             grid-column: 1 / 2;
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 15px;
-            background: #2a2a2a;
+            background: #1a1a1a;
             padding: 15px;
-            padding-bottom: 10px;
-            border-radius: 10px;
+            border-radius: 12px;
             margin-bottom: 20px;
+            min-height: 280px;
         }
-        
+
         .chart-container {
-            background: #333;
+            background: #222;
             padding: 12px;
             border-radius: 8px;
             display: flex;
             flex-direction: column;
             min-height: 0;
         }
-        
         .chart-container h4 {
             margin: 0 0 10px 0;
-            color: #fff;
+            color: #aaa;
             text-align: center;
             flex-shrink: 0;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        
-        .chart-wrapper {
-            flex: 1;
-            position: relative;
-            min-height: 0;
-        }
-        
+        .chart-wrapper { flex: 1; position: relative; min-height: 0; }
+
         .controls {
             grid-row: 1 / 3;
             grid-column: 2 / 3;
-            padding: 20px;
-            background: #2a2a2a;
-            border-radius: 10px;
+            padding: 0;
+            background: #1a1a1a;
+            border-radius: 12px;
             overflow-y: auto;
-            min-width: 280px;
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
         }
-        
-        .stroke-analysis-panel {
-            background: linear-gradient(135deg, #1e3a5f 0%, #2d4a6f 100%);
-            border: 1px solid #3d6a9f;
-        }
-        
-        .stroke-analysis-rows { margin-top: 8px; font-size: 0.9em; }
-        .stroke-row { display: flex; justify-content: space-between; margin: 4px 0; gap: 12px; }
-        .stroke-row span:first-child { flex-shrink: 0; white-space: nowrap; }
-        .stroke-row span:last-child { color: #4fc3f7; text-align: right; }
-        
-        .metric {
-            margin: 10px 0;
-            padding: 10px 12px;
-            background: #333;
-            border-radius: 6px;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            font-size: 13px;
-            line-height: 1.4;
-            word-break: break-word;
-        }
-        
-        .metric strong { font-weight: 600; }
 
-        .metric input[type="range"],
-        .metric input[type="number"] {
-            width: 100%;
-            margin-top: 6px;
+        /* Session List Panel */
+        .session-panel {
+            padding: 16px;
+            border-bottom: 1px solid #2a2a2a;
         }
-        
-        .status {
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 5px;
-            text-align: center;
-            font-weight: bold;
+        .session-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
         }
-        
-        .connected {
-            background: #2d5a2d;
-            color: #90ee90;
+        .session-panel-header h3 {
+            margin: 0;
+            font-size: 1em;
+            color: #fff;
         }
-        
-        .disconnected {
-            background: #5a2d2d;
-            color: #ee9090;
+        .session-panel-header .badge {
+            background: #2a2a2a;
+            color: #888;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75em;
         }
-        
-        button {
-            width: 100%;
-            background: #2f7dd1;
-            color: white;
-            border: 1px solid rgba(255,255,255,0.12);
-            padding: 12px 14px;
+
+        .session-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+
+        .session-card {
+            padding: 10px 12px;
+            background: #222;
+            border: 1px solid #333;
             border-radius: 8px;
             cursor: pointer;
-            margin: 6px 0;
-            font-size: 14px;
-            font-weight: 600;
-            transition: transform 0.05s ease, background 0.15s ease, opacity 0.15s ease;
+            transition: all 0.15s;
+            position: relative;
         }
-        
-        button:hover {
-            background: #2468ad;
+        .session-card:hover { background: #282828; border-color: #444; }
+        .session-card.active {
+            background: #1a2a3a;
+            border-color: #3b82f6;
+        }
+        .session-card-name {
+            font-weight: 600;
+            font-size: 0.9em;
+            margin-bottom: 2px;
+            color: #fff;
+        }
+        .session-card-meta {
+            font-size: 0.75em;
+            color: #888;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .session-card-meta span { white-space: nowrap; }
+        .session-card .delete-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 20px;
+            height: 20px;
+            border: none;
+            background: transparent;
+            color: #666;
+            font-size: 14px;
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            line-height: 1;
+        }
+        .session-card .delete-btn:hover { background: #3a1a1a; color: #f66; }
+
+        .no-sessions {
+            text-align: center;
+            color: #555;
+            padding: 20px 10px;
+            font-size: 0.85em;
         }
 
-        button:active {
-            transform: translateY(1px);
+        /* Controls area */
+        .controls-body {
+            padding: 16px;
+            flex: 1;
+            overflow-y: auto;
         }
-        
-        button:disabled {
-            background: #3f3f3f;
-            opacity: 0.7;
-            cursor: not-allowed;
+
+        .metric {
+            margin: 8px 0;
+            padding: 10px 12px;
+            background: #222;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.5;
         }
-        
+        .metric strong { font-weight: 600; color: #ccc; }
+
+        .metric input[type="range"],
+        .metric input[type="number"] { width: 100%; margin-top: 6px; }
+
+        .status {
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 0.85em;
+        }
+        .connected { background: #1a2e1a; color: #6ee06e; }
+        .disconnected { background: #2e1a1a; color: #e06e6e; }
+
+        button {
+            width: 100%;
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 11px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin: 5px 0;
+            font-size: 13px;
+            font-weight: 600;
+            transition: background 0.15s, transform 0.05s;
+        }
+        button:hover { background: #2563eb; }
+        button:active { transform: translateY(1px); }
+        button:disabled { background: #333; opacity: 0.5; cursor: not-allowed; }
+
+        .sync-btn {
+            background: linear-gradient(135deg, #3b82f6, #6366f1);
+            font-size: 14px;
+            padding: 12px;
+        }
+        .sync-btn:hover { background: linear-gradient(135deg, #2563eb, #4f46e5); }
+
         #canvas {
-            border: 1px solid #555;
-            border-radius: 10px 10px 0 0;
+            border: 1px solid #333;
+            border-radius: 12px 12px 0 0;
             width: 100%;
             flex: 1;
             min-height: 200px;
             display: block;
-            background: #1a1a1a;
+            background: #111;
         }
-        
-        .visualization {
-            background: #1a1a1a;
-            border-radius: 10px;
-            display: flex;
-            flex-direction: column;
-        }
-        
+
         .playback-bar {
             display: flex;
             align-items: center;
             gap: 8px;
-            padding: 12px 16px;
-            background: #252525;
-            border-radius: 0 0 10px 10px;
-            margin-top: 8px;
+            padding: 10px 14px;
+            background: #1e1e1e;
+            border-radius: 0 0 12px 12px;
             flex-shrink: 0;
         }
-        
         .play-btn {
-            width: 48px;
-            height: 48px;
-            font-size: 20px;
+            width: 42px;
+            height: 42px;
+            font-size: 18px;
             padding: 0;
             border-radius: 50%;
-            background: #2f7dd1 !important;
+            background: #3b82f6 !important;
             flex-shrink: 0;
-        }
-        
-        .play-btn:hover {
-            background: #3d8ee5 !important;
-        }
-        
-        .playback-bar button:not(.play-btn) {
-            width: 36px;
-            height: 36px;
-            padding: 0;
             margin: 0;
-            flex-shrink: 0;
         }
-        
+        .play-btn:hover { background: #2563eb !important; }
+        .playback-bar button:not(.play-btn) {
+            width: 32px; height: 32px; padding: 0; margin: 0; flex-shrink: 0;
+            font-size: 14px; background: #333;
+        }
+        .playback-bar button:not(.play-btn):hover { background: #444; }
         .playback-bar .progress-bar {
-            flex: 1;
-            height: 10px;
-            background: #444;
-            border-radius: 5px;
-            cursor: pointer;
-            position: relative;
-            min-width: 80px;
+            flex: 1; height: 8px; background: #333; border-radius: 4px;
+            cursor: pointer; position: relative; min-width: 80px;
         }
-        
         .playback-bar .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #4facfe, #00f2fe);
-            border-radius: 5px;
+            background: linear-gradient(90deg, #3b82f6, #06b6d4);
+            border-radius: 4px;
             width: 0%;
             transition: width 0.1s;
         }
-        
         .playback-time {
-            font-size: 0.95em;
+            font-size: 0.85em;
             min-width: 6em;
             font-variant-numeric: tabular-nums;
+            color: #888;
+        }
+
+        .stroke-analysis-panel {
+            background: linear-gradient(135deg, #1a2a3f 0%, #222f3f 100%);
+            border: 1px solid #2a4a6f;
+        }
+        .stroke-analysis-rows { margin-top: 8px; font-size: 0.9em; }
+        .stroke-row { display: flex; justify-content: space-between; margin: 3px 0; gap: 12px; }
+        .stroke-row span:first-child { flex-shrink: 0; white-space: nowrap; color: #aaa; }
+        .stroke-row span:last-child { color: #60a5fa; text-align: right; }
+
+        .section-title {
+            font-size: 0.7em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #555;
+            margin: 14px 0 6px 0;
+        }
+
+        /* Branding header */
+        .brand-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px 10px;
+            border-bottom: 1px solid #222;
+        }
+        .brand-header h2 {
+            margin: 0;
+            font-size: 1.1em;
+            font-weight: 700;
+            background: linear-gradient(135deg, #3b82f6, #06b6d4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .connection-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block; margin-right: 6px;
+            background: #ef4444;
+            box-shadow: 0 0 4px #ef4444;
+            transition: all 0.3s;
+        }
+        .connection-dot.ok {
+            background: #22c55e;
+            box-shadow: 0 0 6px #22c55e;
+        }
+        .conn-label {
+            font-size: 0.7em;
+            color: #888;
+            display: flex;
+            align-items: center;
+        }
+
+        /* Data integrity badge */
+        .integrity-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.75em;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #1a2e1a;
+            color: #6ee06e;
+            margin-left: 6px;
+        }
+        .integrity-badge.warn {
+            background: #2e2a1a;
+            color: #e0c06e;
         }
     </style>
 </head>
@@ -230,383 +349,612 @@
     <div class="container">
         <div class="visualization">
             <canvas id="canvas" width="800" height="400"></canvas>
-            <!-- Prominent playback bar below 3D view for easy access -->
             <div class="playback-bar">
-                <button class="play-btn" id="play-pause-btn" onclick="togglePlayback()" title="Play / Pause">▶</button>
-                <button onclick="resetPlayback()" title="Reset to start">⏮</button>
-                <button onclick="skipBackward()" title="Skip back 1s">⏪</button>
-                <button onclick="skipForward()" title="Skip forward 1s">⏩</button>
+                <button class="play-btn" id="play-pause-btn" onclick="togglePlayback()" title="Play / Pause">&#9654;</button>
+                <button onclick="resetPlayback()" title="Reset">&#9198;</button>
+                <button onclick="skipBackward()" title="Back 1s">&#9194;</button>
+                <button onclick="skipForward()" title="Forward 1s">&#9193;</button>
                 <div class="progress-bar" onclick="seekPlayback(event)" title="Click to seek">
                     <div class="progress-fill" id="progress-fill"></div>
                 </div>
                 <span id="playback-time" class="playback-time">0:00 / 0:00</span>
             </div>
         </div>
-        
+
         <div class="charts">
             <div class="chart-container">
-                <h4>Acceleration (m/s²)</h4>
-                <div class="chart-wrapper">
-                    <canvas id="accelChart"></canvas>
-                </div>
+                <h4>Acceleration (m/s&sup2;)</h4>
+                <div class="chart-wrapper"><canvas id="accelChart"></canvas></div>
             </div>
             <div class="chart-container">
                 <h4>Angular Velocity (rad/s)</h4>
-                <div class="chart-wrapper">
-                    <canvas id="gyroChart"></canvas>
-                </div>
+                <div class="chart-wrapper"><canvas id="gyroChart"></canvas></div>
             </div>
         </div>
-        
+
         <div class="controls">
-            <h3>WiFi Session Viewer</h3>
-            
-            <div id="status" class="status disconnected">
-                Not Loaded
+            <!-- Brand + Connection Status -->
+            <div class="brand-header">
+                <h2>GoldenForm</h2>
+                <span class="conn-label">
+                    <span class="connection-dot" id="conn-dot"></span>
+                    <span id="conn-text">Not synced</span>
+                </span>
             </div>
 
-            <button onclick="loadSessionFromWiFi()">Load Session from ESP32</button>
-            
-            <div class="metric session-summary">
-                <strong>Session Summary</strong><br>
-                Samples: <span id="sample-count">0</span><br>
-                Duration: <span id="duration">0:00</span><br>
-                <strong style="margin-top: 6px; display: block;">Total Strokes: <span id="session-stroke-count">0</span></strong><br>
-                Rate: <span id="session-rate">--</span><br>
-                Consistency: <span id="session-consistency">--</span>
-            </div>
-            
-            <details class="metric" style="cursor: pointer;">
-                <summary><strong>IMU Data (at playback)</strong></summary>
-                <div style="margin-top: 8px;">
-                    <strong>Accel (m/s²):</strong> X <span id="ax">0.000</span> Y <span id="ay">0.000</span> Z <span id="az">0.000</span><br>
-                    <strong>Gyro (rad/s):</strong> X <span id="gx">0.000</span> Y <span id="gy">0.000</span> Z <span id="gz">0.000</span><br>
-                    <strong>Position (m):</strong> X <span id="px">0.000</span> Y <span id="py">0.000</span> Z <span id="pz">0.000</span><br>
-                    <strong>Quaternion:</strong> W <span id="qw">1.000</span> X <span id="qx">0.000</span> Y <span id="qy">0.000</span> Z <span id="qz">0.000</span>
+            <!-- Session List Panel -->
+            <div class="session-panel">
+                <div class="session-panel-header">
+                    <h3>Sessions</h3>
+                    <span class="badge" id="session-count-badge">0 saved</span>
                 </div>
-            </details>
-
-            <div class="metric">
-                <strong>Visualizer Position Scale</strong><br>
-                <input 
-                    type="range" 
-                    id="scaleSlider" 
-                    min="0.1" 
-                    max="10" 
-                    step="0.1" 
-                    value="5"
-                    oninput="updateScale(this.value)">
-                <input 
-                    type="number" 
-                    id="scaleInput"
-                    min="0.1"
-                    max="10"
-                    step="0.1"
-                    value="5"
-                    oninput="updateScale(this.value)">
-                <div>Current scale: <span id="scaleValue">5.0×</span></div>
-            </div>
-            
-            <div class="metric">
-                <strong>Session Time</strong><br>
-                <span id="timestamp" style="font-size: 1.3em; font-family: 'Courier New', monospace;">00:00</span>
-            </div>
-
-            <div class="metric">
-                <strong>Calibration (0=Bad, 3=Good)</strong><br>
-                System: <span id="cal-sys">0</span><br>
-                Gyro:   <span id="cal-gyro">0</span><br>
-                Accel:  <span id="cal-accel">0</span><br>
-                Mag:    <span id="cal-mag">0</span>
-            </div>
-            
-            <div class="status disconnected" id="tracking-status">
-                Tracking: Inactive
-            </div>
-            
-            <div class="metric">
-                <strong>Stroke Count (at playback)</strong><br>
-                <span id="stroke-count" style="font-size: 1.8em; font-weight: bold;">0</span>
-                <span style="font-size: 0.85em; color: #888;"> / <span id="stroke-count-total">0</span> total</span>
-            </div>
-            
-            <!-- Stroke Analysis Panel - shows per-stroke metrics during playback -->
-            <div class="metric stroke-analysis-panel">
-                <strong style="color: #7eb8ff;">Stroke Analysis</strong>
-                <div class="stroke-analysis-rows">
-                    <div class="stroke-row"><span>Last stroke duration:</span><span id="last-stroke-time">--</span></div>
-                    <div class="stroke-row"><span>Last stroke length:</span><span id="stroke-length">--</span></div>
-                    <div class="stroke-row"><span>Rate (completed):</span><span id="stroke-rate">--</span></div>
-                    <div class="stroke-row"><span>Consistency:</span><span id="stroke-consistency">--</span></div>
+                <button class="sync-btn" onclick="syncFromDevice()">Sync Sessions from Device</button>
+                <div id="sync-status" class="status disconnected" style="display:none;"></div>
+                <div class="session-cards" id="session-cards"></div>
+                <div class="no-sessions" id="no-sessions">
+                    No sessions yet.<br>Record on device, then hold button to sync.
                 </div>
             </div>
-            
-            <!-- Stroke Comparison Controls -->
-            <div class="metric" style="background: #2d3a2d; border: 1px solid #4a5a4a;">
-                <strong style="color: #a5d6a7;">3D View</strong>
-                <p style="font-size: 0.8em; color: #aaa; margin: 4px 0;">Trail resets at each stroke for per-stroke hand motion.</p>
-                <div style="margin-top: 8px;">
-                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="overlay-strokes" onchange="toggleStrokeOverlay()" checked>
-                        <span style="font-size: 0.9em;">Overlay past strokes</span>
-                    </label>
-                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 6px;">
-                        <input type="checkbox" id="show-water-plane" onchange="toggleWaterPlane()">
-                        <span style="font-size: 0.9em;">Show water reference</span>
-                    </label>
-                    <div style="margin-top: 8px; font-size: 0.85em; color: #888;">
-                        Strokes shown: <span id="strokes-displayed">0</span>/10
+
+            <!-- Controls Body -->
+            <div class="controls-body">
+                <div class="metric session-summary">
+                    <strong>Session Summary</strong>
+                    <span class="integrity-badge" id="data-integrity" style="display:none;">
+                        <span id="integrity-icon">&#10003;</span> <span id="integrity-text">Verified</span>
+                    </span><br>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;margin-top:4px;">
+                        <span>Samples: <strong id="sample-count">0</strong></span>
+                        <span>Duration: <strong id="duration">0:00</strong></span>
+                        <span>Strokes: <strong id="session-stroke-count">0</strong></span>
+                        <span>Turns: <strong id="session-turn-count">0</strong></span>
+                        <span>Rate: <strong id="session-rate">--</strong></span>
+                        <span>Consistency: <strong id="session-consistency">--</strong></span>
+                    </div>
+                    <div id="session-laps" style="margin-top:4px;font-size:0.85em;color:#888;"></div>
+                </div>
+
+                <div class="section-title">Playback Data</div>
+                <details class="metric" style="cursor:pointer;">
+                    <summary><strong>IMU Data (at playback)</strong></summary>
+                    <div style="margin-top:8px;">
+                        <strong>Accel:</strong> X <span id="ax">0</span> Y <span id="ay">0</span> Z <span id="az">0</span><br>
+                        <strong>Gyro:</strong> X <span id="gx">0</span> Y <span id="gy">0</span> Z <span id="gz">0</span><br>
+                        <strong>Pos:</strong> X <span id="px">0</span> Y <span id="py">0</span> Z <span id="pz">0</span><br>
+                        <strong>Quat:</strong> W <span id="qw">1</span> X <span id="qx">0</span> Y <span id="qy">0</span> Z <span id="qz">0</span>
+                    </div>
+                </details>
+
+                <div class="metric">
+                    <strong>Arc Scale</strong>
+                    <input type="range" id="scaleSlider" min="0.5" max="10" step="0.1" value="3" oninput="updateScale(this.value)">
+                    <div style="display:flex;justify-content:space-between;font-size:0.8em;color:#888;">
+                        <span>Current: <span id="scaleValue">3.0x</span></span>
+                        <input type="number" id="scaleInput" min="0.5" max="10" step="0.1" value="3"
+                               oninput="updateScale(this.value)" style="width:60px;margin:0;">
                     </div>
                 </div>
+
+                <div class="section-title">Stroke Analysis</div>
+                <div class="metric">
+                    <strong>Stroke Count</strong><br>
+                    <span id="stroke-count" style="font-size:1.6em;font-weight:bold;">0</span>
+                    <span style="font-size:0.8em;color:#666;"> / <span id="stroke-count-total">0</span> total</span>
+                </div>
+
+                <div class="metric stroke-analysis-panel">
+                    <strong style="color:#7eb8ff;">Stroke Details</strong>
+                    <div class="stroke-analysis-rows">
+                        <div class="stroke-row"><span>Last duration:</span><span id="last-stroke-time">--</span></div>
+                        <div class="stroke-row"><span>Arc sweep:</span><span id="stroke-length">--</span></div>
+                        <div class="stroke-row"><span>Rate:</span><span id="stroke-rate">--</span></div>
+                        <div class="stroke-row"><span>Consistency:</span><span id="stroke-consistency">--</span></div>
+                        <div class="stroke-row"><span>Turns:</span><span id="playback-turns">0</span></div>
+                    </div>
+                    <div id="stroke-phase" style="font-size:0.8em;color:#888;margin-top:4px;"></div>
+                </div>
+
+                <div class="section-title">3D View</div>
+                <div class="metric" style="background:#1a2a1a;border:1px solid #2a3a2a;">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="overlay-strokes" onchange="toggleStrokeOverlay()" checked>
+                        <span style="font-size:0.85em;">Overlay past strokes</span>
+                    </label>
+                    <div id="strokes-displayed-row" style="margin-top:6px;font-size:0.8em;color:#666;display:none;">
+                        Strokes shown: <span id="strokes-displayed">0</span>
+                    </div>
+                    <div style="margin-top:4px;font-size:0.75em;color:#555;">Each stroke = one color. Current stroke = white.</div>
+                </div>
+
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                    <button onclick="resetView()" style="flex:1;">Reset View</button>
+                    <button onclick="clearStrokes()" style="flex:1;background:#444;">Clear Trails</button>
+                </div>
+
+                <div class="section-title">Device Calibration</div>
+                <div class="metric" id="cal-panel" style="font-size:0.85em;">
+                    <div id="cal-session-note" style="font-size:0.85em;color:#888;margin-bottom:6px;">No session data</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+                        <span>System: <strong id="cal-sys">0</strong>/3</span>
+                        <span>Gyro: <strong id="cal-gyro">0</strong>/3</span>
+                        <span>Accel: <strong id="cal-accel">0</strong>/3</span>
+                        <span>Mag: <strong id="cal-mag">0</strong>/3</span>
+                    </div>
+                    <div id="cal-bar" style="margin-top:6px;height:4px;border-radius:2px;background:#333;overflow:hidden;">
+                        <div id="cal-fill" style="height:100%;width:0%;background:linear-gradient(90deg,#ef4444,#eab308,#22c55e);border-radius:2px;transition:width 0.3s;"></div>
+                    </div>
+                    <div id="cal-summary" style="font-size:0.8em;color:#888;margin-top:3px;">No data</div>
+                </div>
+                <div id="tracking-status" style="display:none;"></div>
             </div>
-            
-            <button id="btn-connect" onclick="loadSessionFromWiFi()" style="display: none;">Load Session</button>
-            <button id="btn-disconnect" onclick="disconnect()" style="display: none;">Disconnect</button>
-            <button id="btn-reset-view" onclick="resetView()">Reset View</button>
-            <button id="btn-clear-strokes" onclick="clearStrokes()">Clear Strokes</button>
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/viz/three.min.js"></script>
+    <script src="/viz/OrbitControls.js"></script>
+    <script src="/viz/chart.umd.min.js"></script>
     <script>
-        // Global variables
-        let scene, camera, renderer, imuCube, trail = [];
-        let controls = null;
-        let positionLine = null;     // Line from origin to cube (shows current position)
-        let liveTrailLine = null;    // Live trail showing current stroke path
-        let eventSource = null;
-        let isConnected = false;
-        let positionScale = 5.0; // default: up close / visible trail
-        let strokeTrails = []; // Array of completed stroke trail objects
-        let currentStrokePoints = []; // Points for current stroke (Vector3 array)
-        let currentStrokeAccelMags = []; // Acceleration magnitudes for phase coloring
+        // =====================================================================
+        // GLOBALS
+        // =====================================================================
+        let scene, camera, renderer, imuCube, controls = null;
+        let positionLine = null, liveTrailLine = null, waterPlane = null;
+        let positionScale = 3.0;
+        let strokeTrails = [];
+        let currentStrokePoints = [], currentStrokeAccelMags = [];
         let lastStrokeCount = 0;
-        let initialQuaternion = null; // Store initial orientation when calibrated
-        let isCalibrated = false;
-        let resetPending = false; // Flag to handle async reset
-        const DEBUG_LOG_STREAM = false;
+        let initialQuaternion = null, isCalibrated = false, resetPending = false;
+        let strokeHistory = [];
+        let strokeStartTime = null;
+        let showOverlay = true;
+        const MAX_STROKES_DISPLAYED = 10;
+        const MIN_STROKE_POINTS = 10;
 
-        // StrokeProcessor runs in Python (wifi_session_processor.py)
-        // Data is fetched from ESP32 and processed server-side
-        
-        // Stroke analysis data
-        let strokeHistory = []; // Array of {points, accelMags, startTime, endTime, length, duration}
-        let strokeStartTime = null; // When current stroke started
-        let waterPlane = null; // Reference water plane mesh
-        let showOverlay = true; // Whether to show past strokes
-        const MAX_STROKES_DISPLAYED = 10; // Maximum strokes to keep for comparison
-        const MIN_STROKE_POINTS = 10; // Minimum points to consider a valid stroke (filters noise)
-        
-        // Session timer variables
-        let sessionStartTime = null;
-        let sessionTimerInterval = null;
-        
-        function formatSessionTime(totalSeconds) {
-            const s = Number.isFinite(totalSeconds) ? totalSeconds : 0;
-            const mins = Math.floor(Math.max(0, s) / 60);
-            const secs = Math.floor(Math.max(0, s) % 60);
-            return String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
-        }
-        
-        function updateSessionTimer() {
-            if (sessionStartTime === null) return;
-            const elapsed = (Date.now() - sessionStartTime) / 1000;
-            document.getElementById('timestamp').textContent = formatSessionTime(elapsed);
-        }
-        
-        function startSessionTimer() {
-            if (sessionStartTime === null) {
-                sessionStartTime = Date.now();
-            }
-            if (sessionTimerInterval === null) {
-                sessionTimerInterval = setInterval(updateSessionTimer, 100);
-            }
-        }
-        
-        function stopSessionTimer() {
-            if (sessionTimerInterval !== null) {
-                clearInterval(sessionTimerInterval);
-                sessionTimerInterval = null;
-            }
-        }
-        
-        function resetSessionTimer() {
-            stopSessionTimer();
-            sessionStartTime = null;
-            document.getElementById('timestamp').textContent = '00:00';
-        }
-        
-        // Chart variables - for playback, charts show data from start to currentIndex
         let accelChart, gyroChart;
-        let playbackStrokeSegments = []; // Pre-computed stroke segments from processedData
-        
-        // Initialize 3D scene
+        let playbackStrokeSegments = [];
+
+        // Session state
+        let processedData = [];
+        let sessionMetrics = null;
+        let currentIndex = 0;
+        let isPlaying = false;
+        let playbackInterval = null;
+
+        // Multi-session management
+        const STORAGE_KEY = 'goldenform_sessions';
+        const MAX_SAVED_SESSIONS = 5;
+        let savedSessions = [];
+        let activeSessionIdx = -1;
+
+        // =====================================================================
+        // UTILITY
+        // =====================================================================
+        function formatTime(totalSeconds) {
+            const s = Number.isFinite(totalSeconds) ? Math.max(0, totalSeconds) : 0;
+            const m = Math.floor(s / 60);
+            const sec = Math.floor(s % 60);
+            return String(m).padStart(1, '0') + ':' + String(sec).padStart(2, '0');
+        }
+
+        function formatDate(iso) {
+            try {
+                const d = new Date(iso);
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
+                       ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            } catch { return ''; }
+        }
+
+        // =====================================================================
+        // SESSION PERSISTENCE (localStorage)
+        // =====================================================================
+        function loadSavedSessions() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                savedSessions = raw ? JSON.parse(raw) : [];
+            } catch { savedSessions = []; }
+            renderSessionList();
+        }
+
+        function persistSessions() {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(savedSessions));
+            } catch (e) {
+                console.warn('Failed to save sessions to localStorage:', e);
+                if (savedSessions.length > 3) {
+                    savedSessions = savedSessions.slice(-3);
+                    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(savedSessions)); }
+                    catch { /* give up */ }
+                }
+            }
+        }
+
+        function addSession(sessionObj) {
+            savedSessions.push(sessionObj);
+            while (savedSessions.length > MAX_SAVED_SESSIONS) {
+                savedSessions.shift();
+            }
+            persistSessions();
+            renderSessionList();
+        }
+
+        function deleteSession(idx) {
+            if (idx < 0 || idx >= savedSessions.length) return;
+            savedSessions.splice(idx, 1);
+            persistSessions();
+            if (activeSessionIdx === idx) {
+                activeSessionIdx = savedSessions.length > 0 ? savedSessions.length - 1 : -1;
+                if (activeSessionIdx >= 0) selectSession(activeSessionIdx);
+                else clearVisualization();
+            } else if (activeSessionIdx > idx) {
+                activeSessionIdx--;
+            }
+            renderSessionList();
+        }
+
+        function renderSessionList() {
+            const container = document.getElementById('session-cards');
+            const noSessions = document.getElementById('no-sessions');
+            const badge = document.getElementById('session-count-badge');
+
+            badge.textContent = savedSessions.length + ' saved';
+
+            if (savedSessions.length === 0) {
+                container.innerHTML = '';
+                noSessions.style.display = '';
+                return;
+            }
+            noSessions.style.display = 'none';
+
+            let html = '';
+            for (let i = savedSessions.length - 1; i >= 0; i--) {
+                const s = savedSessions[i];
+                const isActive = i === activeSessionIdx;
+                const dur = formatTime(s.duration || 0);
+                const samples = s.sampleCount || 0;
+                const strokes = s.strokeCount || 0;
+                const turns = s.turnCount || 0;
+                const dateStr = formatDate(s.syncedAt);
+                html += `<div class="session-card${isActive ? ' active' : ''}" onclick="selectSession(${i})">
+                    <div class="session-card-name">${escapeHtml(s.name)}</div>
+                    <div class="session-card-meta">
+                        <span>${dateStr}</span>
+                        <span>${dur}</span>
+                        <span>${samples} samples</span>
+                        <span>${strokes} strokes${turns > 0 ? ' \u2022 ' + turns + ' turns' : ''}</span>
+                    </div>
+                    <button class="delete-btn" onclick="event.stopPropagation();deleteSession(${i})" title="Remove">&times;</button>
+                </div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        function escapeHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        async function selectSession(idx) {
+            if (idx < 0 || idx >= savedSessions.length) return;
+            activeSessionIdx = idx;
+            const session = savedSessions[idx];
+
+            processedData = session.processedData || [];
+            sessionMetrics = session.metrics || null;
+
+            // Re-process through server to use latest stroke/position algorithm
+            if (processedData.length > 0) {
+                try {
+                    setConnectionStatus(false, 'Re-processing...');
+                    const resp = await fetch('/reprocess', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ processedData: processedData })
+                    });
+                    if (resp.ok) {
+                        const result = await resp.json();
+                        if (result.processedData && result.processedData.length > 0) {
+                            processedData = result.processedData;
+                            sessionMetrics = result.metrics || sessionMetrics;
+                            session.processedData = processedData;
+                            session.metrics = sessionMetrics;
+                            persistSessions();
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Re-process unavailable, using cached data:', e.message);
+                }
+            }
+
+            updateSessionSummary(sessionMetrics);
+            setConnectionStatus(true, 'Session loaded');
+
+            isCalibrated = true;
+            buildPlaybackStrokeSegments();
+            resetPlayback();
+            renderSessionList();
+        }
+
+        function clearVisualization() {
+            processedData = [];
+            sessionMetrics = null;
+            currentIndex = 0;
+            pausePlayback();
+            clearChartData();
+            if (liveTrailLine && typeof THREE !== 'undefined') {
+                liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+            }
+            strokeTrails.forEach(t => { if (scene) scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
+            strokeTrails = [];
+            document.getElementById('sample-count').textContent = '0';
+            document.getElementById('duration').textContent = '0:00';
+            document.getElementById('session-stroke-count').textContent = '0';
+            document.getElementById('session-turn-count').textContent = '0';
+            document.getElementById('session-rate').textContent = '--';
+            document.getElementById('session-consistency').textContent = '--';
+            const lapsEl = document.getElementById('session-laps');
+            if (lapsEl) lapsEl.textContent = '';
+            const calNote = document.getElementById('cal-session-note');
+            if (calNote) { calNote.textContent = 'No session data'; calNote.style.color = '#888'; }
+            const phaseEl = document.getElementById('stroke-phase');
+            if (phaseEl) phaseEl.textContent = '';
+            document.getElementById('playback-turns').textContent = '0';
+            updatePlaybackTime();
+        }
+
+        // =====================================================================
+        // CONNECTION STATUS (Req 6-2-1)
+        // =====================================================================
+        function setConnectionStatus(connected, label) {
+            const dot = document.getElementById('conn-dot');
+            const text = document.getElementById('conn-text');
+            if (dot) dot.className = connected ? 'connection-dot ok' : 'connection-dot';
+            if (text) text.textContent = label || (connected ? 'Connected' : 'Not synced');
+        }
+
+        function setDataIntegrity(sampleCount) {
+            const badge = document.getElementById('data-integrity');
+            const icon = document.getElementById('integrity-icon');
+            const text = document.getElementById('integrity-text');
+            if (!badge) return;
+            if (sampleCount > 0) {
+                badge.style.display = '';
+                badge.className = 'integrity-badge';
+                icon.innerHTML = '&#10003;';
+                text.textContent = sampleCount + ' samples verified';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+
+        // =====================================================================
+        // SYNC FROM DEVICE
+        // =====================================================================
+        let syncInProgress = false;
+
+        async function syncFromDevice() {
+            if (syncInProgress) return;
+            syncInProgress = true;
+
+            const syncBtn = document.querySelector('.sync-btn');
+            if (syncBtn) { syncBtn.disabled = true; syncBtn.textContent = 'Syncing...'; }
+
+            const statusEl = document.getElementById('sync-status');
+            statusEl.style.display = '';
+            statusEl.textContent = 'Connecting to device...';
+            statusEl.className = 'status disconnected';
+            setConnectionStatus(false, 'Syncing...');
+
+            try {
+                const response = await fetch('/process', { mode: 'cors', cache: 'no-cache' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const result = await response.json();
+
+                if (result.error) throw new Error(result.error);
+
+                const sessions = result.sessions || [];
+                if (sessions.length === 0) throw new Error('No sessions received');
+
+                const now = new Date().toISOString();
+                let addedCount = 0;
+                let totalSamples = 0;
+
+                const integrity = result.integrity || {};
+
+                for (const sess of sessions) {
+                    if (!sess.processed_data || sess.processed_data.length === 0) continue;
+
+                    const duration = sess.duration || 0;
+                    const sampleCount = sess.processed_samples || sess.processed_data.length;
+                    const strokeCount = sess.metrics?.stroke_count || 0;
+                    const turnCount = sess.metrics?.turn_count || 0;
+                    const syncedAt = sess.syncedAt || now;
+
+                    addSession({
+                        id: `${now}_${sess.id}`,
+                        name: sess.name || `Session ${sess.id}`,
+                        syncedAt: syncedAt,
+                        duration: duration,
+                        sampleCount: sampleCount,
+                        strokeCount: strokeCount,
+                        turnCount: turnCount,
+                        processedData: sess.processed_data,
+                        metrics: sess.metrics
+                    });
+                    addedCount++;
+                    totalSamples += sampleCount;
+                }
+
+                const integrityLabel = integrity.verified !== false ? 'verified' : 'mismatch';
+                statusEl.textContent = `Synced ${addedCount} session${addedCount !== 1 ? 's' : ''} \u2022 ${totalSamples} samples (${integrityLabel})`;
+                statusEl.className = 'status connected';
+                setConnectionStatus(true, integrity.verified !== false ? 'Synced \u2713' : 'Synced (integrity warning)');
+
+                if (savedSessions.length > 0) {
+                    selectSession(savedSessions.length - 1);
+                }
+
+                setTimeout(() => { statusEl.style.display = 'none'; }, 4000);
+
+            } catch (error) {
+                console.error('Sync error:', error);
+                statusEl.textContent = 'Error: ' + (error.message || 'Sync failed');
+                statusEl.className = 'status disconnected';
+                setConnectionStatus(false, 'Sync failed');
+
+                alert('Could not sync session data.\n\nMake sure:\n' +
+                      '1. Device in SYNC mode (hold button, LED blinking)\n' +
+                      '2. Connected to WiFi: GoldenForm\n' +
+                      '3. Python server running (wifi_session_processor.py)\n' +
+                      '4. Click Sync only ONCE while LED is blinking');
+            } finally {
+                syncInProgress = false;
+                if (syncBtn) { syncBtn.disabled = false; syncBtn.textContent = 'Sync Sessions from Device'; }
+            }
+        }
+
+        // Legacy alias
+        function loadSessionFromWiFi() { syncFromDevice(); }
+
+        // =====================================================================
+        // SESSION SUMMARY
+        // =====================================================================
+        function updateSessionSummary(metrics) {
+            const totalStrokes = metrics?.stroke_count ??
+                (processedData.length > 0 ? (processedData[processedData.length - 1].stroke_count ?? 0) : 0);
+            const totalTurns = metrics?.turn_count ??
+                (processedData.length > 0 ? (processedData[processedData.length - 1].turn_count ?? 0) : 0);
+            document.getElementById('session-stroke-count').textContent = totalStrokes;
+            document.getElementById('session-turn-count').textContent = totalTurns;
+            document.getElementById('sample-count').textContent = processedData.length;
+            setDataIntegrity(processedData.length);
+
+            const lapsEl = document.getElementById('session-laps');
+            if (totalTurns > 0 && lapsEl) {
+                const laps = Math.ceil((totalTurns + 1) / 2);
+                lapsEl.textContent = `~${laps} lap${laps !== 1 ? 's' : ''} (${totalTurns} wall turn${totalTurns !== 1 ? 's' : ''})`;
+            } else if (lapsEl) {
+                lapsEl.textContent = '';
+            }
+
+            if (metrics) {
+                document.getElementById('duration').textContent = formatTime(metrics.duration || 0);
+                document.getElementById('session-rate').textContent =
+                    totalStrokes > 0 && metrics.stroke_rate != null ? metrics.stroke_rate.toFixed(1) + ' /min' : '0.0 /min';
+                document.getElementById('session-consistency').textContent =
+                    totalStrokes > 0 && metrics.consistency != null ? metrics.consistency.toFixed(0) + '%' : '--';
+            } else if (processedData.length > 0) {
+                const t0 = processedData[0]?.timestamp || 0;
+                const tEnd = processedData[processedData.length - 1]?.timestamp || 0;
+                document.getElementById('duration').textContent = formatTime((tEnd - t0) / 1000);
+                document.getElementById('session-rate').textContent = '0.0 /min';
+                document.getElementById('session-consistency').textContent = '--';
+            }
+
+            updateSessionCalibrationQuality();
+        }
+
+        function updateSessionCalibrationQuality() {
+            if (processedData.length === 0) return;
+            let accelGood = 0, gyroGood = 0;
+            for (const p of processedData) {
+                const cal = p.calibration || {};
+                if ((cal.accel ?? 0) >= 2) accelGood++;
+                if ((cal.gyro ?? 0) >= 2) gyroGood++;
+            }
+            const n = processedData.length;
+            const accelPct = Math.round(accelGood / n * 100);
+            const gyroPct = Math.round(gyroGood / n * 100);
+            const calNote = document.getElementById('cal-session-note');
+            if (calNote) {
+                if (accelPct >= 80 && gyroPct >= 80) {
+                    calNote.textContent = 'Good calibration throughout session';
+                    calNote.style.color = '#4ade80';
+                } else if (accelPct >= 40 || gyroPct >= 40) {
+                    calNote.textContent = `Partial cal: accel ${accelPct}%, gyro ${gyroPct}% of session`;
+                    calNote.style.color = '#eab308';
+                } else {
+                    calNote.textContent = `Low cal: accel ${accelPct}%, gyro ${gyroPct}% - data quality limited`;
+                    calNote.style.color = '#ef4444';
+                }
+            }
+        }
+
+        // =====================================================================
+        // 3D SCENE
+        // =====================================================================
         function initScene() {
             try {
                 const canvas = document.getElementById('canvas');
-                if (!canvas) {
-                    console.error('Canvas element not found!');
+                if (!canvas || typeof THREE === 'undefined') {
+                    console.error('Canvas or Three.js not available');
                     return;
                 }
-                
-                if (typeof THREE === 'undefined') {
-                    console.error('Three.js library not loaded!');
-                    return;
-                }
-                
-                console.log('Initializing 3D scene...');
-                
-                // Scene
+
                 scene = new THREE.Scene();
-                scene.background = new THREE.Color(0x1a1a1a);
-                
-                // Camera
-                camera = new THREE.PerspectiveCamera(75, canvas.width / canvas.height, 0.1, 1000);
+                scene.background = new THREE.Color(0x111111);
+
+                camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.1, 1000);
                 camera.position.set(3, 3, 3);
                 camera.lookAt(0, 0, 0);
-                
-                // Check WebGL support
-                const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-                if (!gl) {
-                    console.error('WebGL is not supported in this browser!');
-                    canvas.style.background = '#5a2d2d';
-                    canvas.style.display = 'flex';
-                    canvas.style.alignItems = 'center';
-                    canvas.style.justifyContent = 'center';
-                    canvas.style.color = '#fff';
-                    canvas.style.fontSize = '18px';
-                    canvas.textContent = 'WebGL not supported. Please enable hardware acceleration in your browser settings.';
-                    return;
-                }
-                
-                // Renderer - use actual canvas display size
-                try {
-                    renderer = new THREE.WebGLRenderer({ 
-                        canvas: canvas, 
-                        antialias: true,
-                        powerPreference: "high-performance"
-                    });
-                } catch (e) {
-                    console.error('Failed to create WebGL renderer:', e);
-                    canvas.style.background = '#5a2d2d';
-                    canvas.style.display = 'flex';
-                    canvas.style.alignItems = 'center';
-                    canvas.style.justifyContent = 'center';
-                    canvas.style.color = '#fff';
-                    canvas.style.fontSize = '18px';
-                    canvas.textContent = 'Failed to initialize WebGL renderer.';
-                    return;
-                }
-                
-                const rect = canvas.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    renderer.setSize(rect.width, rect.height);
-                    camera.aspect = rect.width / rect.height;
-                    camera.updateProjectionMatrix();
-                } else {
-                    // Fallback to canvas dimensions
-                    renderer.setSize(canvas.width, canvas.height);
-                    camera.aspect = canvas.width / canvas.height;
-                    camera.updateProjectionMatrix();
-                }
-                renderer.shadowMap.enabled = true;
-                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-                console.log('Renderer initialized with size:', renderer.domElement.width, 'x', renderer.domElement.height);
 
-                // Controls (mouse/touch orbit) so "Reset View" actually matters
+                try {
+                    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+                } catch (e) {
+                    console.error('WebGL init failed:', e);
+                    return;
+                }
+
+                const w = canvas.clientWidth || canvas.width || 800;
+                const h = canvas.clientHeight || canvas.height || 400;
+                renderer.setSize(w, h, false);
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+
                 if (THREE.OrbitControls) {
                     controls = new THREE.OrbitControls(camera, renderer.domElement);
                     controls.enableDamping = true;
                     controls.dampingFactor = 0.08;
                     controls.target.set(0, 0, 0);
                     controls.update();
-                    controls.saveState(); // default "Reset View" state
-                } else {
-                    console.warn('OrbitControls not available; Reset View will only re-position camera.');
+                    controls.saveState();
                 }
-                
-                // Add grid
-                const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
-                scene.add(gridHelper);
-                
-                // Add axes
-                const axesHelper = new THREE.AxesHelper(2);
-                scene.add(axesHelper);
-                
-                // Create IMU cube - size appropriate for hand visualization
-                // At 5x scale, 0.3 units = ~6cm in real space (reasonable for hand-mounted sensor)
-                const geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-                const material = new THREE.MeshLambertMaterial({ color: 0xff4444 });
-                imuCube = new THREE.Mesh(geometry, material);
-                imuCube.position.set(0, 0, 0);
+
+                scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x1a1a1a));
+                scene.add(new THREE.AxesHelper(2));
+
+                const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+                imuCube = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xff4444 }));
                 imuCube.castShadow = true;
                 scene.add(imuCube);
-                
-                // Add position indicator line (from origin to cube) - helps see movement
-                const posLineGeom = new THREE.BufferGeometry();
-                posLineGeom.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 0,0,0], 3));
-                positionLine = new THREE.Line(posLineGeom, new THREE.LineBasicMaterial({ 
-                    color: 0x00ff00, 
-                    linewidth: 2,
-                    opacity: 0.6,
-                    transparent: true
+
+                const plGeo = new THREE.BufferGeometry();
+                plGeo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0,0,0,0], 3));
+                positionLine = new THREE.Line(plGeo, new THREE.LineBasicMaterial({
+                    color: 0x00ff00, opacity: 0.6, transparent: true
                 }));
                 scene.add(positionLine);
-                
-                // Live trail line (shows current stroke path in real-time)
-                const liveTrailGeom = new THREE.BufferGeometry();
-                liveTrailGeom.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-                liveTrailLine = new THREE.Line(liveTrailGeom, new THREE.LineBasicMaterial({
-                    color: 0xffff00,
-                    linewidth: 3,
-                    opacity: 0.9,
-                    transparent: true
+
+                const ltGeo = new THREE.BufferGeometry();
+                ltGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+                liveTrailLine = new THREE.Line(ltGeo, new THREE.LineBasicMaterial({
+                    color: 0xffffff, opacity: 0.95, transparent: true
                 }));
                 scene.add(liveTrailLine);
-                
-                console.log('IMU cube and indicators added to scene');
-                
-                // Create water reference plane (horizontal, semi-transparent blue)
-                const waterGeom = new THREE.PlaneGeometry(4, 4);
-                const waterMat = new THREE.MeshBasicMaterial({
-                    color: 0x1e88e5,
-                    transparent: true,
-                    opacity: 0.15,
-                    side: THREE.DoubleSide
-                });
-                waterPlane = new THREE.Mesh(waterGeom, waterMat);
-                waterPlane.rotation.x = -Math.PI / 2; // Make horizontal
-                waterPlane.position.y = 0; // At origin height
-                waterPlane.visible = false; // Hidden by default
-                scene.add(waterPlane);
-                
-                // Add grid on water plane for depth reference
-                const waterGrid = new THREE.GridHelper(4, 20, 0x2196f3, 0x1565c0);
-                waterGrid.position.y = 0.01;
-                waterGrid.visible = false;
-                waterGrid.name = 'waterGrid';
-                scene.add(waterGrid);
-                
-                // Add lighting
-                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
-                scene.add(ambientLight);
-                
-                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-                directionalLight.position.set(5, 5, 5);
-                directionalLight.castShadow = true;
-                scene.add(directionalLight);
-                
-                // Start render loop
+
+                scene.add(new THREE.AmbientLight(0x404040, 0.6));
+                const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+                dl.position.set(5, 5, 5);
+                dl.castShadow = true;
+                scene.add(dl);
+
                 animate();
-                console.log('3D scene initialized successfully');
             } catch (error) {
-                console.error('Error initializing 3D scene:', error);
+                console.error('3D scene init error:', error);
             }
         }
-        
-        // Animation loop
+
         function animate() {
             requestAnimationFrame(animate);
             if (renderer && scene && camera) {
@@ -614,462 +962,161 @@
                 renderer.render(scene, camera);
             }
         }
-        
-        // Initialize charts
+
+        // =====================================================================
+        // CHARTS
+        // =====================================================================
         function initCharts() {
             const accelCanvas = document.getElementById('accelChart');
             const gyroCanvas = document.getElementById('gyroChart');
             if (!accelCanvas || !gyroCanvas) return;
-            const commonOptions = {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                interaction: {
-                    mode: 'index',
-                    intersect: false
-                },
+            if (typeof Chart === 'undefined') {
+                console.error('Chart.js not loaded - charts unavailable');
+                return;
+            }
+
+            const base = {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                interaction: { mode: 'index', intersect: false },
                 scales: {
                     x: {
-                        ticks: { 
-                            color: '#fff',
-                            maxRotation: 45,
-                            minRotation: 45,
-                            autoSkip: true,
-                            maxTicksLimit: 10
-                        },
-                        grid: { color: '#444' }
+                        ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } },
+                        grid: { color: '#1a1a1a' }
                     },
                     y: {
-                        ticks: { 
-                            color: '#fff'
-                        },
-                        grid: { color: '#444' }
+                        ticks: { color: '#666', font: { size: 10 } },
+                        grid: { color: '#1a1a1a' }
                     }
                 },
                 plugins: {
-                    legend: {
-                        labels: { color: '#fff' }
-                    }
-                },
-                layout: {
-                    padding: {
-                        bottom: 10
-                    }
+                    legend: { labels: { color: '#999', boxWidth: 10, font: { size: 10 }, padding: 8 } },
+                    tooltip: { enabled: true, backgroundColor: '#222', titleFont: { size: 11 }, bodyFont: { size: 10 } }
                 }
             };
-            
-            const accelCtx = accelCanvas.getContext('2d');
-            accelChart = new Chart(accelCtx, {
+
+            accelChart = new Chart(accelCanvas.getContext('2d'), {
                 type: 'line',
                 data: {
                     labels: [],
                     datasets: [
-                        {
-                            label: 'X',
-                            data: [],
-                            borderColor: 'rgb(255, 99, 132)',
-                            backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                            tension: 0.4,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        },
-                        {
-                            label: 'Y',
-                            data: [],
-                            borderColor: 'rgb(54, 162, 235)',
-                            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                            tension: 0.4,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        },
-                        {
-                            label: 'Z',
-                            data: [],
-                            borderColor: 'rgb(75, 192, 192)',
-                            backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                            tension: 0.4,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        }
+                        { label: 'X', data: [], borderColor: '#f87171', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+                        { label: 'Y', data: [], borderColor: '#60a5fa', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+                        { label: 'Z', data: [], borderColor: '#34d399', tension: 0.25, pointRadius: 0, borderWidth: 1.5 }
                     ]
                 },
-                options: {
-                    ...commonOptions,
-                    scales: {
-                        ...commonOptions.scales,
-                        y: {
-                            ...commonOptions.scales.y,
-                            min: -2,
-                            max: 12,
-                            ticks: {
-                                color: '#fff',
-                                stepSize: 2
-                            }
-                        }
-                    }
-                }
+                options: JSON.parse(JSON.stringify(base))
             });
-            
-            const gyroCtx = gyroCanvas.getContext('2d');
-            gyroChart = new Chart(gyroCtx, {
+
+            gyroChart = new Chart(gyroCanvas.getContext('2d'), {
                 type: 'line',
                 data: {
                     labels: [],
                     datasets: [
-                        {
-                            label: 'X',
-                            data: [],
-                            borderColor: 'rgb(255, 159, 64)',
-                            backgroundColor: 'rgba(255, 159, 64, 0.1)',
-                            tension: 0.4,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        },
-                        {
-                            label: 'Y',
-                            data: [],
-                            borderColor: 'rgb(153, 102, 255)',
-                            backgroundColor: 'rgba(153, 102, 255, 0.1)',
-                            tension: 0.4,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        },
-                        {
-                            label: 'Z',
-                            data: [],
-                            borderColor: 'rgb(201, 203, 207)',
-                            backgroundColor: 'rgba(201, 203, 207, 0.1)',
-                            tension: 0.4,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        }
+                        { label: 'X', data: [], borderColor: '#fb923c', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+                        { label: 'Y', data: [], borderColor: '#a78bfa', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
+                        { label: 'Z', data: [], borderColor: '#94a3b8', tension: 0.25, pointRadius: 0, borderWidth: 1.5 }
                     ]
                 },
-                options: {
-                    ...commonOptions,
-                    scales: {
-                        ...commonOptions.scales,
-                        y: {
-                            ...commonOptions.scales.y,
-                            min: -1,
-                            max: 1,
-                            ticks: {
-                                color: '#fff',
-                                stepSize: 0.25
-                            }
-                        }
-                    }
-                }
+                options: JSON.parse(JSON.stringify(base))
             });
         }
-        
-        // Build charts and trails from processedData[0..currentIndex] - sync with playback
+
+        function clearChartData() {
+            [accelChart, gyroChart].forEach(c => {
+                if (!c) return;
+                c.data.labels = [];
+                c.data.datasets.forEach(ds => { ds.data = []; });
+                c.update('none');
+            });
+        }
+
+        const CHART_WINDOW_SAMPLES = 200;
+
         function updateChartsForPlayback(upToIndex) {
             if (!accelChart || !gyroChart || processedData.length === 0) return;
-            const idx = Math.max(0, Math.floor(upToIndex));
-            const n = Math.min(idx + 1, processedData.length);
+            const center = Math.max(0, Math.min(Math.floor(upToIndex), processedData.length - 1));
+            const halfWin = Math.floor(CHART_WINDOW_SAMPLES / 2);
+            let start = Math.max(0, center - halfWin);
+            let end = Math.min(processedData.length, start + CHART_WINDOW_SAMPLES);
+            if (end - start < CHART_WINDOW_SAMPLES) start = Math.max(0, end - CHART_WINDOW_SAMPLES);
+
             const t0 = processedData[0]?.timestamp || 0;
-            
-            const labels = [];
-            const ax = [], ay = [], az = [];
-            const gx = [], gy = [], gz = [];
-            for (let i = 0; i < n; i++) {
+            const labels = [], axArr = [], ayArr = [], azArr = [], gxArr = [], gyArr = [], gzArr = [];
+            const cursorIdx = center - start;
+            for (let i = start; i < end; i++) {
                 const d = processedData[i];
-                labels.push(((d.timestamp - t0) / 1000).toFixed(1) + 's');
-                ax.push(d.acceleration?.ax ?? 0);
-                ay.push(d.acceleration?.ay ?? 0);
-                az.push(d.acceleration?.az ?? 0);
-                gx.push(d.angular_velocity?.gx ?? 0);
-                gy.push(d.angular_velocity?.gy ?? 0);
-                gz.push(d.angular_velocity?.gz ?? 0);
+                const tSec = (d.timestamp - t0) / 1000;
+                labels.push(tSec >= 60 ? Math.floor(tSec / 60) + ':' + ('0' + (tSec % 60).toFixed(0)).slice(-2) : tSec.toFixed(1) + 's');
+                axArr.push(d.acceleration?.ax ?? 0); ayArr.push(d.acceleration?.ay ?? 0); azArr.push(d.acceleration?.az ?? 0);
+                gxArr.push(d.angular_velocity?.gx ?? 0); gyArr.push(d.angular_velocity?.gy ?? 0); gzArr.push(d.angular_velocity?.gz ?? 0);
             }
-            
             accelChart.data.labels = labels;
-            accelChart.data.datasets[0].data = ax;
-            accelChart.data.datasets[1].data = ay;
-            accelChart.data.datasets[2].data = az;
+            accelChart.data.datasets[0].data = axArr; accelChart.data.datasets[1].data = ayArr; accelChart.data.datasets[2].data = azArr;
             gyroChart.data.labels = labels;
-            gyroChart.data.datasets[0].data = gx;
-            gyroChart.data.datasets[1].data = gy;
-            gyroChart.data.datasets[2].data = gz;
-            accelChart.update('none');
-            gyroChart.update('none');
-        }
-        
-        // Build playback trail from start to currentIndex (reset each update)
-        function updatePlaybackTrail(upToIndex) {
-            if (!liveTrailLine || !scene || processedData.length === 0) return;
-            const n = Math.min(Math.max(0, upToIndex) + 1, processedData.length);
-            if (n < 2) {
-                liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-                liveTrailLine.geometry.attributes.position.needsUpdate = true;
-                return;
-            }
-            const flatPositions = [];
-            for (let i = 0; i < n; i++) {
-                const d = processedData[i];
-                const px = d.position?.px ?? 0, py = d.position?.py ?? 0, pz = d.position?.pz ?? 0;
-                const sx = -px * positionScale, sy = pz * positionScale, sz = py * positionScale;
-                flatPositions.push(sx, sy, sz);
-            }
-            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flatPositions, 3));
-            liveTrailLine.geometry.attributes.position.needsUpdate = true;
-        }
-        
-        // Pre-compute stroke segments from processedData (stroke_count increases)
-        function buildPlaybackStrokeSegments() {
-            playbackStrokeSegments = [];
-            let lastCount = 0;
-            let segmentStart = 0;
-            for (let i = 0; i < processedData.length; i++) {
-                const c = processedData[i].stroke_count ?? 0;
-                if (c > lastCount) {
-                    if (lastCount > 0 && segmentStart < i) {
-                        playbackStrokeSegments.push({ startIdx: segmentStart, endIdx: i - 1, strokeNum: lastCount });
+            gyroChart.data.datasets[0].data = gxArr; gyroChart.data.datasets[1].data = gyArr; gyroChart.data.datasets[2].data = gzArr;
+
+            [accelChart, gyroChart].forEach(chart => {
+                if (!chart.options.plugins) chart.options.plugins = {};
+                chart.options.plugins.annotation = {
+                    annotations: {
+                        cursor: { type: 'line', xMin: cursorIdx, xMax: cursorIdx, borderColor: '#ffffff55', borderWidth: 1, borderDash: [4, 2] }
                     }
-                    segmentStart = i;
-                    lastCount = c;
-                }
-            }
-            if (lastCount > 0 && segmentStart < processedData.length) {
-                playbackStrokeSegments.push({ startIdx: segmentStart, endIdx: processedData.length - 1, strokeNum: lastCount });
-            }
-        }
-        
-        // Update stroke overlays - only show strokes completed by currentIndex
-        function updateStrokeOverlaysForPlayback(upToIndex) {
-            if (!scene) return;
-            strokeTrails.forEach(t => {
-                scene.remove(t);
-                if (t.geometry) t.geometry.dispose();
-                if (t.material) t.material.dispose();
+                };
             });
-            strokeTrails = [];
-            
-            const show = document.getElementById('overlay-strokes')?.checked ?? true;
-            if (!show) return;
-            
-            let shown = 0;
-            for (const seg of playbackStrokeSegments) {
-                if (seg.endIdx > upToIndex || shown >= MAX_STROKES_DISPLAYED) break;
-                const points = [];
-                const accelMags = [];
-                for (let i = seg.startIdx; i <= Math.min(seg.endIdx, upToIndex); i++) {
-                    const d = processedData[i];
-                    const px = d.position?.px ?? 0, py = d.position?.py ?? 0, pz = d.position?.pz ?? 0;
-                    points.push(new THREE.Vector3(-px * positionScale, pz * positionScale, py * positionScale));
-                    accelMags.push(d.stroke_debug?.accel_mag ?? 0);
-                }
-                if (points.length >= 2) {
-                    createPhaseColoredTrail({ points, accelMags });
-                    shown++;
-                }
-            }
-            document.getElementById('strokes-displayed').textContent = strokeTrails.length;
+
+            accelChart.update('none'); gyroChart.update('none');
         }
-        
-        // Update stroke metrics panel based on current playback position
-        function updateStrokeMetricsForPlayback(upToIndex) {
-            if (processedData.length === 0) return;
-            const idx = Math.max(0, Math.min(Math.floor(upToIndex), processedData.length - 1));
-            const d = processedData[idx];
-            const currentStrokeCount = d.stroke_count ?? 0;
-            document.getElementById('stroke-count').textContent = currentStrokeCount;
-            document.getElementById('stroke-count-total').textContent = sessionMetrics?.stroke_count ?? currentStrokeCount;
-            
-            const completed = playbackStrokeSegments.filter(s => s.endIdx <= upToIndex);
-            if (completed.length === 0) {
-                // No strokes completed yet at this playback position - show session-level metrics
-                if (sessionMetrics && sessionMetrics.stroke_count > 0) {
-                    document.getElementById('last-stroke-time').textContent = (sessionMetrics.avg_stroke_time != null) ? sessionMetrics.avg_stroke_time.toFixed(2) + ' s (avg)' : '--';
-                    document.getElementById('stroke-length').textContent = '--';
-                    document.getElementById('stroke-rate').textContent = (sessionMetrics.stroke_rate != null) ? sessionMetrics.stroke_rate.toFixed(1) + ' /min' : '--';
-                    document.getElementById('stroke-consistency').textContent = (sessionMetrics.consistency != null) ? sessionMetrics.consistency.toFixed(0) + '%' : '--';
-                } else {
-                    document.getElementById('last-stroke-time').textContent = '--';
-                    document.getElementById('stroke-length').textContent = '--';
-                    document.getElementById('stroke-rate').textContent = '--';
-                    document.getElementById('stroke-consistency').textContent = '--';
-                }
-                return;
-            }
-            const last = completed[completed.length - 1];
-            const t0 = processedData[0]?.timestamp || 0;
-            const startT = processedData[last.startIdx]?.timestamp || 0;
-            const endT = processedData[last.endIdx]?.timestamp || 0;
-            const duration = (endT - startT) / 1000;
-            document.getElementById('last-stroke-time').textContent = duration.toFixed(2) + ' s';
-            
-            let pathLen = 0;
-            for (let i = last.startIdx; i < last.endIdx; i++) {
-                const p1 = processedData[i].position, p2 = processedData[i + 1].position;
-                if (p1 && p2) pathLen += Math.hypot(p2.px - p1.px, p2.py - p1.py, p2.pz - p1.pz);
-            }
-            document.getElementById('stroke-length').textContent = pathLen.toFixed(2) + ' m';
-            
-            if (completed.length >= 2) {
-                const firstStart = processedData[completed[0].startIdx]?.timestamp || 0;
-                const lastEnd = processedData[completed[completed.length - 1].endIdx]?.timestamp || 0;
-                const totalSec = (lastEnd - firstStart) / 1000;
-                const rate = totalSec > 0 ? (completed.length / (totalSec / 60)) : 0;
-                document.getElementById('stroke-rate').textContent = rate.toFixed(1) + ' /min';
-                const durations = completed.map(s => {
-                    const st = processedData[s.startIdx]?.timestamp || 0;
-                    const en = processedData[s.endIdx]?.timestamp || 0;
-                    return (en - st) / 1000;
-                });
-                const avgD = durations.reduce((a, b) => a + b, 0) / durations.length;
-                const variance = durations.reduce((s, v) => s + (v - avgD) ** 2, 0) / durations.length;
-                const cv = avgD > 0 ? (Math.sqrt(variance) / avgD) * 100 : 0;
-                document.getElementById('stroke-consistency').textContent = Math.max(0, 100 - cv).toFixed(0) + '%';
-            } else {
-                document.getElementById('stroke-rate').textContent = '--';
-                document.getElementById('stroke-consistency').textContent = '--';
-            }
-        }
-        
+
         // =====================================================================
-        // WIFI DATA LOADING & PLAYBACK (replaces SSE connection)
+        // PLAYBACK
         // =====================================================================
-        let sessionData = [];
-        let processedData = [];
-        let sessionMetrics = null;  // Server-computed metrics (stroke_count, duration, rate, etc.)
-        let currentIndex = 0;
-        let isPlaying = false;
-        let playbackInterval = null;
-        const ESP32_URL = 'http://192.168.4.1';
-
-        async function loadSessionFromWiFi() {
-            const statusEl = document.getElementById('status');
-            statusEl.textContent = 'Loading...';
-            statusEl.className = 'status disconnected';
-            
-            try {
-                // Fetch processed data from Python server (which fetches from ESP32 and processes)
-                const response = await fetch('/process', { mode: 'cors', cache: 'no-cache' });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const result = await response.json();
-                
-                if (result.error) {
-                    throw new Error(result.error);
-                }
-                
-                processedData = result.processed_data || [];
-                if (processedData.length === 0) {
-                    throw new Error('No processed data');
-                }
-                
-                sessionMetrics = result.metrics || null;
-                document.getElementById('sample-count').textContent = result.processed_samples || processedData.length;
-                
-                // Update session summary and stroke metrics
-                updateSessionSummary(sessionMetrics);
-                
-                statusEl.textContent = 'Loaded';
-                statusEl.className = 'status connected';
-                isConnected = true;
-                isCalibrated = true;
-                buildPlaybackStrokeSegments();
-                resetPlayback();
-            } catch (error) {
-                console.error('Load error:', error);
-                statusEl.textContent = 'Error: ' + (error.message || 'Failed to load');
-                statusEl.className = 'status disconnected';
-                isConnected = false;
-                alert('Could not load session data.\n\nMake sure:\n1. Connected to WiFi: GoldenForm\n2. ESP32 in SYNC mode\n3. Session recorded on SD card\n4. Python server running (wifi_session_processor.py)');
-            }
-        }
-
-        function updateSessionSummary(metrics) {
-            const totalStrokes = metrics?.stroke_count ?? (processedData.length > 0 ? (processedData[processedData.length - 1].stroke_count ?? 0) : 0);
-            document.getElementById('session-stroke-count').textContent = totalStrokes;
-            if (metrics) {
-                const duration = metrics.duration || 0;
-                document.getElementById('duration').textContent = formatSessionTime(duration);
-                document.getElementById('session-rate').textContent = (metrics.stroke_rate != null) ? metrics.stroke_rate.toFixed(1) + ' /min' : '--';
-                document.getElementById('session-consistency').textContent = (metrics.consistency != null) ? metrics.consistency.toFixed(0) + '%' : '--';
-            } else if (processedData.length > 0) {
-                const t0 = processedData[0]?.timestamp || 0;
-                const tEnd = processedData[processedData.length - 1]?.timestamp || 0;
-                document.getElementById('duration').textContent = formatSessionTime((tEnd - t0) / 1000);
-                document.getElementById('session-rate').textContent = '--';
-                document.getElementById('session-consistency').textContent = '--';
-            }
-        }
-
-        function togglePlayback() {
-            if (isPlaying) {
-                pausePlayback();
-            } else {
-                startPlayback();
-            }
-        }
+        function togglePlayback() { isPlaying ? pausePlayback() : startPlayback(); }
 
         function startPlayback() {
             if (processedData.length === 0 || currentIndex >= processedData.length) return;
             isPlaying = true;
-            document.getElementById('play-pause-btn').textContent = '⏸';
+            document.getElementById('play-pause-btn').innerHTML = '&#9208;';
             playbackStep();
         }
 
         function pausePlayback() {
             isPlaying = false;
-            document.getElementById('play-pause-btn').textContent = '▶';
-            if (playbackInterval) {
-                clearTimeout(playbackInterval);
-                playbackInterval = null;
-            }
+            document.getElementById('play-pause-btn').innerHTML = '&#9654;';
+            if (playbackInterval) { clearTimeout(playbackInterval); playbackInterval = null; }
         }
 
         function playbackStep() {
-            if (!isPlaying || currentIndex >= processedData.length) {
-                pausePlayback();
-                return;
-            }
-            
+            if (!isPlaying || currentIndex >= processedData.length) { pausePlayback(); return; }
             updateVisualizationFromProcessed(currentIndex);
             updatePlaybackTime();
-            
             const currentT = processedData[currentIndex]?.timestamp || 0;
             currentIndex++;
-            
             if (currentIndex < processedData.length) {
                 const nextT = processedData[currentIndex]?.timestamp || 0;
-                const delay = Math.max(1, nextT - currentT);
-                playbackInterval = setTimeout(playbackStep, delay);
-            } else {
-                pausePlayback();
-            }
+                playbackInterval = setTimeout(playbackStep, Math.max(1, nextT - currentT));
+            } else { pausePlayback(); }
         }
 
         function resetPlayback() {
             pausePlayback();
             currentIndex = 0;
-            if (processedData.length > 0) {
-                updateVisualizationFromProcessed(0);
-            }
+            if (processedData.length > 0) updateVisualizationFromProcessed(0);
             updatePlaybackTime();
         }
 
         function skipBackward() {
             if (processedData.length === 0) return;
-            const targetT = Math.max(processedData[0]?.timestamp || 0, (processedData[currentIndex]?.timestamp || 0) - 1000);
-            while (currentIndex > 0 && (processedData[currentIndex]?.timestamp || 0) > targetT) {
-                currentIndex--;
-            }
+            const target = Math.max(processedData[0]?.timestamp || 0, (processedData[currentIndex]?.timestamp || 0) - 1000);
+            while (currentIndex > 0 && (processedData[currentIndex]?.timestamp || 0) > target) currentIndex--;
             if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
             updatePlaybackTime();
         }
 
         function skipForward() {
             if (processedData.length === 0) return;
-            const targetT = (processedData[currentIndex]?.timestamp || 0) + 1000;
-            while (currentIndex < processedData.length - 1 && (processedData[currentIndex]?.timestamp || 0) < targetT) {
-                currentIndex++;
-            }
-            if (processedData.length > 0) {
-                updateVisualizationFromProcessed(currentIndex);
-            }
+            const target = (processedData[currentIndex]?.timestamp || 0) + 1000;
+            while (currentIndex < processedData.length - 1 && (processedData[currentIndex]?.timestamp || 0) < target) currentIndex++;
+            if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
             updatePlaybackTime();
         }
 
@@ -1077,12 +1124,9 @@
             const bar = event.currentTarget;
             const rect = bar.getBoundingClientRect();
             if (rect.width <= 0 || processedData.length === 0) return;
-            const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-            currentIndex = Math.floor(fraction * processedData.length);
-            currentIndex = Math.max(0, Math.min(processedData.length - 1, currentIndex));
-            if (processedData.length > 0) {
-                updateVisualizationFromProcessed(currentIndex);
-            }
+            const frac = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+            currentIndex = Math.max(0, Math.min(processedData.length - 1, Math.floor(frac * processedData.length)));
+            if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
             updatePlaybackTime();
         }
 
@@ -1092,63 +1136,84 @@
                 document.getElementById('progress-fill').style.width = '0%';
                 return;
             }
-            const currentT = processedData[currentIndex]?.timestamp || 0;
+            const ct = processedData[currentIndex]?.timestamp || 0;
             const t0 = processedData[0]?.timestamp || 0;
-            const tEnd = processedData[processedData.length - 1]?.timestamp || 0;
-            const totalT = tEnd - t0;
-            const currentSec = (currentT - t0) / 1000;
-            const totalSec = totalT / 1000;
-            document.getElementById('playback-time').textContent = `${formatSessionTime(currentSec)} / ${formatSessionTime(totalSec)}`;
-            document.getElementById('progress-fill').style.width = `${(currentIndex / processedData.length) * 100}%`;
+            const te = processedData[processedData.length - 1]?.timestamp || 0;
+            document.getElementById('playback-time').textContent =
+                `${formatTime((ct - t0) / 1000)} / ${formatTime((te - t0) / 1000)}`;
+            document.getElementById('progress-fill').style.width =
+                `${(currentIndex / processedData.length) * 100}%`;
         }
 
+
+        // =====================================================================
+        // STROKE VISUALIZATION
+        // Each stroke is drawn as displacement from its start, so every stroke
+        // starts and ends at the origin (0,0,0). That shows the circular arc
+        // clearly and resets to origin after each stroke for form feedback.
+        // Arc Scale = sphere radius. Distinct color per stroke for comparison.
+        // =====================================================================
+
+        const TRAIL_SMOOTH_WINDOW = 5;
+        const STROKE_COLORS = [0x00d4ff, 0xff9500, 0x00ff88, 0xbf5fff, 0xffff00, 0xff4444, 0x4488ff];  // cyan, orange, green, purple, yellow, red, blue
+
+        function nq(q) {
+            const w = q?.qw ?? 1, x = q?.qx ?? 0, y = q?.qy ?? 0, z = q?.qz ?? 0;
+            const m = Math.hypot(w, x, y, z);
+            return m > 1e-8 ? new THREE.Quaternion(x/m, y/m, z/m, w/m) : new THREE.Quaternion(0,0,0,1);
+        }
+
+        // Displacement from stroke start: tip position minus start position.
+        // So every stroke starts at (0,0,0) and ends at (0,0,0) = clear reset to origin.
+        function trailPtDisplacement(dataQ, refQ, scale) {
+            const tip = new THREE.Vector3(0, 0, scale);
+            tip.applyQuaternion(nq(dataQ));
+            const start = new THREE.Vector3(0, 0, scale);
+            start.applyQuaternion(nq(refQ));
+            return tip.sub(start);
+        }
+
+        function getSegStart(upToIndex) {
+            const sc = processedData[upToIndex]?.stroke_count ?? 0;
+            for (let i = upToIndex; i >= 0; i--) {
+                if ((processedData[i]?.stroke_count ?? 0) < sc) return i + 1;
+            }
+            return 0;
+        }
+
+        function smoothTrailPoints(points, windowSize) {
+            if (!points.length || windowSize < 2) return points;
+            const half = Math.floor(windowSize / 2);
+            const out = [];
+            for (let i = 0; i < points.length; i++) {
+                let x = 0, y = 0, z = 0, n = 0;
+                for (let j = Math.max(0, i - half); j <= Math.min(points.length - 1, i + half); j++) {
+                    x += points[j].x; y += points[j].y; z += points[j].z;
+                    n++;
+                }
+                out.push(new THREE.Vector3(x/n, y/n, z/n));
+            }
+            return out;
+        }
+
+        // =====================================================================
+        // VISUALIZATION UPDATE
+        // =====================================================================
         function updateVisualizationFromProcessed(index) {
             if (index < 0 || index >= processedData.length) return;
-            const processed = processedData[index];
-            
-            updateDisplay(processed);
-            updateIMUVisualization(processed);
+            const p = processedData[index];
+            updateDisplay(p);
+            updateIMUVisualization(p);
             updateChartsForPlayback(index);
             updatePlaybackTrail(index);
             updateStrokeOverlaysForPlayback(index);
             updateStrokeMetricsForPlayback(index);
         }
 
-        // Legacy functions for compatibility (no-op for WiFi mode)
-        function connect() {
-            loadSessionFromWiFi();
-        }
-        
-        function disconnect() {
-            pausePlayback();
-            isConnected = false;
-            updateStatus('Disconnected', false);
-            stopSessionTimer();
-        }
-
-        function updateButtonStates() {
-            const btnConnect = document.getElementById('btn-connect');
-            const btnDisconnect = document.getElementById('btn-disconnect');
-            if (!btnConnect || !btnDisconnect) return;
-
-            btnConnect.disabled = isConnected;
-            btnDisconnect.disabled = !isConnected;
-        }
-        
-        // Update status display
-        function updateStatus(message, connected) {
-            const status = document.getElementById('status');
-            status.textContent = message;
-            status.className = connected ? 'status connected' : 'status disconnected';
-        }
-        
-        // Update data display
         function updateDisplay(data) {
             if (!data) return;
-            const acc = data.acceleration || {};
-            const ang = data.angular_velocity || {};
-            const pos = data.position || {};
-            const quat = data.quaternion || {};
+            const acc = data.acceleration || {}, ang = data.angular_velocity || {};
+            const pos = data.position || {}, quat = data.quaternion || {};
             document.getElementById('ax').textContent = (acc.ax ?? 0).toFixed(3);
             document.getElementById('ay').textContent = (acc.ay ?? 0).toFixed(3);
             document.getElementById('az').textContent = (acc.az ?? 0).toFixed(3);
@@ -1162,467 +1227,271 @@
             document.getElementById('qx').textContent = (quat.qx ?? 0).toFixed(3);
             document.getElementById('qy').textContent = (quat.qy ?? 0).toFixed(3);
             document.getElementById('qz').textContent = (quat.qz ?? 0).toFixed(3);
-            
-            const t0 = processedData.length > 0 ? (processedData[0]?.timestamp || 0) : 0;
-            const sec = ((data.timestamp ?? 0) - t0) / 1000;
-            document.getElementById('timestamp').textContent = formatSessionTime(sec);
 
-            // Calibration Status
             if (data.calibration) {
-                let sys = data.calibration.sys;
-                let accel = data.calibration.accel;
-                let gyro = data.calibration.gyro;
-                
-                document.getElementById('cal-sys').textContent = sys;
-                document.getElementById('cal-gyro').textContent = gyro;
-                document.getElementById('cal-accel').textContent = accel;
-                document.getElementById('cal-mag').textContent = data.calibration.mag;
-
-                // Tracking Status
-                const trackingStatus = document.getElementById('tracking-status');
+                const cal = data.calibration;
+                document.getElementById('cal-sys').textContent = cal.sys;
+                document.getElementById('cal-gyro').textContent = cal.gyro;
+                document.getElementById('cal-accel').textContent = cal.accel;
+                document.getElementById('cal-mag').textContent = cal.mag;
+                const total = (cal.sys + cal.gyro + cal.accel + cal.mag);
+                const pct = Math.round((total / 12) * 100);
+                const fill = document.getElementById('cal-fill');
+                if (fill) fill.style.width = pct + '%';
+                const summary = document.getElementById('cal-summary');
+                if (summary) {
+                    if (pct >= 75) summary.textContent = 'Fully calibrated';
+                    else if (pct >= 50) summary.textContent = 'Partially calibrated';
+                    else summary.textContent = 'Needs calibration';
+                }
+                const ts = document.getElementById('tracking-status');
                 if (data.tracking_active) {
-                    trackingStatus.textContent = "Tracking: ACTIVE (Moving)";
-                    trackingStatus.className = "status connected";
+                    ts.textContent = 'Tracking: ACTIVE';
+                    ts.className = 'status connected';
                 } else {
-                    // Determine WHY it's inactive
-                    if (accel < 2 || gyro < 2) {
-                        trackingStatus.textContent = "Tracking: PAUSED (Need Calib: Accel/Gyro >= 2)";
-                        trackingStatus.className = "status disconnected";
-                    } else {
-                        trackingStatus.textContent = "Tracking: READY (Move to Start)";
-                        trackingStatus.className = "status" // Neutral/Grey
-                        trackingStatus.style.backgroundColor = "#666";
-                        trackingStatus.style.color = "#fff";
-                    }
+                    ts.textContent = 'Tracking: Ready';
+                    ts.className = 'status';
+                    ts.style.backgroundColor = '#222';
+                    ts.style.color = '#888';
                 }
             }
         }
-        
-        // Update 3D visualization
+
         function updateIMUVisualization(data) {
             if (!data || !imuCube) return;
-            const cal = data.calibration || {};
-            const nowCalibrated = (cal.accel >= 2 && cal.gyro >= 2);
-            if (nowCalibrated && !isCalibrated) {
-                // Just calibrated - store initial quaternion as reference
-                // This makes the cube start "straight" relative to when it was calibrated
-                initialQuaternion = new THREE.Quaternion(
-                    data.quaternion.qx,
-                    data.quaternion.qy,
-                    data.quaternion.qz,
-                    data.quaternion.qw
-                ).inverse(); // Store inverse so we can "subtract" it later
-                isCalibrated = true;
-            }
-            
-            // =================================================================
-            // POSITION MAPPING (Python world-frame → Three.js scene)
-            // =================================================================
-            // Python: position[0]=X (left/right), position[1]=Y (forward), position[2]=Z (up/down)
-            // Three.js: X=left/right, Y=up/down, Z=forward/back
-            // Mapping: Three.js X = -px, Three.js Y = pz (vertical), Three.js Z = py
-            const pos = data.position || {};
-            const scaledX = -(pos.px ?? 0) * positionScale;
-            const scaledY = (pos.pz ?? 0) * positionScale;
-            const scaledZ = (pos.py ?? 0) * positionScale;
-            imuCube.position.set(scaledX, scaledY, scaledZ);
+            const q = data.quaternion || {};
+            const tq = nq(q);
+
+            // Main-branch style: cube at origin, rotates with raw quaternion
+            imuCube.position.set(0, 0, 0);
+            imuCube.setRotationFromQuaternion(tq);
+
+            // Green while actively stroking, red otherwise
+            const isTracking = data.tracking_active || false;
+            if (imuCube.material) imuCube.material.color.setHex(isTracking ? 0x44ff44 : 0xff4444);
+
+            // Position line: from origin to current displacement (so it resets to origin each stroke)
             if (positionLine) {
-                const positions = positionLine.geometry.attributes.position.array;
-                positions[3] = scaledX;
-                positions[4] = scaledY;
-                positions[5] = scaledZ;
+                const segStart = getSegStart(currentIndex);
+                const refQ = processedData[segStart]?.quaternion;
+                const tip = refQ ? trailPtDisplacement(q, refQ, positionScale) : new THREE.Vector3(0, 0, 0);
+                const pa = positionLine.geometry.attributes.position.array;
+                pa[3] = tip.x; pa[4] = tip.y; pa[5] = tip.z;
                 positionLine.geometry.attributes.position.needsUpdate = true;
             }
-            
-            const q = data.quaternion || {};
-            let quaternion = new THREE.Quaternion(
-                q.qx ?? 0, q.qy ?? 0, q.qz ?? 0, q.qw ?? 1
-            );
-            
-            // Apply reference orientation so cube starts "straight" when calibrated
-            if (initialQuaternion) {
-                quaternion = quaternion.multiply(initialQuaternion);
-            }
-            
-            imuCube.setRotationFromQuaternion(quaternion);
-            
-            // =================================================================
-            // STROKE VISUALIZATION (Research-backed swimming analysis)
-            // =================================================================
-            const strokeCount = data.stroke_count || 0;
-            const isTracking = data.tracking_active || false;
-            const accelMag = data.stroke_debug ? data.stroke_debug.accel_mag : 0;
-            
-            // Change cube color based on tracking state (visual feedback)
-            // Red = idle, Green = tracking (capturing position data)
-            if (imuCube && imuCube.material) {
-                imuCube.material.color.setHex(isTracking ? 0x44ff44 : 0xff4444);
-            }
-            
-            // Handle reset synchronization
-            if (resetPending) {
-                if (strokeCount === 0) {
-                    resetPending = false;
-                    lastStrokeCount = 0;
-                }
-                document.getElementById('stroke-count').textContent = '0';
-            } else {
-                document.getElementById('stroke-count').textContent = strokeCount;
-            }
-            
-            // Track stroke start time for duration calculation
-            if (isTracking && strokeStartTime === null) {
-                strokeStartTime = Date.now();
-            }
-            
-            // If new stroke detected, save previous stroke with metrics
-            if (!resetPending && strokeCount > lastStrokeCount) {
-                // Only save if we have enough points (filters noise/false positives)
-                if (currentStrokePoints.length >= MIN_STROKE_POINTS) {
-                    const strokeData = saveStrokeWithMetrics(
-                        currentStrokePoints, 
-                        currentStrokeAccelMags,
-                        strokeStartTime,
-                        strokeCount - 1
-                    );
-                    updateStrokeAnalysisPanel(strokeData);
-                }
-                // Reset for new stroke
-                currentStrokePoints = [];
-                currentStrokeAccelMags = [];
-                strokeStartTime = null;
-                lastStrokeCount = strokeCount;
-            }
-            
-            // Add point to current stroke if tracking is active
-            if (isTracking) {
-                currentStrokePoints.push(new THREE.Vector3(scaledX, scaledY, scaledZ));
-                currentStrokeAccelMags.push(accelMag);
-                
-                // Limit current stroke points to prevent memory issues
-                if (currentStrokePoints.length > 500) {
-                    currentStrokePoints.shift();
-                    currentStrokeAccelMags.shift();
-                }
-            } else {
-                // Not tracking - reset stroke start time
-                if (currentStrokePoints.length < MIN_STROKE_POINTS) {
-                    // Discard incomplete stroke data
-                    currentStrokePoints = [];
-                    currentStrokeAccelMags = [];
-                }
-                strokeStartTime = null;
-            }
-            
-            // Charts and trail updated by updateChartsForPlayback/updatePlaybackTrail (playback-synced)
+
+            document.getElementById('stroke-count').textContent = data.stroke_count || 0;
         }
-        
-        // Save stroke with full metrics and create visualization
-        function saveStrokeWithMetrics(points, accelMags, startTime, strokeIndex) {
-            if (points.length < 2) return null;
-            
-            const endTime = Date.now();
-            const duration = startTime ? (endTime - startTime) / 1000 : 0;
-            
-            // Calculate stroke path length (sum of distances between consecutive points)
-            let pathLength = 0;
-            for (let i = 1; i < points.length; i++) {
-                pathLength += points[i].distanceTo(points[i-1]);
+
+        function updatePlaybackTrail(upToIndex) {
+            if (!liveTrailLine || !scene || processedData.length === 0) return;
+            const n = Math.min(Math.max(0, upToIndex) + 1, processedData.length);
+            if (n < 2) {
+                liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+                return;
             }
-            // Convert from scaled units back to approximate meters
-            pathLength = pathLength / positionScale;
-            
-            // Calculate stroke bounding box for analysis
-            const minPt = new THREE.Vector3(Infinity, Infinity, Infinity);
-            const maxPt = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-            for (const pt of points) {
-                minPt.min(pt);
-                maxPt.max(pt);
+            const segStart = getSegStart(n - 1);
+            const refQ = processedData[segStart]?.quaternion;
+            const points = [];
+            for (let i = segStart; i < n; i++) {
+                const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, positionScale);
+                points.push(pt.clone());
             }
-            const strokeExtent = maxPt.clone().sub(minPt);
-            
-            // Store stroke data
-            const strokeData = {
-                points: points.slice(), // Copy points
-                accelMags: accelMags.slice(),
-                startTime: startTime,
-                endTime: endTime,
-                duration: duration,
-                pathLength: pathLength,
-                extent: strokeExtent,
-                index: strokeIndex
-            };
-            strokeHistory.push(strokeData);
-            
-            // Create phase-colored trail visualization
-            createPhaseColoredTrail(strokeData);
-            
-            // Keep only last MAX_STROKES_DISPLAYED
-            if (strokeHistory.length > MAX_STROKES_DISPLAYED) {
-                strokeHistory.shift();
-                // Remove oldest trail from scene
-                if (strokeTrails.length > MAX_STROKES_DISPLAYED) {
-                    const oldTrail = strokeTrails.shift();
-                    scene.remove(oldTrail);
-                    if (oldTrail.geometry) oldTrail.geometry.dispose();
-                    if (oldTrail.material) {
-                        if (Array.isArray(oldTrail.material)) {
-                            oldTrail.material.forEach(m => m.dispose());
-                        } else {
-                            oldTrail.material.dispose();
-                        }
-                    }
+            const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
+            const flat = [];
+            smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
+            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+            liveTrailLine.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // =====================================================================
+        // STROKE SEGMENTS & OVERLAYS
+        // =====================================================================
+        function buildPlaybackStrokeSegments() {
+            playbackStrokeSegments = [];
+            let last = 0, start = 0;
+            for (let i = 0; i < processedData.length; i++) {
+                const c = processedData[i].stroke_count ?? 0;
+                if (c > last) {
+                    if (last > 0 && start < i) playbackStrokeSegments.push({ startIdx: start, endIdx: i - 1, strokeNum: last });
+                    start = i; last = c;
                 }
             }
-            
-            document.getElementById('strokes-displayed').textContent = strokeTrails.length;
-            return strokeData;
+            if (last > 0 && start < processedData.length)
+                playbackStrokeSegments.push({ startIdx: start, endIdx: processedData.length - 1, strokeNum: last });
         }
-        
-        // Create a phase-colored trail (color based on acceleration magnitude)
-        // Research: High accel = catch/pull phase (blue), Low accel = recovery (green)
-        function createPhaseColoredTrail(strokeData) {
-            if (!strokeData || strokeData.points.length < 2) return;
-            
-            const points = strokeData.points;
-            const accelMags = strokeData.accelMags;
-            
-            // Find min/max acceleration for normalization
-            let minAccel = Infinity, maxAccel = -Infinity;
-            for (const a of accelMags) {
-                if (a < minAccel) minAccel = a;
-                if (a > maxAccel) maxAccel = a;
+
+        function updateStrokeOverlaysForPlayback(upToIndex) {
+            if (!scene) return;
+            strokeTrails.forEach(t => { scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
+            strokeTrails = [];
+            if (!(document.getElementById('overlay-strokes')?.checked ?? true)) return;
+
+            let shown = 0;
+            for (const seg of playbackStrokeSegments) {
+                if (seg.endIdx > upToIndex || shown >= MAX_STROKES_DISPLAYED) break;
+                const endBound = Math.min(seg.endIdx, upToIndex);
+                const refQ = processedData[seg.startIdx]?.quaternion;
+                const points = [];
+                for (let i = seg.startIdx; i <= endBound; i++) {
+                    const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, positionScale);
+                    points.push(pt.clone());
+                }
+                const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
+                if (smoothed.length >= 2) { createStrokeTrail(smoothed, seg.strokeNum); shown++; }
             }
-            const accelRange = Math.max(maxAccel - minAccel, 0.1);
-            
-            // Create geometry with vertex colors
-            const positions = [];
-            const colors = [];
-            
-            for (let i = 0; i < points.length; i++) {
-                positions.push(points[i].x, points[i].y, points[i].z);
-                
-                // Map acceleration to color
-                // Low accel (recovery) = cyan/green, High accel (power phase) = orange/red
-                const normalizedAccel = (accelMags[i] - minAccel) / accelRange;
-                const color = new THREE.Color();
-                
-                if (normalizedAccel < 0.3) {
-                    // Recovery phase - cyan
-                    color.setHSL(0.5, 0.8, 0.5);
-                } else if (normalizedAccel < 0.6) {
-                    // Transition - yellow/green
-                    color.setHSL(0.15, 0.8, 0.5);
+            document.getElementById('strokes-displayed').textContent = strokeTrails.length + ' of ' + playbackStrokeSegments.length;
+            const srow = document.getElementById('strokes-displayed-row');
+            if (srow) srow.style.display = strokeTrails.length > 0 ? '' : 'none';
+        }
+
+        function updateStrokeMetricsForPlayback(upToIndex) {
+            if (processedData.length === 0) return;
+            const idx = Math.max(0, Math.min(Math.floor(upToIndex), processedData.length - 1));
+            const d = processedData[idx];
+            const currentStrokes = d.stroke_count ?? 0;
+            const currentTurns = d.turn_count ?? 0;
+            document.getElementById('stroke-count').textContent = currentStrokes;
+            document.getElementById('stroke-count-total').textContent = sessionMetrics?.stroke_count ?? currentStrokes;
+
+            const completed = playbackStrokeSegments.filter(s => s.endIdx <= upToIndex);
+            if (completed.length === 0) {
+                if (sessionMetrics && sessionMetrics.stroke_count > 0) {
+                    document.getElementById('last-stroke-time').textContent =
+                        sessionMetrics.avg_stroke_time != null ? sessionMetrics.avg_stroke_time.toFixed(2) + ' s' : '--';
+                    document.getElementById('stroke-length').textContent = '--';
+                    document.getElementById('stroke-rate').textContent =
+                        sessionMetrics.stroke_rate != null ? sessionMetrics.stroke_rate.toFixed(1) + ' /min' : '--';
+                    document.getElementById('stroke-consistency').textContent =
+                        sessionMetrics.consistency != null ? sessionMetrics.consistency.toFixed(0) + '%' : '--';
                 } else {
-                    // Power/catch phase - orange/red
-                    color.setHSL(0.05, 0.9, 0.55);
+                    document.getElementById('last-stroke-time').textContent = '--';
+                    document.getElementById('stroke-length').textContent = '--';
+                    document.getElementById('stroke-rate').textContent = '0.0 /min';
+                    document.getElementById('stroke-consistency').textContent = '--';
                 }
-                
-                colors.push(color.r, color.g, color.b);
+                return;
             }
-            
-            const geometry = new THREE.BufferGeometry();
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-            
-            const material = new THREE.LineBasicMaterial({
-                vertexColors: true,
+            const last = completed[completed.length - 1];
+            const startT = processedData[last.startIdx]?.timestamp || 0;
+            const endT = processedData[last.endIdx]?.timestamp || 0;
+            document.getElementById('last-stroke-time').textContent = ((endT - startT) / 1000).toFixed(2) + ' s';
+
+            let pathLen = 0;
+            let prevPt = null;
+            const refQ = processedData[last.startIdx]?.quaternion;
+            for (let i = last.startIdx; i <= last.endIdx; i++) {
+                const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, 1.0);
+                if (prevPt) pathLen += pt.distanceTo(prevPt);
+                prevPt = pt.clone();
+            }
+            const arcDeg = pathLen * (180 / Math.PI);
+            document.getElementById('stroke-length').textContent = arcDeg.toFixed(0) + '°';
+
+            if (completed.length >= 2) {
+                const fs = processedData[completed[0].startIdx]?.timestamp || 0;
+                const le = processedData[completed[completed.length - 1].endIdx]?.timestamp || 0;
+                const totalSec = (le - fs) / 1000;
+                document.getElementById('stroke-rate').textContent =
+                    totalSec > 0 ? (completed.length / (totalSec / 60)).toFixed(1) + ' /min' : '--';
+                const durs = completed.map(s => ((processedData[s.endIdx]?.timestamp || 0) - (processedData[s.startIdx]?.timestamp || 0)) / 1000);
+                const avgD = durs.reduce((a, b) => a + b, 0) / durs.length;
+                const variance = durs.reduce((s, v) => s + (v - avgD) ** 2, 0) / durs.length;
+                const cv = avgD > 0 ? (Math.sqrt(variance) / avgD) * 100 : 0;
+                document.getElementById('stroke-consistency').textContent = Math.max(0, 100 - cv).toFixed(0) + '%';
+            } else {
+                document.getElementById('stroke-rate').textContent = '--';
+                document.getElementById('stroke-consistency').textContent = '--';
+            }
+
+            document.getElementById('playback-turns').textContent = currentTurns;
+            const phaseEl = document.getElementById('stroke-phase');
+            if (phaseEl) {
+                const debug = d.stroke_debug || {};
+                if (debug.turn_lockout) phaseEl.textContent = 'Phase: Wall turn';
+                else if (debug.is_gliding) phaseEl.textContent = 'Phase: Gliding';
+                else if (d.tracking_active) phaseEl.textContent = 'Phase: Stroking';
+                else phaseEl.textContent = 'Phase: Idle';
+            }
+        }
+
+        function createStrokeTrail(points, strokeNum) {
+            if (!points || points.length < 2) return;
+            const positions = [];
+            points.forEach(p => { positions.push(p.x, p.y, p.z); });
+            const color = STROKE_COLORS[(strokeNum - 1) % STROKE_COLORS.length];
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const mat = new THREE.LineBasicMaterial({
+                color: color,
                 linewidth: 2,
-                opacity: showOverlay ? 0.7 : 0,
+                opacity: showOverlay ? 0.85 : 0,
                 transparent: true
             });
-            
-            const line = new THREE.Line(geometry, material);
+            const line = new THREE.Line(geo, mat);
             line.visible = showOverlay;
             scene.add(line);
             strokeTrails.push(line);
         }
-        
-        // Update the stroke analysis panel with metrics
-        function updateStrokeAnalysisPanel(strokeData) {
-            if (!strokeData) return;
-            
-            // Last stroke duration
-            const durationStr = strokeData.duration.toFixed(2) + 's';
-            document.getElementById('last-stroke-time').textContent = durationStr;
-            
-            // Stroke path length (approximate)
-            const lengthStr = strokeData.pathLength.toFixed(2) + 'm';
-            document.getElementById('stroke-length').textContent = lengthStr;
-            
-            // Calculate stroke rate (strokes per minute) from recent strokes
-            if (strokeHistory.length >= 2) {
-                const recentStrokes = strokeHistory.slice(-5);
-                let totalDuration = 0;
-                for (let i = 1; i < recentStrokes.length; i++) {
-                    const timeBetween = (recentStrokes[i].startTime - recentStrokes[i-1].endTime) / 1000;
-                    totalDuration += recentStrokes[i].duration + Math.max(0, timeBetween);
-                }
-                const avgStrokeTime = totalDuration / (recentStrokes.length - 1);
-                const strokesPerMin = avgStrokeTime > 0 ? (60 / avgStrokeTime).toFixed(1) : '--';
-                document.getElementById('stroke-rate').textContent = strokesPerMin + '/min';
-            }
-            
-            // Calculate consistency (standard deviation of stroke lengths)
-            if (strokeHistory.length >= 3) {
-                const lengths = strokeHistory.slice(-5).map(s => s.pathLength);
-                const avgLength = lengths.reduce((a, b) => a + b, 0) / lengths.length;
-                const variance = lengths.reduce((sum, l) => sum + Math.pow(l - avgLength, 2), 0) / lengths.length;
-                const stdDev = Math.sqrt(variance);
-                const consistency = Math.max(0, 100 - (stdDev / avgLength) * 100);
-                
-                let consistencyStr = consistency.toFixed(0) + '%';
-                if (consistency >= 90) consistencyStr += ' ⭐';
-                else if (consistency >= 75) consistencyStr += ' ✓';
-                document.getElementById('stroke-consistency').textContent = consistencyStr;
-            } else {
-                document.getElementById('stroke-consistency').textContent = 'Need 3+ strokes';
-            }
-        }
-        
-        // Toggle stroke overlay visibility
+
+        // =====================================================================
+        // UI CONTROLS
+        // =====================================================================
         function toggleStrokeOverlay() {
             showOverlay = document.getElementById('overlay-strokes').checked;
-            if (processedData.length > 0) {
-                updateStrokeOverlaysForPlayback(currentIndex);
-            } else {
-                strokeTrails.forEach(trail => {
-                    if (trail.material) {
-                        trail.material.opacity = showOverlay ? 0.7 : 0;
-                        trail.visible = showOverlay;
-                    }
-                });
-            }
+            if (processedData.length > 0) updateStrokeOverlaysForPlayback(currentIndex);
         }
-        
-        // Toggle water reference plane
-        function toggleWaterPlane() {
-            const show = document.getElementById('show-water-plane').checked;
-            if (waterPlane) waterPlane.visible = show;
-            if (scene) {
-                const grid = scene.getObjectByName('waterGrid');
-                if (grid) grid.visible = show;
-            }
-        }
-        
-        function clearChartData() {
-            if (accelChart) {
-                accelChart.data.labels = [];
-                accelChart.data.datasets.forEach(ds => { ds.data = []; });
-                accelChart.update('none');
-            }
-            if (gyroChart) {
-                gyroChart.data.labels = [];
-                gyroChart.data.datasets.forEach(ds => { ds.data = []; });
-                gyroChart.update('none');
-            }
-        }
-        
-        // Reset camera view
+        function toggleWaterPlane() { /* removed */ }
         function resetView() {
-            if (!camera) return;
-            // Reset scaling to a close, readable default
-            updateScale(5.0);
-            if (controls) {
-                controls.reset();
-                controls.update();
-                return;
-            }
-            // Fallback if controls aren't available
-            camera.position.set(3, 3, 3);
-            camera.lookAt(0, 0, 0);
+            updateScale(3.0);
+            if (controls) { controls.reset(); controls.update(); }
+            else if (camera) { camera.position.set(3, 3, 3); camera.lookAt(0, 0, 0); }
         }
-        
-        // Clear all stroke trails and reset count
         function clearStrokes() {
-            // Safe to call even if scene isn't ready yet
-            if (!scene) {
-                strokeTrails = [];
-                strokeHistory = [];
-                currentStrokePoints = [];
-                currentStrokeAccelMags = [];
-                lastStrokeCount = 0;
-                strokeStartTime = null;
-                resetPending = true;
-                document.getElementById('stroke-count').textContent = '0';
-                resetAnalysisPanel();
-                fetch('/reset', { method: 'POST' })
-                    .catch(err => {
-                        console.log('Reset request failed:', err);
-                        resetPending = false;
-                    });
-                return;
+            if (scene) {
+                strokeTrails.forEach(t => { scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
             }
-            
-            // Remove completed stroke trails
-            strokeTrails.forEach(trail => {
-                scene.remove(trail);
-                if (trail.geometry) trail.geometry.dispose();
-                if (trail.material) {
-                    if (Array.isArray(trail.material)) {
-                        trail.material.forEach(m => m.dispose());
-                    } else {
-                        trail.material.dispose();
-                    }
-                }
-            });
-            strokeTrails = [];
-            strokeHistory = [];
-            currentStrokePoints = [];
-            currentStrokeAccelMags = [];
-            lastStrokeCount = 0;
-            strokeStartTime = null;
-            
-            // Clear live trail line
-            if (liveTrailLine) {
-                liveTrailLine.geometry.setAttribute('position', 
-                    new THREE.Float32BufferAttribute([], 3));
-            }
-            
-            if (processedData.length > 0 && currentIndex < processedData.length) {
+            strokeTrails = []; strokeHistory = [];
+            currentStrokePoints = []; currentStrokeAccelMags = [];
+            lastStrokeCount = 0; strokeStartTime = null;
+            if (liveTrailLine) liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+            if (processedData.length > 0 && currentIndex < processedData.length) updateVisualizationFromProcessed(currentIndex);
+            document.getElementById('strokes-displayed').textContent = '0';
+        }
+        function updateScale(value) {
+            const v = Math.max(0.5, Math.min(10, parseFloat(value) || 3));
+            positionScale = v;
+            document.getElementById('scaleSlider').value = v;
+            document.getElementById('scaleInput').value = v.toFixed(1);
+            document.getElementById('scaleValue').textContent = v.toFixed(1) + 'x';
+            if (processedData.length > 0) {
                 updateVisualizationFromProcessed(currentIndex);
             }
         }
-        
-        // Reset the stroke analysis panel to default values
-        function resetAnalysisPanel() {
-            document.getElementById('last-stroke-time').textContent = '--';
-            document.getElementById('stroke-length').textContent = '--';
-            document.getElementById('stroke-rate').textContent = '--';
-            document.getElementById('stroke-consistency').textContent = '--';
-            document.getElementById('strokes-displayed').textContent = '0';
-        }
 
-        function updateScale(value) {
-            const numeric = Math.max(0.1, Math.min(10, parseFloat(value) || 1));
-            positionScale = numeric;
-            document.getElementById('scaleSlider').value = numeric;
-            document.getElementById('scaleInput').value = numeric.toFixed(1);
-            document.getElementById('scaleValue').textContent = numeric.toFixed(1) + '×';
-        }
-        
-        // Initialize when page loads
+        // =====================================================================
+        // INIT
+        // =====================================================================
         window.addEventListener('load', function() {
-            // Delay scene initialization to ensure canvas is fully rendered
             setTimeout(function() {
                 initScene();
                 initCharts();
-            }, 100);
-            // Default zoom: make trails visible immediately
-            updateScale(5.0);
-            updateButtonStates();
-            // WiFi mode: user clicks "Load Session from ESP32" button to load data
+            }, 150);
+            updateScale(3.0);
+            loadSavedSessions();
+            if (savedSessions.length > 0) {
+                selectSession(savedSessions.length - 1);
+            }
         });
-        
-        // Handle window resize
+
         window.addEventListener('resize', function() {
             if (!renderer || !camera) return;
             const canvas = document.getElementById('canvas');
-            const rect = canvas.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0) {
-                camera.aspect = rect.width / rect.height;
+            const w = canvas.clientWidth, h = canvas.clientHeight;
+            if (w > 0 && h > 0) {
+                camera.aspect = w / h;
                 camera.updateProjectionMatrix();
-                renderer.setSize(rect.width, rect.height);
+                renderer.setSize(w, h, false);
             }
         });
     </script>

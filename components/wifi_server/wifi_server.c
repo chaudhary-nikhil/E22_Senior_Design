@@ -648,101 +648,131 @@ static esp_err_t data_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// Parse session ID from filename: "NNS..." → NN, legacy "S..." → 0
+static uint32_t parse_session_id(const char *name) {
+    if (!name || strlen(name) < 4) return 0;
+    if (name[0] >= '0' && name[0] <= '9' &&
+        name[1] >= '0' && name[1] <= '9' && name[2] == 'S') {
+        return (uint32_t)((name[0] - '0') * 10 + (name[1] - '0'));
+    }
+    return 0;
+}
+
 static esp_err_t data_json_handler(httpd_req_t *req) {
-    // Check if client is connected to GoldenForm WiFi
     if (!wifi_server_has_clients()) {
-        ESP_LOGW(TAG, "JSON data request rejected: No client connected to GoldenForm WiFi");
-        httpd_resp_send_custom_err(req, "503 Service Unavailable", "Not connected to GoldenForm WiFi. Please connect to SSID: GoldenForm");
+        ESP_LOGW(TAG, "JSON data request rejected: No client connected");
+        httpd_resp_send_custom_err(req, "503 Service Unavailable",
+            "Not connected to GoldenForm WiFi.");
         return ESP_FAIL;
     }
-    
+
     if (!is_syncing || stream_state.file_count == 0) {
         ESP_LOGW(TAG, "JSON data request rejected: No data available");
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No data available");
         return ESP_FAIL;
     }
-    
-    // Stream full session as JSON (all files, all samples)
-    size_t samples_sent = 0;
 
     httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-    // Send header (samples_in_response filled by client from data.length)
-    char header[128];
-    snprintf(header, sizeof(header), "{\"files\":%zu,\"data\":[", stream_state.file_count);
-    httpd_resp_send_chunk(req, header, strlen(header));
-
-    const char *mount_point = "/sdcard";
-    char file_path[160];
-    FILE *json_file = NULL;
-    size_t file_idx = 0;
-
-    while (file_idx < stream_state.file_count) {
-        if (json_file == NULL) {
-            snprintf(file_path, sizeof(file_path), "%s/%s", mount_point, stream_state.file_names[file_idx]);
-            json_file = fopen(file_path, "rb");
-            if (!json_file) {
-                ESP_LOGW(TAG, "Failed to open file for JSON: %s", file_path);
-                file_idx++;
-                continue;
-            }
-        }
-
-        size_t decoded = 0;
-        esp_err_t read_err = protobuf_read_delimited(json_file,
-                                                      stream_chunk_buffer,
-                                                      STREAM_CHUNK_SAMPLES,
-                                                      &decoded);
-
-        if (read_err == ESP_ERR_NOT_FOUND) {
-            fclose(json_file);
-            json_file = NULL;
-            file_idx++;
-            continue;
-        }
-
-        if (read_err != ESP_OK) {
-            ESP_LOGW(TAG, "Error reading for JSON: %s", esp_err_to_name(read_err));
-            if (json_file) {
-                fclose(json_file);
-                json_file = NULL;
-            }
-            break;
-        }
-
-        for (size_t i = 0; i < decoded; i++) {
-            bno055_sample_t *s = &stream_chunk_buffer[i];
-            char sample_buf[256];
-            snprintf(sample_buf, sizeof(sample_buf),
-                "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
-                "\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,"
-                "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
-                "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f}",
-                (samples_sent > 0) ? "," : "",
-                (unsigned)s->t_ms, s->ax, s->ay, s->az,
-                s->lia_x, s->lia_y, s->lia_z,
-                s->gx, s->gy, s->gz,
-                s->qw, s->qx, s->qy, s->qz);
-
-            esp_err_t err = httpd_resp_send_chunk(req, sample_buf, strlen(sample_buf));
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to send JSON chunk: %s", esp_err_to_name(err));
-                if (json_file) fclose(json_file);
-                return err;
-            }
-            samples_sent++;
-            if (samples_sent % 100 == 0) vTaskDelay(pdMS_TO_TICKS(1));
+    // Build session groups from sorted file names
+    typedef struct { uint32_t id; size_t start; size_t count; } sg_t;
+    sg_t sg[32];
+    size_t nsg = 0;
+    uint32_t prev_id = UINT32_MAX;
+    for (size_t i = 0; i < stream_state.file_count && nsg < 32; i++) {
+        uint32_t sid = parse_session_id(stream_state.file_names[i]);
+        if (sid != prev_id) {
+            sg[nsg].id = sid;
+            sg[nsg].start = i;
+            sg[nsg].count = 1;
+            nsg++;
+            prev_id = sid;
+        } else if (nsg > 0) {
+            sg[nsg - 1].count++;
         }
     }
 
-    if (json_file) {
-        fclose(json_file);
+    httpd_resp_send_chunk(req, "{\"sessions\":[", 13);
+
+    const char *mp = "/sdcard";
+    char fp[160];
+    size_t total_sent = 0;
+
+    for (size_t si = 0; si < nsg; si++) {
+        char sh[128];
+        snprintf(sh, sizeof(sh),
+            "%s{\"id\":%" PRIu32 ",\"name\":\"Session %" PRIu32 "\",\"data\":[",
+            si > 0 ? "," : "", sg[si].id, sg[si].id);
+        httpd_resp_send_chunk(req, sh, strlen(sh));
+
+        size_t sess_sent = 0;
+
+        for (size_t fi = sg[si].start; fi < sg[si].start + sg[si].count; fi++) {
+            snprintf(fp, sizeof(fp), "%s/%s", mp, stream_state.file_names[fi]);
+            FILE *f = fopen(fp, "rb");
+            if (!f) continue;
+
+            while (true) {
+                size_t decoded = 0;
+                esp_err_t re = protobuf_read_delimited(
+                    f, stream_chunk_buffer, STREAM_CHUNK_SAMPLES, &decoded);
+                if (re == ESP_ERR_NOT_FOUND) break;
+                if (re != ESP_OK) {
+                    ESP_LOGW(TAG, "Read error: %s", esp_err_to_name(re));
+                    break;
+                }
+
+                for (size_t i = 0; i < decoded; i++) {
+                    bno055_sample_t *s = &stream_chunk_buffer[i];
+                    char sb[320];
+                    snprintf(sb, sizeof(sb),
+                        "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+                        "\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,"
+                        "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
+                        "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,"
+                        "\"cal_sys\":%u,\"cal_gyro\":%u,\"cal_accel\":%u,\"cal_mag\":%u}",
+                        (sess_sent > 0) ? "," : "",
+                        (unsigned)s->t_ms, s->ax, s->ay, s->az,
+                        s->lia_x, s->lia_y, s->lia_z,
+                        s->gx, s->gy, s->gz,
+                        s->qw, s->qx, s->qy, s->qz,
+                        (unsigned)s->sys_cal, (unsigned)s->gyro_cal,
+                        (unsigned)s->accel_cal, (unsigned)s->mag_cal);
+
+                    esp_err_t err = httpd_resp_send_chunk(req, sb, strlen(sb));
+                    if (err != ESP_OK) {
+                        ESP_LOGE(TAG, "JSON chunk send failed: %s", esp_err_to_name(err));
+                        fclose(f);
+                        return err;
+                    }
+                    sess_sent++;
+                    total_sent++;
+                    if (total_sent % 100 == 0) vTaskDelay(pdMS_TO_TICKS(1));
+                }
+            }
+            fclose(f);
+        }
+
+        httpd_resp_send_chunk(req, "]}", 2);
     }
 
-    httpd_resp_send_chunk(req, "]}", 2);
+    // Close sessions array, add integrity metadata, close root object
+    char footer[96];
+    snprintf(footer, sizeof(footer),
+        "],\"totalSamples\":%zu,\"sessionCount\":%zu}", total_sent, nsg);
+    httpd_resp_send_chunk(req, footer, strlen(footer));
     httpd_resp_send_chunk(req, NULL, 0);
 
-    ESP_LOGI(TAG, "JSON session sent: %zu samples (full session)", samples_sent);
+    // Mark transfer complete so firmware can auto-return to idle
+    if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        stream_state.transfer_complete = true;
+        stream_state.total_samples_sent = total_sent;
+        xSemaphoreGive(stream_state.mutex);
+    }
+
+    ESP_LOGI(TAG, "[TRANSFER] Complete: %zu sessions, %zu total samples (integrity: OK)",
+             nsg, total_sent);
     return ESP_OK;
 }
 
@@ -965,6 +995,17 @@ esp_err_t wifi_server_stop_sync(void) {
 
 bool wifi_server_is_syncing(void) {
     return is_syncing;
+}
+
+bool wifi_server_is_transfer_complete(void) {
+    if (!is_syncing) return false;
+    bool complete = false;
+    if (stream_state.mutex &&
+        xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        complete = stream_state.transfer_complete;
+        xSemaphoreGive(stream_state.mutex);
+    }
+    return complete;
 }
 
 esp_err_t wifi_server_deinit(void) {

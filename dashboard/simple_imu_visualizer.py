@@ -90,6 +90,12 @@ class StrokeProcessor:
         self.kalman_ay = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_az = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         
+        # High-pass filter: running average for DC-offset removal
+        # When accel is uncalibrated, LIA has gravity residual (DC bias)
+        # Subtract the slowly-moving average to get only dynamic acceleration
+        self.hp_alpha = 0.02  # Slow average: ~50 sample window at 50Hz = ~1s
+        self.hp_avg = [0.0, 0.0, 0.0]
+        
         # =====================================================================
         # STROKE DETECTION: Downward Water Entry (Research-Backed Thresholds)
         # =====================================================================
@@ -140,17 +146,21 @@ class StrokeProcessor:
         self.ENTRY_GYRO_THRESHOLD = 0.6 if batch_mode else 0.8  # rad/s - hand rotating during entry
         
         # STROKE TIMING CONSTRAINTS
-        # Research: Typical stroke rate 40-80 strokes/min = 0.75-1.5s interval
-        # Elite swimmers: up to 100 strokes/min = 0.6s interval
-        # Setting minimum to 0.5s to catch fast swimmers
-        self.MIN_STROKE_INTERVAL = 0.5  # seconds between strokes
+        # One physical stroke = pull + recovery. Recovery can produce a second
+        # accel/gyro peak; we must not count it. Minimum interval ensures only
+        # one stroke per arm cycle. Typical stroke 0.8-1.5s; fast ~0.7s.
+        self.MIN_STROKE_INTERVAL = 1.1  # seconds — avoids counting return/recovery as a stroke
         
         # TURN/WALL DETECTION (prevent false positives at wall)
-        # Wall impact has very high acceleration (>30 m/s²) and sustained high values
-        # Also detected by prolonged high-accel period (push-off)
-        self.WALL_IMPACT_THRESHOLD = 25.0  # m/s² - accelerations above this likely wall/turn
-        self.TURN_LOCKOUT_DURATION = 2.0  # seconds - ignore strokes after wall impact
-        self.last_wall_impact_time_ms = 0  # Track last wall impact
+        # Flip turn: 20-40 m/s² impact. Open turn: 15-25 m/s² (hand contacts wall).
+        # Normal swimming strokes: 5-12 m/s². Vigorous dry-land strokes: up to 15 m/s².
+        # Must be well above stroke range to avoid false positives.
+        self.WALL_IMPACT_THRESHOLD = 20.0  # m/s²
+        self.WALL_SUSTAINED_COUNT = 3  # require N consecutive high-accel samples
+        self.TURN_LOCKOUT_DURATION = 2.5  # seconds
+        self.last_wall_impact_time_ms = 0
+        self.wall_high_count = 0
+        self.turn_count = 0
         
         # Track recent world-frame vertical acceleration for downward motion detection
         self.recent_world_az = []  # Ring buffer of recent world_az values
@@ -166,20 +176,25 @@ class StrokeProcessor:
         self.GLIDE_SAMPLE_THRESHOLD = 20  # 20 consecutive low samples = gliding
         self.is_gliding = False
         
-        # TRACKING STATE THRESHOLDS (for position integration, separate from stroke detection)
-        self.STROKE_START_GYRO_THRESHOLD = 0.6  # rad/s - start position tracking
-        self.STROKE_START_ACCEL_THRESHOLD = 0.25  # m/s²
-        self.STROKE_END_GYRO_THRESHOLD = 0.2  # rad/s - stop position tracking
-        self.STROKE_END_ACCEL_THRESHOLD = 0.25  # m/s²
+        # INTEGRATION WINDOW: Only integrate during active stroke pull-through.
+        # Typical arm pull: 0.3-0.5s. After that, hand exits water (recovery).
+        # We must NOT track recovery, only the underwater pull.
+        self.STROKE_INTEGRATION_TIMEOUT = 0.6  # hard cutoff - pull-through is 0.3-0.5s max
+        self.STROKE_SETTLE_ACCEL = 0.8  # m/s² - accel below this = motion settling
+        self.STROKE_SETTLE_REQUIRED = 3  # consecutive quiet samples to end integration
+        self.stroke_settle_count = 0
+        self.stroke_integrating = False
+        self.stroke_integration_start = 0
         
-        self.MIN_CAL_LEVEL = 2
-        self.ACCEL_DEADZONE = 0.2  # m/s² - ignore noise below this
-        self.VELOCITY_DECAY = 0.98  # Base friction
-        self.STATIONARY_FRICTION = 0.80  # Strong braking when accel is low
+        self.MIN_CAL_LEVEL = 0 if batch_mode else 2
+        self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor
+        self.ACCEL_DEADZONE_UNCAL = 1.5  # m/s² - larger deadzone for uncalibrated accel
+        self.VELOCITY_DECAY = 0.97  # Base friction during active stroke
+        self.STATIONARY_FRICTION = 0.85  # Braking when accel is low
 
         self.stroke_count = 0  # Track number of strokes
         self.stroke_start_time = 0  # To track duration
-        self.MIN_STROKE_DURATION = 0.5  # Seconds for position tracking
+        # MIN_STROKE_DURATION removed - integration window uses settle detection instead
         
         # DEBUG: Track stroke detection state for troubleshooting
         self.debug_world_az = 0.0
@@ -243,18 +258,21 @@ class StrokeProcessor:
             cal_accel < self.MIN_CAL_LEVEL
             or cal_gyro < self.MIN_CAL_LEVEL
         ):
-            # If Accel or Gyro are bad, we cannot integrate safely.
             self.in_stroke = False
-            # Reset velocity but keep position static.
+            self.stroke_integrating = False
             self.velocity = [0.0, 0.0, 0.0]
         else:
             # --- System is sufficiently calibrated, run stroke logic ---
-            # Apply Kalman Filter to Raw Linear Acceleration (LIA)
-            lia_x = self.kalman_ax.update(lia_x)
-            lia_y = self.kalman_ay.update(lia_y)
-            lia_z = self.kalman_az.update(lia_z)
+            # Compute stroke detection on RAW LIA (need sharp peaks for impact detection)
+            raw_accel_mag = math.sqrt(lia_x * lia_x + lia_y * lia_y + lia_z * lia_z)
+            
+            # Apply Kalman Filter for position integration (smoothed)
+            smooth_x = self.kalman_ax.update(lia_x)
+            smooth_y = self.kalman_ay.update(lia_y)
+            smooth_z = self.kalman_az.update(lia_z)
 
-            accel_mag = math.sqrt(lia_x * lia_x + lia_y * lia_y + lia_z * lia_z)
+            # Use RAW magnitude for stroke detection, SMOOTHED for integration
+            accel_mag = raw_accel_mag
             
             # =================================================================
             # COMPUTE WORLD-FRAME ACCELERATION (needed for stroke detection)
@@ -262,7 +280,7 @@ class StrokeProcessor:
             # Transform sensor-frame linear acceleration to world frame using quaternion
             # This gives us true vertical acceleration regardless of hand orientation
             qw, qx, qy, qz = quat_w, quat_x, quat_y, quat_z
-            ax, ay, az = lia_x, lia_y, lia_z
+            ax, ay, az = lia_x, lia_y, lia_z  # Use raw for world-frame detection
 
             ww = qw * qw
             xx = qx * qx
@@ -307,10 +325,17 @@ class StrokeProcessor:
             # =================================================================
             
             # --- WALL/TURN DETECTION ---
-            # Wall impacts have very high acceleration; lock out stroke detection briefly
+            # Require sustained high acceleration (not just a single-sample spike)
             if accel_mag > self.WALL_IMPACT_THRESHOLD:
-                self.last_wall_impact_time_ms = t_ms
-                self.recent_world_az.clear()  # Reset buffer after wall impact
+                self.wall_high_count += 1
+                if self.wall_high_count >= self.WALL_SUSTAINED_COUNT:
+                    if (t_ms - self.last_wall_impact_time_ms) / 1000.0 > self.TURN_LOCKOUT_DURATION:
+                        self.turn_count += 1
+                    self.last_wall_impact_time_ms = t_ms
+                    self.recent_world_az.clear()
+                    self.wall_high_count = 0
+            else:
+                self.wall_high_count = 0
             
             time_since_wall = (t_ms - self.last_wall_impact_time_ms) / 1000.0
             in_turn_lockout = (time_since_wall < self.TURN_LOCKOUT_DURATION)
@@ -390,10 +415,11 @@ class StrokeProcessor:
             # ALL conditions must be true:
             #   1. was_moving_downward: Hand WAS going down before impact
             #   2. is_impact_spike: Current sample shows water impact signature
-            #   3. interval_ok: Enough time since last stroke
+            #   3. interval_ok: Enough time since last stroke (avoids counting return/recovery)
             #   4. has_entry_rotation: Hand is rotating (entry motion)
             #   5. NOT in turn lockout: Not immediately after wall impact
             #   6. NOT gliding: Not in passive glide phase
+            #   7. NOT still in current stroke: No double-count during same arm cycle
             impact_detected = is_impact_spike or is_impact_by_jerk
 
             # Primary path: clean downward history + vertical reversal impact
@@ -404,6 +430,7 @@ class StrokeProcessor:
                 and has_entry_rotation
                 and not in_turn_lockout
                 and not self.is_gliding
+                and not self.stroke_integrating  # ignore peaks during pull-through/recovery of same stroke
                 and (was_moving_downward or is_impact_by_jerk)
             )
             
@@ -420,88 +447,89 @@ class StrokeProcessor:
             if stroke_detected:
                 self.stroke_count += 1
                 self.last_stroke_time_ms = t_ms
-                # Clear buffer to prevent immediate re-trigger
                 self.recent_world_az.clear()
                 self.glide_sample_count = 0
-                # Reset position at each water entry for accurate per-stroke hand motion
-                # (hand motion shown from this stroke's entry to the next)
                 self.position = [0.0, 0.0, 0.0]
                 self.velocity = [0.0, 0.0, 0.0]
+                self.hp_avg = [0.0, 0.0, 0.0]
                 self.in_stroke = True
                 self.stroke_start_time = t_ms
+                self.stroke_integrating = True
+                self.stroke_integration_start = t_ms
+                self.stroke_settle_count = 0
             
             # =================================================================
-            # POSITION TRACKING STATE (separate from stroke counting)
+            # INTEGRATION WINDOW MANAGEMENT
+            # Only integrate during the active pull-through phase of a stroke.
+            # Starts at stroke detection (impact). Ends when acceleration
+            # settles for N consecutive samples, or hard timeout (0.8s).
+            # Gyro is NOT used for ending (recovery rotation ≠ position motion).
             # =================================================================
-            if not self.in_stroke:
-                if (
-                    abs(gyro_y) > self.STROKE_START_GYRO_THRESHOLD
-                    or accel_mag > self.STROKE_START_ACCEL_THRESHOLD
-                ):
-                    self.in_stroke = True
-                    self.stroke_start_time = t_ms
-                    self.position = [0.0, 0.0, 0.0]  # Reset position on new stroke
-                    self.velocity = [0.0, 0.0, 0.0] 
-            else:
-                # Check if we should stop position tracking
-                if (
-                    abs(gyro_y) < self.STROKE_END_GYRO_THRESHOLD
-                    and accel_mag < self.STROKE_END_ACCEL_THRESHOLD
-                ):
-                    duration_sec = (t_ms - self.stroke_start_time) / 1000.0
-                    if duration_sec > self.MIN_STROKE_DURATION or duration_sec > 20.0:
-                        self.in_stroke = False
+            if self.stroke_integrating:
+                time_since_stroke = (t_ms - self.stroke_integration_start) / 1000.0
+                if time_since_stroke > self.STROKE_INTEGRATION_TIMEOUT:
+                    self.stroke_integrating = False
+                    self.in_stroke = False
+                    self.stroke_settle_count = 0
+                elif time_since_stroke > 0.15:
+                    if accel_mag < self.STROKE_SETTLE_ACCEL:
+                        self.stroke_settle_count += 1
+                        if self.stroke_settle_count >= self.STROKE_SETTLE_REQUIRED:
+                            self.stroke_integrating = False
+                            self.in_stroke = False
                     else:
-                        self.in_stroke = False
+                        self.stroke_settle_count = 0
+            else:
+                self.in_stroke = False
             
-            # 5. Integration Logic (Only runs if calibrated AND in stroke)
-            if self.in_stroke:
-                # World-frame acceleration already computed above for stroke detection
-                # --- Apply Deadzone to Acceleration ---
-                # If acceleration is low, assume it's noise and clamp to 0
+            # 5. Integration Logic
+            # ONLY integrate during the stroke pull-through window.
+            # Between strokes: position is frozen, velocity is zero.
+            # This ensures the cube only moves during actual strokes.
+            int_ax = (ww + xx - yy - zz) * smooth_x + 2 * (xy - wz) * smooth_y + 2 * (xz + wy) * smooth_z
+            int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
+            int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
+            
+            # High-pass filter: remove DC bias from gravity residual (uncalibrated accel)
+            if cal_accel < 2:
+                self.hp_avg[0] += self.hp_alpha * (int_ax - self.hp_avg[0])
+                self.hp_avg[1] += self.hp_alpha * (int_ay - self.hp_avg[1])
+                self.hp_avg[2] += self.hp_alpha * (int_az - self.hp_avg[2])
+                int_ax -= self.hp_avg[0]
+                int_ay -= self.hp_avg[1]
+                int_az -= self.hp_avg[2]
+
+            if self.stroke_integrating:
+                deadzone = self.ACCEL_DEADZONE if cal_accel >= 2 else self.ACCEL_DEADZONE_UNCAL
                 is_accelerating = False
-                if abs(world_ax) < self.ACCEL_DEADZONE: 
-                    world_ax = 0.0
-                else: is_accelerating = True
                 
-                if abs(world_ay) < self.ACCEL_DEADZONE: 
-                    world_ay = 0.0
+                if abs(int_ax) < deadzone: int_ax = 0.0
                 else: is_accelerating = True
-                
-                if abs(world_az) < self.ACCEL_DEADZONE: 
-                    world_az = 0.0
+                if abs(int_ay) < deadzone: int_ay = 0.0
+                else: is_accelerating = True
+                if abs(int_az) < deadzone: int_az = 0.0
                 else: is_accelerating = True
 
-                self.velocity[0] += world_ax * dt
-                self.velocity[1] += world_ay * dt
-                self.velocity[2] += world_az * dt
+                self.velocity[0] += int_ax * dt
+                self.velocity[1] += int_ay * dt
+                self.velocity[2] += int_az * dt
                 
-                # --- Smart Friction/Decay ---
-                # If we are actively accelerating, use light friction (fluid motion).
-                # If we are NOT accelerating (gliding/coasting/stopping), use heavy friction
-                # to kill drift before it builds up.
                 decay = self.VELOCITY_DECAY if is_accelerating else self.STATIONARY_FRICTION
-                
                 self.velocity[0] *= decay
                 self.velocity[1] *= decay
                 self.velocity[2] *= decay
                 
                 self.position[0] += self.velocity[0] * dt
-                # INVERTING position on Y and Z axes to match screen intuition
-                # X: Right is Right
-                # Y: Forward motion (sensor Y) should be Up/Away on screen? Or just invert sensor Y?
-                # Z: Up motion (sensor Z)
-                
-                # Standard mapping:
-                # Position[0] += Vel[0] * dt
-                # Position[1] += Vel[1] * dt
-                # Position[2] += Vel[2] * dt
-                
-                # If visualizer is inverted, we flip the signs here:
                 self.position[1] += self.velocity[1] * dt
                 self.position[2] += self.velocity[2] * dt
+                
+                # Clamp position: realistic arm pull-through reach ~0.6m
+                pos_mag = math.sqrt(sum(p*p for p in self.position))
+                if pos_mag > 0.6:
+                    scale = 0.6 / pos_mag
+                    self.position = [p * scale for p in self.position]
+                    self.velocity = [v * 0.3 for v in self.velocity]
             else:
-                # Damp velocity when no stroke is active to prevent drift
                 self.velocity = [0.0, 0.0, 0.0]
 
         # 6. Create the final JSON for the visualizer
@@ -513,21 +541,21 @@ class StrokeProcessor:
             
             "acceleration": {"ax": lia_x, "ay": lia_y, "az": lia_z},  # Use linear acceleration (LIA)
             "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
-            "tracking_active": self.in_stroke,
+            "tracking_active": self.stroke_integrating,
             "stroke_count": self.stroke_count,
-            "just_reset": self.just_reset,  # Confirms reset to client
+            "turn_count": self.turn_count,
+            "just_reset": self.just_reset,
             
-            # Stroke detection debug info (helps with threshold tuning)
             "stroke_debug": {
-                "world_az": round(self.debug_world_az, 2),      # Vertical accel in world frame
-                "accel_mag": round(self.debug_accel_mag, 2),    # Total acceleration magnitude
-                "gyro_mag": round(self.debug_gyro_mag, 2),      # Angular velocity magnitude
-                "jerk": round(self.debug_jerk, 1),              # d|a|/dt (sharp change)
-                "was_downward": self.debug_was_downward,        # Was hand moving down before?
-                "is_impact": self.debug_is_impact,              # Impact via vertical reversal
-                "is_impact_by_jerk": self.debug_is_impact_by_jerk,  # Impact via sharp-change fallback
-                "turn_lockout": self.debug_in_turn_lockout,     # In post-turn lockout?
-                "is_gliding": self.is_gliding                   # In glide phase?
+                "world_az": round(self.debug_world_az, 2),
+                "accel_mag": round(self.debug_accel_mag, 2),
+                "gyro_mag": round(self.debug_gyro_mag, 2),
+                "jerk": round(self.debug_jerk, 1),
+                "was_downward": self.debug_was_downward,
+                "is_impact": self.debug_is_impact,
+                "is_impact_by_jerk": self.debug_is_impact_by_jerk,
+                "turn_lockout": self.debug_in_turn_lockout,
+                "is_gliding": self.is_gliding
             }
         }
         
@@ -571,6 +599,7 @@ class SSEHandler(BaseHTTPRequestHandler):
                 stroke_processor_instance.position = [0.0, 0.0, 0.0]
                 stroke_processor_instance.velocity = [0.0, 0.0, 0.0]
                 stroke_processor_instance.in_stroke = False
+                stroke_processor_instance.stroke_integrating = False
                 stroke_processor_instance.recent_world_az.clear()
                 stroke_processor_instance.recent_accel_mag.clear()
                 stroke_processor_instance.prev_accel_mag = None

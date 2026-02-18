@@ -59,6 +59,9 @@ static uint32_t total_session_samples = 0;
 static uint64_t current_file_open_ms = 0;
 static uint32_t file_index_in_session = 0;
 
+// Multi-session support
+static uint32_t session_number = 0;
+
 // Mount point and card
 static const char mount_point[] = "/sdcard";
 static sdmmc_card_t *card = NULL;
@@ -128,6 +131,26 @@ esp_err_t storage_init(void) {
         return ret;
     }
 
+    // Detect existing sessions on SD card to continue numbering
+    {
+        DIR *dir = opendir(mount_point);
+        if (dir) {
+            struct dirent *e;
+            while ((e = readdir(dir)) != NULL) {
+                const char *n = e->d_name;
+                if (strlen(n) >= 4 && n[0] >= '0' && n[0] <= '9' &&
+                    n[1] >= '0' && n[1] <= '9' && n[2] == 'S') {
+                    uint32_t s = (uint32_t)((n[0] - '0') * 10 + (n[1] - '0'));
+                    if (s > session_number) session_number = s;
+                }
+            }
+            closedir(dir);
+        }
+        if (session_number > 0) {
+            ESP_LOGI(TAG, "Found %"PRIu32" existing session(s) on SD card", session_number);
+        }
+    }
+
     storage_initialized = true;
     current_state = STORAGE_STATE_IDLE;
 
@@ -195,12 +218,9 @@ esp_err_t storage_start_session(void) {
         close_current_file();
     }
 
-    // Wipe old data files at session start
-    ESP_LOGI(TAG, "Clearing previous session data...");
-    esp_err_t wipe_ret = storage_delete_all_files();
-    if (wipe_ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to clear old files (continuing anyway)");
-    }
+    // Increment session number (prior sessions kept on SD for multi-session sync)
+    session_number++;
+    ESP_LOGI(TAG, "Starting session %" PRIu32 "...", session_number);
 
     // Clear PSRAM buffer
     psram_buffer_clear();
@@ -398,6 +418,14 @@ esp_err_t storage_get_stats(storage_stats_t *stats) {
     storage_get_free_space(&stats->sd_free_bytes);
 
     return ESP_OK;
+}
+
+uint32_t storage_get_session_number(void) {
+    return session_number;
+}
+
+void storage_reset_session_counter(void) {
+    session_number = 0;
 }
 
 // ============== File management ==============
@@ -779,13 +807,14 @@ static esp_err_t open_new_data_file(void) {
         close_current_file();
     }
 
-    // Generate filename: S<5-digit time><2-digit index>.pb (protobuf format)
+    // Generate 8.3 filename: <2-digit session>S<4-digit time><1-digit index>.pb
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
-    uint32_t t5 = now_ms % 100000;
-    uint32_t idx2 = file_index_in_session % 100;
+    uint32_t t4 = now_ms % 10000;
+    uint32_t idx1 = file_index_in_session % 10;
+    uint32_t sess2 = session_number % 100;
 
-    char filename[13];
-    snprintf(filename, sizeof(filename), "S%05" PRIu32 "%02" PRIu32 ".pb", t5, idx2);
+    char filename[16];
+    snprintf(filename, sizeof(filename), "%02" PRIu32 "S%04" PRIu32 "%01" PRIu32 ".pb", sess2, t4, idx1);
 
     char full_path[96];
     int n = snprintf(full_path, sizeof(full_path), "%s/%s", mount_point, filename);

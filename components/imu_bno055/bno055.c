@@ -93,7 +93,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
         uint8_t test_addr = addresses[addr_idx];
         
         int retry_count = 0;
-        const int max_retries = 20;
+        const int max_retries = 3;
         
         do {
             err = bno055_read8(port, test_addr, BNO055_CHIP_ID_ADDR, &chip_id);

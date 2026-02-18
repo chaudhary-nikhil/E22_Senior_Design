@@ -4096,8 +4096,7 @@ CONFIG_PTHREAD_TASK_NAME_DEFAULT="pthread"
 #
 # SD Protocol Layer Configuration
 #
-# default:
-CONFIG_SD_ENABLE_SDIO_SUPPORT=y
+# CONFIG_SD_ENABLE_SDIO_SUPPORT is not set
 # end of SD Protocol Layer Configuration
 
 #

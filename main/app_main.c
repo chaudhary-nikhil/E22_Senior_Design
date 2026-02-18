@@ -47,16 +47,23 @@ static const char *TAG = "GOLDENFORM";
 
 // ============== Application State Machine ==============
 typedef enum {
-    STATE_IDLE,         // Not doing anything
+    STATE_IDLE,         // Not doing anything - press to record, hold to sync
     STATE_LOGGING,      // Recording IMU data to SD card
-    STATE_STOPPED,      // Recording stopped, data on SD
     STATE_SYNCING       // WiFi active, serving data
 } app_state_t;
 
 static volatile app_state_t current_state = STATE_IDLE;
-static volatile bool button_pressed = false;
-static volatile uint32_t last_button_time = 0;
-#define BUTTON_DEBOUNCE_MS 300
+static volatile uint32_t last_press_time = 0;
+static volatile uint32_t last_release_time = 0;
+#define BUTTON_DEBOUNCE_MS 80
+
+// Button hold detection
+static volatile uint32_t button_press_start_ms = 0;
+static volatile bool button_is_pressed = false;
+static volatile bool button_short_press = false;
+static volatile bool button_hold_triggered = false;
+#define BUTTON_HOLD_MS 1500
+#define BUTTON_SHORT_MAX_MS 800
 
 // Session stats
 static uint32_t session_sample_count = 0;
@@ -84,12 +91,29 @@ static volatile bool led_blink_stop = false;
 static led_strip_handle_t led_strip = NULL;
 #endif
 
-// ============== Button ISR ==============
+// ============== Button ISR (both edges for press/hold detection) ==============
 static void IRAM_ATTR button_isr_handler(void* arg) {
     uint32_t now = esp_timer_get_time() / 1000;
-    if (now - last_button_time > BUTTON_DEBOUNCE_MS) {
-        button_pressed = true;
-        last_button_time = now;
+    int level = gpio_get_level(BUTTON_GPIO);
+
+    if (level == 0) {
+        // Pressed down - debounce against last press
+        if (now - last_press_time < BUTTON_DEBOUNCE_MS) return;
+        last_press_time = now;
+        button_is_pressed = true;
+        button_press_start_ms = now;
+        button_hold_triggered = false;
+    } else {
+        // Released - debounce against last release only
+        if (now - last_release_time < BUTTON_DEBOUNCE_MS) return;
+        last_release_time = now;
+        if (button_is_pressed && !button_hold_triggered) {
+            uint32_t held = now - button_press_start_ms;
+            if (held > 50 && held < BUTTON_SHORT_MAX_MS) {
+                button_short_press = true;
+            }
+        }
+        button_is_pressed = false;
     }
 }
 
@@ -217,131 +241,136 @@ static void transition_to_logging(void) {
     session_sample_count = 0;
     session_start_time = esp_timer_get_time() / 1000;
     
-    // Ensure any previous blink task is stopped
     led_blink_stop_and_wait();
     status_led_blink_stop_and_wait();
     
-    // Start SD card session
     if (storage_available) {
         esp_err_t err = storage_start_session();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start storage session: %s", esp_err_to_name(err));
             error_led_set(true);
+        } else {
+            ESP_LOGI(TAG, "Session #%" PRIu32 " started", storage_get_session_number());
         }
     }
     
-    // Turn ON status LED (GPIO 41) - solid on for logging
     gpio_set_level(STATUS_LED_GPIO, 1);
     led_set(true);
     current_state = STATE_LOGGING;
     
-    ESP_LOGI(TAG, "Status LED ON (GPIO%d) - Recording - Press button to STOP", STATUS_LED_GPIO);
-    ESP_LOGI(TAG, "========================================");
-}
-
-static void transition_to_stopped(void) {
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, ">>> STATE: STOPPED");
-    
-    uint32_t duration_ms = (esp_timer_get_time() / 1000) - session_start_time;
-    ESP_LOGI(TAG, "Session complete:");
-    ESP_LOGI(TAG, "  Duration: %" PRIu32 " ms", duration_ms);
-    ESP_LOGI(TAG, "  Samples: %" PRIu32, session_sample_count);
-    
-    // Stop SD card session
-    if (storage_available) {
-        storage_stop_session();
-    }
-    
-    // Turn OFF status LED (GPIO 41)
-    gpio_set_level(STATUS_LED_GPIO, 0);
-    led_set(false);
-    current_state = STATE_STOPPED;
-    
-    ESP_LOGI(TAG, "Status LED OFF (GPIO%d) - Press button to SYNC via WiFi", STATUS_LED_GPIO);
+    ESP_LOGI(TAG, "[LED] Status=SOLID Power=ON Error=OFF -> Recording active");
+    ESP_LOGI(TAG, "Press to STOP, hold to SYNC.");
     ESP_LOGI(TAG, "========================================");
 }
 
 static void transition_to_syncing(void) {
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, ">>> STATE: SYNCING");
-    ESP_LOGI(TAG, "Preparing data for WiFi transfer...");
+    ESP_LOGI(TAG, ">>> SYNC requested");
     
-    current_state = STATE_SYNCING;
-    
-    // Start status LED blink (GPIO 41) to indicate syncing mode
-    status_led_blink_start();
-    led_blink_start();
-    
-    // Check WiFi availability before starting sync
     if (!wifi_available) {
-        ESP_LOGW(TAG, "WiFi not available - cannot sync data");
-        ESP_LOGI(TAG, "Status LED BLINKING (GPIO%d) - WiFi unavailable, press button to return to IDLE", STATUS_LED_GPIO);
+        ESP_LOGW(TAG, "WiFi not available - cannot sync");
         ESP_LOGI(TAG, "========================================");
         return;
     }
-    
-    // Start WiFi sync (loads data from SD card into PSRAM buffer)
+
+    // If currently logging, stop the session first
+    if (current_state == STATE_LOGGING && storage_available) {
+        uint32_t dur = (uint32_t)(esp_timer_get_time() / 1000) - session_start_time;
+        ESP_LOGI(TAG, "Auto-stopping session (%" PRIu32 " ms, %" PRIu32 " samples)",
+                 dur, session_sample_count);
+        storage_stop_session();
+        gpio_set_level(STATUS_LED_GPIO, 0);
+        led_set(false);
+    }
+
+    // Check if there's actually data to sync BEFORE entering sync state
     esp_err_t err = wifi_server_start_sync();
+    if (err == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "No sessions on SD card - record a session first");
+        ESP_LOGI(TAG, "[LED] Quick blink -> no data, staying IDLE");
+        // Brief error indication: blink status LED 3 times quickly
+        for (int i = 0; i < 3; i++) {
+            gpio_set_level(STATUS_LED_GPIO, 1);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            gpio_set_level(STATUS_LED_GPIO, 0);
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        ESP_LOGI(TAG, "========================================");
+        return;
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start sync: %s", esp_err_to_name(err));
-        ESP_LOGW(TAG, "WiFi server may still be running - visit http://192.168.4.1");
         error_led_set(true);
-    } else {
-        ESP_LOGI(TAG, "Data loaded into PSRAM buffer");
-        ESP_LOGI(TAG, "Connect to WiFi: %s (password: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
-        ESP_LOGI(TAG, "Open browser: http://192.168.4.1");
-        ESP_LOGI(TAG, "View JSON data at: http://192.168.4.1/data.json");
-        
-        // Check if any clients are connected
-        if (wifi_server_has_clients()) {
-            ESP_LOGI(TAG, "Client already connected - data ready to download");
-        } else {
-            ESP_LOGI(TAG, "Waiting for client to connect to GoldenForm WiFi...");
-        }
+        ESP_LOGI(TAG, "========================================");
+        return;
     }
-    
-    ESP_LOGI(TAG, "Status LED BLINKING (GPIO%d) - Press button to return to IDLE", STATUS_LED_GPIO);
+
+    // Data exists - now enter sync state
+    current_state = STATE_SYNCING;
+    status_led_blink_start();
+    led_blink_start();
+    ESP_LOGI(TAG, ">>> STATE: SYNCING");
+    ESP_LOGI(TAG, "[LED] Status=BLINK Power=BLINK -> Wireless sync active");
+    ESP_LOGI(TAG, "Connect to WiFi: %s (pw: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
+    ESP_LOGI(TAG, "Blink stops automatically after data transfer.");
     ESP_LOGI(TAG, "========================================");
 }
 
-static void transition_to_idle(void) {
+static void transition_to_idle(bool after_sync) {
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, ">>> STATE: IDLE");
     
-    // Stop LED blink tasks
+    // Stop recording if still active
+    if (current_state == STATE_LOGGING && storage_available) {
+        storage_stop_session();
+    }
+    
     led_blink_stop_and_wait();
     status_led_blink_stop_and_wait();
     
-    // Stop WiFi sync and free PSRAM buffer
-    if (wifi_available) {
+    if (current_state == STATE_SYNCING && wifi_available) {
         wifi_server_stop_sync();
     }
     
-    // Ensure status LED is off
+    // After a successful sync, clear the SD card for fresh sessions
+    if (after_sync && storage_available) {
+        ESP_LOGI(TAG, "Clearing synced data from SD card...");
+        storage_delete_all_files();
+        storage_reset_session_counter();
+    }
+    
     gpio_set_level(STATUS_LED_GPIO, 0);
     led_set(false);
     current_state = STATE_IDLE;
     session_sample_count = 0;
     
-    ESP_LOGI(TAG, "Status LED OFF (GPIO%d) - Press button to start LOGGING", STATUS_LED_GPIO);
+    ESP_LOGI(TAG, "[LED] Status=OFF Power=ON Error=OFF -> Idle");
+    ESP_LOGI(TAG, "Press to start recording, hold to sync.");
     ESP_LOGI(TAG, "========================================");
 }
 
-// ============== Button Handler ==============
+// ============== Button Handlers ==============
 static void handle_button_press(void) {
     switch (current_state) {
         case STATE_IDLE:
             transition_to_logging();
             break;
         case STATE_LOGGING:
-            transition_to_stopped();
+            transition_to_idle(false);
             break;
-        case STATE_STOPPED:
+        case STATE_SYNCING:
+            transition_to_idle(false);
+            break;
+    }
+}
+
+static void handle_button_hold(void) {
+    switch (current_state) {
+        case STATE_IDLE:
+        case STATE_LOGGING:
             transition_to_syncing();
             break;
         case STATE_SYNCING:
-            transition_to_idle();
             break;
     }
 }
@@ -354,7 +383,7 @@ static void init_gpio(void) {
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE
+        .intr_type = GPIO_INTR_ANYEDGE
     };
     gpio_config(&btn_cfg);
     gpio_install_isr_service(0);
@@ -441,14 +470,27 @@ void app_main(void) {
         ESP_LOGI(TAG, "I2C initialized: SDA=GPIO%d, SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
     }
 
-    // Initialize BNO055
-    err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
-    if (err == ESP_OK) {
-        bno055_available = true;
-        ESP_LOGI(TAG, "BNO055 initialized at 0x%02X", BNO055_ADDR_A);
-    } else {
-        ESP_LOGW(TAG, "BNO055 not found - continuing without IMU");
-        error_led_set(true);
+    // Initialize BNO055 - retry up to 5 times per TIDR 1-3-1
+    {
+        const int IMU_MAX_RETRIES = 5;
+        for (int attempt = 1; attempt <= IMU_MAX_RETRIES; attempt++) {
+            ESP_LOGI(TAG, "IMU init attempt %d/%d", attempt, IMU_MAX_RETRIES);
+            err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
+            if (err == ESP_OK) {
+                bno055_available = true;
+                ESP_LOGI(TAG, "BNO055 initialized at 0x%02X (attempt %d)", BNO055_ADDR_A, attempt);
+                break;
+            }
+            ESP_LOGW(TAG, "IMU init attempt %d failed: %s", attempt, esp_err_to_name(err));
+            if (attempt < IMU_MAX_RETRIES) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+        }
+        if (!bno055_available) {
+            ESP_LOGE(TAG, "IMU initialization failed after %d attempts - entering error state",
+                     IMU_MAX_RETRIES);
+            error_led_set(true);
+        }
     }
 
     // Initialize SD card storage
@@ -481,7 +523,8 @@ void app_main(void) {
         ESP_LOGW(TAG, "  Error LED: ON (one or more subsystems failed)");
     }
     ESP_LOGI(TAG, "==========================================");
-    ESP_LOGI(TAG, "Press BOOT button to start LOGGING");
+    ESP_LOGI(TAG, "BOOT button: Press = Start/Stop recording");
+    ESP_LOGI(TAG, "             Hold  = Sync via WiFi");
     ESP_LOGI(TAG, "==========================================");
 
     // Ensure LED is OFF in IDLE state
@@ -494,10 +537,29 @@ void app_main(void) {
     const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_FORMSYNC_SAMPLE_HZ);
 
     while (1) {
-        // Handle button press
-        if (button_pressed) {
-            button_pressed = false;
+        // Detect button hold (while button is still down)
+        if (button_is_pressed && !button_hold_triggered && button_press_start_ms > 0) {
+            uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            if ((now_ms - button_press_start_ms) >= BUTTON_HOLD_MS) {
+                button_hold_triggered = true;
+                ESP_LOGI(TAG, "Button HOLD detected");
+                handle_button_hold();
+            }
+        }
+
+        // Handle short press (on release)
+        if (button_short_press) {
+            button_short_press = false;
+            ESP_LOGI(TAG, "Button SHORT PRESS detected");
             handle_button_press();
+        }
+
+        // Auto-return to idle when sync transfer completes
+        if (current_state == STATE_SYNCING && wifi_available &&
+            wifi_server_is_transfer_complete()) {
+            ESP_LOGI(TAG, "Transfer complete - auto-returning to IDLE");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            transition_to_idle(true);
         }
 
         // Read IMU whenever sensor is available (for UART live stream + optional SD logging)
@@ -505,6 +567,35 @@ void app_main(void) {
             bno055_sample_t sample;
             err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
             if (err == ESP_OK) {
+                // Calibration monitoring - log status changes and announce full calibration
+                {
+                    static int8_t prev_sys = -1, prev_gyro = -1, prev_accel = -1, prev_mag = -1;
+                    static bool fully_calibrated_announced = false;
+                    bool changed = (sample.sys_cal != prev_sys || sample.gyro_cal != prev_gyro ||
+                                    sample.accel_cal != prev_accel || sample.mag_cal != prev_mag);
+                    if (changed) {
+                        ESP_LOGI("CAL", "Sys:%d/3  Gyro:%d/3  Accel:%d/3  Mag:%d/3",
+                                 sample.sys_cal, sample.gyro_cal, sample.accel_cal, sample.mag_cal);
+                        prev_sys = sample.sys_cal;
+                        prev_gyro = sample.gyro_cal;
+                        prev_accel = sample.accel_cal;
+                        prev_mag = sample.mag_cal;
+
+                        if (sample.sys_cal == 3 && sample.gyro_cal == 3 &&
+                            sample.accel_cal == 3 && sample.mag_cal == 3) {
+                            if (!fully_calibrated_announced) {
+                                ESP_LOGI("CAL", "========================================");
+                                ESP_LOGI("CAL", "  ALL SENSORS FULLY CALIBRATED (3/3)");
+                                ESP_LOGI("CAL", "  Session data will have best accuracy");
+                                ESP_LOGI("CAL", "========================================");
+                                fully_calibrated_announced = true;
+                            }
+                        } else {
+                            fully_calibrated_announced = false;
+                        }
+                    }
+                }
+
                 // Stream JSON to UART for live visualizer (every 2 samples ~50 Hz at 100 Hz rate)
                 static uint32_t uart_stream_count = 0;
                 uart_stream_count++;
