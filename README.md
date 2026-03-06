@@ -1,4 +1,4 @@
-# FormSync Firmware - ESP32 IMU Systems
+# GoldenForm
 
 Modular ESP-IDF firmware supporting both **MPU6050** (6-axis) and **BNO055** (9-axis) IMU sensors with comprehensive visualization systems.
 
