@@ -457,6 +457,10 @@
                 <div class="section-title">3D View</div>
                 <div class="metric" style="background:#1a2a1a;border:1px solid #2a3a2a;">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="show-hand" onchange="toggleHand()" checked>
+                        <span style="font-size:0.85em;">Show 3D hand along stroke path</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px;">
                         <input type="checkbox" id="overlay-strokes" onchange="toggleStrokeOverlay()" checked>
                         <span style="font-size:0.85em;">Overlay past strokes</span>
                     </label>
@@ -497,7 +501,7 @@
         // =====================================================================
         // GLOBALS
         // =====================================================================
-        let scene, camera, renderer, imuCube, controls = null;
+        let scene, camera, renderer, imuCube, handMesh, controls = null;
         let positionLine = null, liveTrailLine = null, waterPlane = null;
         let positionScale = 3.0;
         let strokeTrails = [];
@@ -684,6 +688,7 @@
             if (liveTrailLine && typeof THREE !== 'undefined') {
                 liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
             }
+            if (handMesh) handMesh.visible = false;
             strokeTrails.forEach(t => { if (scene) scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
             strokeTrails = [];
             document.getElementById('sample-count').textContent = '0';
@@ -883,6 +888,73 @@
         // =====================================================================
         // 3D SCENE
         // =====================================================================
+        // Simple 3D hand mesh (palm + fingers) for stroke path visualization.
+        // Palm = flat box in XY, fingers extend along +Z. Scale fits arc visualization.
+        function createHandModel() {
+            if (typeof THREE === 'undefined') return null;
+            const group = new THREE.Group();
+            const mat = new THREE.MeshPhongMaterial({
+                color: 0xe8b88b,
+                emissive: 0x1a1008,
+                specular: 0x442211,
+                shininess: 20,
+                flatShading: false
+            });
+            const cyl = (rTop, rBot, h, seg = 10) =>
+                new THREE.CylinderGeometry(rTop, rBot, h, seg);
+
+            // Palm - slightly trapezoidal, thicker at wrist
+            const palmGeo = new THREE.BoxGeometry(0.09, 0.06, 0.035);
+            const palm = new THREE.Mesh(palmGeo, mat.clone());
+            palm.position.set(0, 0, 0);
+            group.add(palm);
+
+            // Finger segments: [proximal, middle, distal] lengths (index, middle, ring, pinky)
+            const fingerSegs = [
+                [0.032, 0.028, 0.022],  // index
+                [0.035, 0.031, 0.024],  // middle (longest)
+                [0.033, 0.029, 0.022],  // ring
+                [0.025, 0.022, 0.018]   // pinky (shortest)
+            ];
+            const fingerBaseY = [-0.022, -0.008, 0.008, 0.022];  // spread from center
+
+            for (let f = 0; f < 4; f++) {
+                const segs = fingerSegs[f];
+                let z = 0.0175;
+                let r = 0.012;
+                for (let s = 0; s < 3; s++) {
+                    const seg = new THREE.Mesh(cyl(r, r * 1.08, segs[s], 8), mat.clone());
+                    seg.position.set(fingerBaseY[f], 0, z + segs[s] / 2);
+                    seg.rotation.x = Math.PI / 2;
+                    group.add(seg);
+                    z += segs[s];
+                    r *= 0.85;  // taper
+                }
+            }
+
+            // Thumb - 2 segments, angled from side of palm
+            const thumbGrp = new THREE.Group();
+            thumbGrp.position.set(-0.055, -0.028, -0.01);
+            thumbGrp.rotation.z = 0.5;   // angle out from palm
+            thumbGrp.rotation.x = -0.3;  // curl toward fingers
+            const t1 = new THREE.Mesh(cyl(0.011, 0.012, 0.028, 8), mat.clone());
+            t1.position.set(0, 0, 0.014); t1.rotation.x = Math.PI / 2;
+            thumbGrp.add(t1);
+            const t2 = new THREE.Mesh(cyl(0.009, 0.011, 0.022, 8), mat.clone());
+            t2.position.set(0, 0, 0.039); t2.rotation.x = Math.PI / 2;
+            thumbGrp.add(t2);
+            group.add(thumbGrp);
+
+            // Wrist stub
+            const wrist = new THREE.Mesh(cyl(0.035, 0.04, 0.03, 10), mat.clone());
+            wrist.position.set(0, 0, -0.04);
+            wrist.rotation.x = Math.PI / 2;
+            group.add(wrist);
+
+            group.scale.setScalar(1.4);
+            return group;
+        }
+
         function initScene() {
             try {
                 const canvas = document.getElementById('canvas');
@@ -928,6 +1000,12 @@
                 imuCube = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xff4444 }));
                 imuCube.castShadow = true;
                 scene.add(imuCube);
+
+                handMesh = createHandModel();
+                if (handMesh) {
+                    handMesh.visible = true;
+                    scene.add(handMesh);
+                }
 
                 const plGeo = new THREE.BufferGeometry();
                 plGeo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0,0,0,0], 3));
@@ -1271,13 +1349,21 @@
             if (imuCube.material) imuCube.material.color.setHex(isTracking ? 0x44ff44 : 0xff4444);
 
             // Position line: from origin to current displacement (so it resets to origin each stroke)
+            let tipVec = new THREE.Vector3(0, 0, 0);
             if (positionLine) {
                 const segStart = getSegStart(currentIndex);
                 const refQ = processedData[segStart]?.quaternion;
-                const tip = refQ ? trailPtDisplacement(q, refQ, positionScale) : new THREE.Vector3(0, 0, 0);
+                tipVec = refQ ? trailPtDisplacement(q, refQ, positionScale) : new THREE.Vector3(0, 0, 0);
                 const pa = positionLine.geometry.attributes.position.array;
-                pa[3] = tip.x; pa[4] = tip.y; pa[5] = tip.z;
+                pa[3] = tipVec.x; pa[4] = tipVec.y; pa[5] = tipVec.z;
                 positionLine.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // 3D hand: placed at stroke path tip, oriented with quaternion
+            if (handMesh) {
+                handMesh.position.copy(tipVec);
+                handMesh.setRotationFromQuaternion(tq);
+                handMesh.visible = (document.getElementById('show-hand')?.checked ?? true);
             }
 
             document.getElementById('stroke-count').textContent = data.stroke_count || 0;
@@ -1437,6 +1523,9 @@
         // =====================================================================
         // UI CONTROLS
         // =====================================================================
+        function toggleHand() {
+            if (handMesh) handMesh.visible = document.getElementById('show-hand').checked;
+        }
         function toggleStrokeOverlay() {
             showOverlay = document.getElementById('overlay-strokes').checked;
             if (processedData.length > 0) updateStrokeOverlaysForPlayback(currentIndex);
