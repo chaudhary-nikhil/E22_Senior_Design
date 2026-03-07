@@ -13,6 +13,7 @@
  */
 
 #include "stroke_detector.h"
+#include "dtw_classifier.h"
 #include "esp_log.h"
 #include "haptic.h"
 #include <math.h>
@@ -109,62 +110,17 @@ static void rotate_to_world(float qw, float qx, float qy, float qz, float ax,
 }
 
 // ============================================================================
-// Helper: Compare current stroke against ideal using normalized Euclidean
+// Helper: Compare current stroke against ideal using DTW (Dynamic Time Warping)
 // ============================================================================
 static float compare_strokes(const float *current, int cur_count,
                              const float *ideal, int ideal_count) {
   if (cur_count == 0 || ideal_count == 0)
     return 0.0f;
 
-  // Simple approach: resample the shorter to match the longer, then
-  // compute per-sample Euclidean distance in LIA space.
-  // This is a lightweight DTW alternative suitable for MCU.
-
-  int ref_count = ideal_count; // Reference length
-  float total_dist = 0.0f;
-
-  for (int i = 0; i < ref_count; i++) {
-    // Map ideal index to current index (linear interpolation)
-    float t = (cur_count > 1)
-                  ? (float)i / (float)(ref_count - 1) * (float)(cur_count - 1)
-                  : 0;
-    int idx = (int)t;
-    float frac = t - (float)idx;
-    if (idx >= cur_count - 1) {
-      idx = cur_count - 1;
-      frac = 0.0f;
-    }
-
-    // Interpolate current stroke at this position
-    float cx, cy, cz;
-    if (frac < 0.001f || idx >= cur_count - 1) {
-      cx = current[idx * 3 + 0];
-      cy = current[idx * 3 + 1];
-      cz = current[idx * 3 + 2];
-    } else {
-      cx = current[idx * 3 + 0] * (1.0f - frac) +
-           current[(idx + 1) * 3 + 0] * frac;
-      cy = current[idx * 3 + 1] * (1.0f - frac) +
-           current[(idx + 1) * 3 + 1] * frac;
-      cz = current[idx * 3 + 2] * (1.0f - frac) +
-           current[(idx + 1) * 3 + 2] * frac;
-    }
-
-    // Ideal sample
-    float ix = ideal[i * 3 + 0];
-    float iy = ideal[i * 3 + 1];
-    float iz = ideal[i * 3 + 2];
-
-    // Euclidean distance for this sample
-    float dx = cx - ix, dy = cy - iy, dz = cz - iz;
-    total_dist += sqrtf(dx * dx + dy * dy + dz * dz);
-  }
-
-  // Normalize by reference length and a typical LIA magnitude (~5 m/s²)
-  // This gives a score where 0.0 = perfect and 1.0 = average deviation of ~5
-  // m/s²
-  float avg_dist = total_dist / (float)ref_count;
-  return avg_dist / 5.0f; // Normalized to ~[0, 1+]
+  // Utilize the machine learning Dynamic Time Warping (DTW) algorithm
+  // optimized for the ESP32 to accurately classify stroke similarity
+  // independent of exact pacing.
+  return process_dtw_buffer(current, cur_count, ideal, ideal_count);
 }
 
 // ============================================================================
