@@ -263,14 +263,30 @@ function selectSession(i) {
     if (playbackInterval) { clearInterval(playbackInterval); playbackInterval = null; }
     // Pre-compute stroke boundaries and haptic events for timeline
     computeStrokeBoundaries();
+    buildPlaybackStrokeSegments();
     renderSessionList();
     updateSessionSummary();
     updateAnalysis();
-    // Switch to Session tab first so chart canvases have real dimensions (not 0x0)
+    // Switch to Session tab first so chart and 3D canvases have real dimensions (not 0x0)
     switchTab('session');
+    // Scroll Session tab into view so the 3D canvas and charts are visible
+    const sessionPage = document.getElementById('page-session');
+    if (sessionPage) sessionPage.scrollIntoView({ behavior: 'smooth', block: 'start' });
     buildHapticTimeline();
-    // Defer chart init and first frame so layout is complete and charts render with data
+    // Defer chart init, 3D init/resize, and first frame so layout is complete
     requestAnimationFrame(() => {
+        const c = document.getElementById('canvas3d');
+        if (c) {
+            const w = Math.max(c.clientWidth || 800, 400);
+            const h = Math.max(c.clientHeight || 450, 400);
+            // (Re)init 3D if not yet created (e.g. canvas was hidden at load)
+            if (!scene || !renderer) init3D();
+            if (renderer && camera) {
+                renderer.setSize(w, h);
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+            }
+        }
         initCharts();
         renderFrame(0);
         if (processedData.length > 0 && accelChart && gyroChart) updateCharts(0);
@@ -641,120 +657,181 @@ function updateCharts(idx) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  3D VISUALIZATION — Stroke-Phase Position Model
-//  Addresses TIDR 6-1-3 (drift prevention) and 2-1-2 (haptic markers)
+//  3D VISUALIZATION — Ported from integrated session viewer
+//  Single cube at path tip, green position line, live stroke arc, colored past strokes
 // ══════════════════════════════════════════════════════════════════
 let scene, camera, renderer, controls;
-let deviceMeshes = {}; // keyed by dev_role
-let waterPlane;
-let positionLines = {}, currentStrokePoints = {}, strokeTrails = {};
-let hapticMarkers3D = [];
-let idealTrailLine = null;
-let lastStrokeCounts = {};
-let initialQuaternions = {};
+let imuCube = null;           // Cube at origin (red/green by tracking)
+let handMesh = null;          // 3D hand at path tip (optional)
+let positionLine = null;      // Green line from origin to current tip
+let liveTrailLine = null;     // White arc for current stroke (quaternion-based)
+let strokeTrails = [];        // Colored lines for past strokes (one color per stroke)
+let playbackStrokeSegments = []; // { startIdx, endIdx, strokeNum } built from processedData
 
-// Stroke-phase position model state
-let phaseStates = {}; // dev_role -> { vel: {x,y,z}, pos: {x,y,z} }
+const TRAIL_SMOOTH_WINDOW = 5;
+const STROKE_COLORS = [0x00d4ff, 0xff9500, 0x00ff88, 0xbf5fff, 0xffff00, 0xff4444, 0x4488ff];
+const MAX_STROKES_DISPLAYED = 10;
 
-function getPhaseState(role) {
-    if (!phaseStates[role]) phaseStates[role] = { vel: { x: 0, y: 0, z: 0 }, pos: { x: 0, y: 0, z: 0 } };
-    return phaseStates[role];
+function nq(q) {
+    if (!q) return new THREE.Quaternion(0, 0, 0, 1);
+    const w = q.qw ?? 1, x = q.qx ?? 0, y = q.qy ?? 0, z = q.qz ?? 0;
+    const m = Math.hypot(w, x, y, z);
+    return m > 1e-8 ? new THREE.Quaternion(x / m, y / m, z / m, w / m) : new THREE.Quaternion(0, 0, 0, 1);
+}
+function trailPtDisplacement(dataQ, refQ, scale) {
+    const tip = new THREE.Vector3(0, 0, scale);
+    tip.applyQuaternion(nq(dataQ));
+    const start = new THREE.Vector3(0, 0, scale);
+    start.applyQuaternion(nq(refQ));
+    return tip.sub(start);
+}
+function getSegStart(upToIndex) {
+    if (!processedData.length || upToIndex < 0) return 0;
+    const sc = processedData[upToIndex]?.stroke_count ?? 0;
+    for (let i = upToIndex; i >= 0; i--) {
+        if ((processedData[i]?.stroke_count ?? 0) < sc) return i + 1;
+    }
+    return 0;
+}
+function smoothTrailPoints(points, windowSize) {
+    if (!points.length || windowSize < 2) return points;
+    const half = Math.floor(windowSize / 2);
+    const out = [];
+    for (let i = 0; i < points.length; i++) {
+        let x = 0, y = 0, z = 0, n = 0;
+        for (let j = Math.max(0, i - half); j <= Math.min(points.length - 1, i + half); j++) {
+            x += points[j].x; y += points[j].y; z += points[j].z;
+            n++;
+        }
+        out.push(new THREE.Vector3(x / n, y / n, z / n));
+    }
+    return out;
+}
+
+function buildPlaybackStrokeSegments() {
+    playbackStrokeSegments = [];
+    let last = 0, start = 0;
+    for (let i = 0; i < processedData.length; i++) {
+        const c = processedData[i].stroke_count ?? 0;
+        if (c > last) {
+            if (last > 0 && start < i) playbackStrokeSegments.push({ startIdx: start, endIdx: i - 1, strokeNum: last });
+            start = i;
+            last = c;
+        }
+    }
+    if (last > 0 && start < processedData.length)
+        playbackStrokeSegments.push({ startIdx: start, endIdx: processedData.length - 1, strokeNum: last });
+}
+
+// 3D hand model (palm + fingers + thumb + wrist), scaled for stroke path
+function createHandModel() {
+    if (typeof THREE === 'undefined') return null;
+    const group = new THREE.Group();
+    const mat = new THREE.MeshPhongMaterial({
+        color: 0xe8b88b,
+        emissive: 0x1a1008,
+        specular: 0x442211,
+        shininess: 20,
+        flatShading: false
+    });
+    const cyl = (rTop, rBot, h, seg = 10) =>
+        new THREE.CylinderGeometry(rTop, rBot, h, seg);
+
+    const palmGeo = new THREE.BoxGeometry(0.09, 0.06, 0.035);
+    const palm = new THREE.Mesh(palmGeo, mat.clone());
+    palm.position.set(0, 0, 0);
+    group.add(palm);
+
+    const fingerSegs = [
+        [0.032, 0.028, 0.022], [0.035, 0.031, 0.024], [0.033, 0.029, 0.022], [0.025, 0.022, 0.018]
+    ];
+    const fingerBaseY = [-0.022, -0.008, 0.008, 0.022];
+    for (let f = 0; f < 4; f++) {
+        const segs = fingerSegs[f];
+        let z = 0.0175, r = 0.012;
+        for (let s = 0; s < 3; s++) {
+            const seg = new THREE.Mesh(cyl(r, r * 1.08, segs[s], 8), mat.clone());
+            seg.position.set(fingerBaseY[f], 0, z + segs[s] / 2);
+            seg.rotation.x = Math.PI / 2;
+            group.add(seg);
+            z += segs[s];
+            r *= 0.85;
+        }
+    }
+
+    const thumbGrp = new THREE.Group();
+    thumbGrp.position.set(-0.055, -0.028, -0.01);
+    thumbGrp.rotation.z = 0.5;
+    thumbGrp.rotation.x = -0.3;
+    const t1 = new THREE.Mesh(cyl(0.011, 0.012, 0.028, 8), mat.clone());
+    t1.position.set(0, 0, 0.014); t1.rotation.x = Math.PI / 2;
+    thumbGrp.add(t1);
+    const t2 = new THREE.Mesh(cyl(0.009, 0.011, 0.022, 8), mat.clone());
+    t2.position.set(0, 0, 0.039); t2.rotation.x = Math.PI / 2;
+    thumbGrp.add(t2);
+    group.add(thumbGrp);
+
+    const wrist = new THREE.Mesh(cyl(0.035, 0.04, 0.03, 10), mat.clone());
+    wrist.position.set(0, 0, -0.04);
+    wrist.rotation.x = Math.PI / 2;
+    group.add(wrist);
+
+    group.scale.setScalar(1.4);
+    return group;
 }
 
 function init3D() {
     const canvas = document.getElementById('canvas3d');
     if (!canvas || !window.THREE) return;
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a15);
-    scene.fog = new THREE.Fog(0x0a0a15, 8, 20);
+    scene.background = new THREE.Color(0x111111);
 
-    camera = new THREE.PerspectiveCamera(50, canvas.clientWidth / canvas.clientHeight, 0.1, 100);
-    camera.position.set(0.8, 0.6, 1.5);
+    const w = Math.max(canvas.clientWidth || 800, 400);
+    const h = Math.max(canvas.clientHeight || 450, 400);
+    camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 1000);
+    camera.position.set(3, 3, 3);
+    camera.lookAt(0, 0, 0);
 
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+    renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
 
-    // Devices 1=WristL, 2=WristR, 3=Head, 4=AnkleL, 5=AnkleR
-    const wristGeo = new THREE.BoxGeometry(0.12, 0.025, 0.08);
-    const boxMatL = new THREE.MeshPhongMaterial({ color: 0x5A85C5, emissive: 0x1a2e4a, specular: 0xffffff, shininess: 60 });
-    const boxMatR = new THREE.MeshPhongMaterial({ color: 0xC5A55A, emissive: 0x2a1e08, specular: 0xffffff, shininess: 60 });
+    scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x1a1a1a));
+    scene.add(new THREE.AxesHelper(2));
 
-    deviceMeshes[1] = new THREE.Mesh(wristGeo, boxMatL);
-    deviceMeshes[2] = new THREE.Mesh(wristGeo, boxMatR);
+    const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    imuCube = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xff4444 }));
+    imuCube.castShadow = true;
+    scene.add(imuCube);
 
-    const headGeo = new THREE.SphereGeometry(0.06, 32, 32);
-    const headMat = new THREE.MeshPhongMaterial({ color: 0xef4444, emissive: 0x4a1e1e });
-    deviceMeshes[3] = new THREE.Mesh(headGeo, headMat);
-
-    const ankleGeo = new THREE.BoxGeometry(0.1, 0.04, 0.08);
-    const ankleMatL = new THREE.MeshPhongMaterial({ color: 0x9333ea, emissive: 0x2e1a4a });
-    const ankleMatR = new THREE.MeshPhongMaterial({ color: 0xdb2777, emissive: 0x4a1a2e });
-    deviceMeshes[4] = new THREE.Mesh(ankleGeo, ankleMatL);
-    deviceMeshes[5] = new THREE.Mesh(ankleGeo, ankleMatR);
-
-    const strapGeo = new THREE.BoxGeometry(0.13, 0.005, 0.015);
-    const strapMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
-    [1, 2, 4, 5].forEach(role => {
-        const s = new THREE.Mesh(strapGeo, strapMat);
-        s.position.y = 0.015;
-        deviceMeshes[role].add(s);
-    });
-
-    [1, 2, 3, 4, 5].forEach(role => {
-        deviceMeshes[role].castShadow = true;
-        deviceMeshes[role].visible = false;
-        scene.add(deviceMeshes[role]);
-    });
-
-    // Default fallback
-    deviceMeshes[0] = new THREE.Mesh(wristGeo, boxMatR);
-    deviceMeshes[0].castShadow = true;
-    deviceMeshes[0].visible = false;
-    scene.add(deviceMeshes[0]);
-
-    // Lights
-    const ambient = new THREE.AmbientLight(0x404060, 0.5);
-    scene.add(ambient);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-    dirLight.position.set(3, 5, 3);
-    dirLight.castShadow = true;
-    scene.add(dirLight);
-    const rimLight = new THREE.DirectionalLight(0x3366ff, 0.3);
-    rimLight.position.set(-2, 1, -3);
-    scene.add(rimLight);
-
-    // Water surface
-    const waterGeo = new THREE.PlaneGeometry(8, 8, 32, 32);
-    const waterMat = new THREE.MeshPhongMaterial({
-        color: 0x006699, transparent: true, opacity: 0.2,
-        side: THREE.DoubleSide, flatShading: true
-    });
-    waterPlane = new THREE.Mesh(waterGeo, waterMat);
-    waterPlane.rotation.x = -Math.PI / 2;
-    waterPlane.position.y = -0.15;
-    waterPlane.receiveShadow = true;
-    scene.add(waterPlane);
-
-    // Grid
-    const grid = new THREE.GridHelper(6, 30, 0x1a1a30, 0x111120);
-    grid.position.y = -0.16;
-    scene.add(grid);
-
-    // Trail line for current stroke
-    const trailGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]);
-    positionLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 2 }));
+    const plGeo = new THREE.BufferGeometry();
+    plGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+    positionLine = new THREE.Line(plGeo, new THREE.LineBasicMaterial({ color: 0x00ff00, opacity: 0.6, transparent: true }));
     scene.add(positionLine);
 
-    // Controls
+    const ltGeo = new THREE.BufferGeometry();
+    ltGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+    liveTrailLine = new THREE.Line(ltGeo, new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.95, transparent: true }));
+    scene.add(liveTrailLine);
+
+    handMesh = createHandModel();
+    if (handMesh) {
+        handMesh.visible = true;
+        scene.add(handMesh);
+    }
+
+    scene.add(new THREE.AmbientLight(0x404040, 0.6));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+    dl.position.set(5, 5, 5);
+    scene.add(dl);
+
     if (window.THREE.OrbitControls) {
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
         controls.target.set(0, 0, 0);
         controls.minDistance = 0.5;
-        controls.maxDistance = 10;
+        controls.maxDistance = 15;
     }
 
     animate();
@@ -763,141 +840,87 @@ function init3D() {
 function animate() {
     requestAnimationFrame(animate);
     if (controls) controls.update();
-    // Gentle water wave animation
-    if (waterPlane) {
-        const t = Date.now() * 0.001;
-        const pos = waterPlane.geometry.attributes.position;
-        for (let i = 0; i < pos.count; i++) {
-            const x = pos.getX(i), z = pos.getZ(i);
-            pos.setY(i, Math.sin(x * 2 + t) * 0.005 + Math.cos(z * 1.5 + t * 0.7) * 0.003);
-        }
-        pos.needsUpdate = true;
-    }
     if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
-// ── STROKE-PHASE POSITION MODEL ──
-// Instead of raw double-integration (which drifts), we model freestyle stroke
-// as a constrained arc using the stroke phase + LIA magnitude.
-// Phase model for freestyle:
-//   Glide:    hand forward, slight descent (negative Z, steady X)
-//   Pull:     hand pulls backward through water (positive X sweep, Z dips)
-//   Recovery: hand exits water, sweeps forward over surface (arc up and forward)
-function computePhasePosition(d, dt, role) {
-    const phase = d.stroke_phase || 'idle';
-    const liaMag = Math.sqrt(
-        (d.acceleration?.ax || 0) ** 2 +
-        (d.acceleration?.ay || 0) ** 2 +
-        (d.acceleration?.az || 0) ** 2
-    );
-
-    const state = getPhaseState(role);
-    const decay = 0.92;
-    state.vel.x *= decay;
-    state.vel.y *= decay;
-    state.vel.z *= decay;
-
-    const speed = Math.min(liaMag * 0.02, 0.15) * positionScale * 0.3;
-
-    if (phase === 'pull') {
-        state.vel.x += speed * 0.8;
-        state.vel.z -= speed * 0.3;
-    } else if (phase === 'recovery') {
-        state.vel.x -= speed * 0.6;
-        state.vel.z += speed * 0.5;
-        state.vel.y += speed * 0.2;
-    } else {
-        state.vel.x -= speed * 0.2;
-        state.vel.z -= speed * 0.1;
-    }
-
-    state.pos.x += state.vel.x * dt;
-    state.pos.y += state.vel.y * dt;
-    state.pos.z += state.vel.z * dt;
-
-    return { x: state.pos.x, y: state.pos.z, z: -state.pos.y };
-}
-
+// ── RENDER FRAME (integrated session viewer style) ──
 function renderFrame(idx) {
     if (!processedData.length || idx >= processedData.length) return;
     const d = processedData[idx];
-    const role = d.dev_role || 0;
-    const mesh = deviceMeshes[role] || deviceMeshes[0];
-    if (mesh) mesh.visible = true;
+    const segStart = getSegStart(idx);
+    const refQ = processedData[segStart]?.quaternion;
+    const pathScale = positionScale;
 
-    let dt = 0.01;
-    for (let i = idx - 1; i >= 0 && i >= idx - 50; i--) {
-        if ((processedData[i].dev_role || 0) === role) {
-            dt = (d.timestamp - processedData[i].timestamp) / 1000;
-            break;
+    // Cube at origin, rotates with quaternion (integrated viewer style); green when tracking
+    if (imuCube) {
+        imuCube.position.set(0, 0, 0);
+        imuCube.setRotationFromQuaternion(nq(d.quaternion));
+        if (imuCube.material) imuCube.material.color.setHex(d.tracking_active ? 0x44ff44 : 0xff4444);
+        // Cube stays at origin; position line and trail show the path
+    }
+
+    // Green position line: origin to current tip (displacement from stroke start)
+    let tipVec = new THREE.Vector3(0, 0, 0);
+    if (positionLine && refQ) {
+        tipVec = trailPtDisplacement(d.quaternion, refQ, pathScale);
+        const pa = positionLine.geometry.attributes.position.array;
+        pa[3] = tipVec.x; pa[4] = tipVec.y; pa[5] = tipVec.z;
+        positionLine.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // 3D hand at path tip, oriented with quaternion
+    if (handMesh) {
+        handMesh.position.copy(tipVec);
+        handMesh.setRotationFromQuaternion(nq(d.quaternion));
+        const showHand = document.getElementById('show-hand') ? document.getElementById('show-hand').checked : true;
+        handMesh.visible = showHand;
+    }
+
+    // Live trail: arc from stroke start to current frame (smoothed)
+    if (liveTrailLine && refQ) {
+        const points = [];
+        for (let i = segStart; i <= idx; i++) {
+            const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, pathScale);
+            points.push(pt.clone());
+        }
+        const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
+        if (smoothed.length >= 2) {
+            const flat = [];
+            smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
+            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+            liveTrailLine.geometry.attributes.position.needsUpdate = true;
+        } else {
+            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
         }
     }
-    if (dt <= 0 || dt > 1) dt = 0.01;
 
-    // ── ORIENTATION ──
-    if (mesh && d.quaternion) {
-        const q = d.quaternion;
-        if (!initialQuaternions[role]) initialQuaternions[role] = new THREE.Quaternion(q.qx, q.qy, q.qz, q.qw).invert();
-        const rawQ = new THREE.Quaternion(q.qx, q.qy, q.qz, q.qw);
-        const corrected = initialQuaternions[role].clone().multiply(rawQ);
-        mesh.quaternion.copy(corrected);
-    }
-
-    // ── POSITION ──
-    if (!currentStrokePoints[role]) currentStrokePoints[role] = [];
-    if (d.tracking_active && dt > 0 && dt < 0.5) {
-        const pos = computePhasePosition(d, dt, role);
-        let baseY = 0, baseX = 0, baseZ = 0;
-        if (role === 3) baseY = 0.4;
-        else if (role === 4) { baseY = -0.5; baseX = -0.2; }
-        else if (role === 5) { baseY = -0.5; baseX = 0.2; }
-        else if (role === 1) baseX = -0.3;
-        else if (role === 2) baseX = 0.3;
-
-        if (mesh) mesh.position.set(pos.x + baseX, pos.y + baseY, pos.z + baseZ);
-        currentStrokePoints[role].push(new THREE.Vector3(pos.x + baseX, pos.y + baseY, pos.z + baseZ));
-
-        if (!positionLines[role]) {
-            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]);
-            const colors = { 1: 0x5A85C5, 2: 0xC5A55A, 3: 0xef4444, 4: 0x9333ea, 5: 0xdb2777, 0: 0xffffff };
-            positionLines[role] = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: colors[role] || 0xffffff, linewidth: 2 }));
-            scene.add(positionLines[role]);
+    // Past stroke overlays (colored arcs, up to MAX_STROKES_DISPLAYED)
+    if (scene) {
+        strokeTrails.forEach(t => { scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
+        strokeTrails = [];
+        let shown = 0;
+        for (const seg of playbackStrokeSegments) {
+            if (seg.endIdx > idx || shown >= MAX_STROKES_DISPLAYED) break;
+            const endBound = Math.min(seg.endIdx, idx);
+            const ref = processedData[seg.startIdx]?.quaternion;
+            const points = [];
+            for (let i = seg.startIdx; i <= endBound; i++) {
+                const pt = trailPtDisplacement(processedData[i]?.quaternion, ref, pathScale);
+                points.push(pt.clone());
+            }
+            const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
+            if (smoothed.length >= 2) {
+                const flat = [];
+                smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
+                const color = STROKE_COLORS[(seg.strokeNum - 1) % STROKE_COLORS.length];
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+                const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, opacity: 0.85, transparent: true }));
+                scene.add(line);
+                strokeTrails.push(line);
+                shown++;
+            }
         }
-        positionLines[role].geometry.dispose();
-        positionLines[role].geometry = new THREE.BufferGeometry().setFromPoints(currentStrokePoints[role]);
-    }
-
-    // ── STROKE BOUNDARY ──
-    const lastCount = lastStrokeCounts[role] || 0;
-    if (d.stroke_count > lastCount) {
-        if (currentStrokePoints[role].length > 3) {
-            const colors = [0x3b82f6, 0x22c55e, 0xf59e0b, 0xa855f7, 0xef4444, 0x06b6d4, 0xec4899, 0x84cc16];
-            const tg = new THREE.BufferGeometry().setFromPoints([...currentStrokePoints[role]]);
-            const tl = new THREE.Line(tg, new THREE.LineBasicMaterial({
-                color: colors[Object.keys(strokeTrails).length % colors.length],
-                transparent: true, opacity: 0.6
-            }));
-            scene.add(tl);
-            if (!strokeTrails[role]) strokeTrails[role] = [];
-            strokeTrails[role].push(tl);
-            while (strokeTrails[role].length > 5) { const old = strokeTrails[role].shift(); scene.remove(old); old.geometry.dispose(); }
-        }
-        currentStrokePoints[role] = [];
-        getPhaseState(role).pos = { x: 0, y: 0, z: 0 };
-        getPhaseState(role).vel = { x: 0, y: 0, z: 0 };
-        lastStrokeCounts[role] = d.stroke_count;
-    }
-
-    // ── HAPTIC MARKER ──
-    if (d.haptic_fired && mesh) {
-        mesh.material.emissive.setHex(0xff2200);
-        setTimeout(() => { if (mesh) mesh.material.emissive.setHex(0x2a1e08); }, 200);
-        const markerGeo = new THREE.OctahedronGeometry(0.02, 0);
-        const markerMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
-        const marker = new THREE.Mesh(markerGeo, markerMat);
-        marker.position.copy(mesh.position);
-        scene.add(marker);
-        hapticMarkers3D.push(marker);
     }
 
     // ── PLAYBACK UI ──
@@ -916,19 +939,28 @@ function renderFrame(idx) {
 }
 
 function clearViz() {
-    processedData = []; sessionMetrics = null; currentIndex = 0;
-    lastStrokeCounts = {}; currentStrokePoints = {};
-    phaseStates = {};
-    Object.values(strokeTrails).forEach(arr => arr.forEach(t => { if (scene) scene.remove(t); t.geometry.dispose(); }));
-    strokeTrails = {};
-    Object.values(positionLines).forEach(l => { if (scene) scene.remove(l); l.geometry.dispose(); });
-    positionLines = {};
-    hapticMarkers3D.forEach(m => { if (scene) scene.remove(m); m.geometry.dispose(); }); hapticMarkers3D = [];
-    initialQuaternions = {};
-    Object.values(deviceMeshes).forEach(m => { if (m) m.visible = false; });
+    processedData = [];
+    sessionMetrics = null;
+    currentIndex = 0;
+    playbackStrokeSegments = [];
+    strokeTrails.forEach(t => { if (scene) scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
+    strokeTrails = [];
+    if (positionLine && positionLine.geometry && positionLine.geometry.attributes.position) {
+        const pa = positionLine.geometry.attributes.position.array;
+        if (pa.length >= 6) { pa[3] = 0; pa[4] = 0; pa[5] = 0; positionLine.geometry.attributes.position.needsUpdate = true; }
+    }
+    if (liveTrailLine && liveTrailLine.geometry) {
+        liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+    }
+    if (imuCube) {
+        imuCube.position.set(0, 0, 0);
+        imuCube.quaternion.identity();
+        if (imuCube.material) imuCube.material.color.setHex(0xff4444);
+    }
+    if (handMesh) handMesh.visible = false;
 }
 function resetView() {
-    if (camera) { camera.position.set(0.8, 0.6, 1.5); if (controls) controls.target.set(0, 0, 0); }
+    if (camera) { camera.position.set(3, 3, 3); camera.lookAt(0, 0, 0); if (controls) controls.target.set(0, 0, 0); }
 }
 function updateScale(v) { positionScale = parseFloat(v) || 3; setText('scale-val', positionScale.toFixed(1) + 'x'); }
 

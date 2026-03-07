@@ -297,12 +297,16 @@ body {
   padding: 0;
   overflow: hidden;
   border-radius: var(--radius);
+  min-height: 400px;
 }
 
 .viz-card canvas {
   width: 100%;
+  min-width: 300px;
   height: 400px;
+  min-height: 400px;
   display: block;
+  background: var(--bg1);
 }
 
 .chart-card {
