@@ -82,6 +82,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._register_device()
         elif self.path == '/api/sessions/save':
             self._save_session()
+        elif self.path == '/api/sessions/merge':
+            self._merge_sessions()
         else:
             self.send_response(404)
             self.end_headers()
@@ -242,6 +244,87 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         progress = db.get_progress(user['id'], 50)
         self._send_json({'progress': progress})
 
+    # ── Multi-Device Merge ──
+
+    def _merge_sessions(self):
+        try:
+            body = self._read_body()
+            session_ids = body.get('session_ids', [])
+            if len(session_ids) < 2:
+                self._send_json({"error": "Need at least 2 sessions to merge"}, 400)
+                return
+            
+            # Load raw data for these sessions
+            sessions_to_merge = []
+            for sid in session_ids:
+                s = db.get_session(sid)
+                if s and s.get('raw_data'):
+                    sessions_to_merge.append({
+                        'id': sid,
+                        'name': f"Session {sid}",
+                        'data': s['raw_data']
+                    })
+            
+            if len(sessions_to_merge) < 2:
+                self._send_json({"error": "Could not load raw data for at least 2 sessions"}, 400)
+                return
+
+            # Align them
+            aligned_sessions, meta = align_sessions_by_hop(sessions_to_merge)
+            if not meta.get('aligned'):
+                self._send_json({"error": "Failed to align sessions: " + meta.get('reason', '')}, 400)
+                return
+            
+            # Now reprocess the aligned sessions together
+            processed_aligned_sessions = []
+            for sess in aligned_sessions:
+                processor = StrokeProcessor(batch_mode=True)
+                p_data = []
+                for sample in sess.get('aligned_data', []):
+                    lia_x = sample.get('lia_x', sample.get('ax', 0))
+                    lia_y = sample.get('lia_y', sample.get('ay', 0))
+                    lia_z = sample.get('lia_z', sample.get('az', 0))
+                    data_dict = {
+                        't': sample.get('t', sample.get('timestamp', 0)),
+                        'lia_x': lia_x, 'lia_y': lia_y, 'lia_z': lia_z,
+                        'gx': sample.get('gx', 0), 'gy': sample.get('gy', 0), 'gz': sample.get('gz', 0),
+                        'qw': sample.get('qw', 1), 'qx': sample.get('qx', 0), 'qy': sample.get('qy', 0), 'qz': sample.get('qz', 0),
+                        'haptic': sample.get('haptic', sample.get('haptic_fired', False)),
+                        'deviation': sample.get('deviation', sample.get('deviation_score', 0.0)),
+                        'dev_id': sample.get('dev_id', sample.get('device_id', 0)),
+                        'dev_role': sample.get('dev_role', sample.get('device_role', 0)),
+                        'cal': {
+                            'sys': sample.get('cal_sys', 0), 'accel': sample.get('cal_accel', 0),
+                            'gyro': sample.get('cal_gyro', 0), 'mag': sample.get('cal_mag', 0)
+                        }
+                    }
+                    result = processor.process_data(data_dict)
+                    if result:
+                        p_data.append(json.loads(result))
+                
+                metrics = self._calculate_stroke_metrics(p_data, processor)
+                duration = 0
+                if len(p_data) >= 2:
+                    duration = (p_data[-1].get('timestamp', 0) - p_data[0].get('timestamp', 0)) / 1000.0
+
+                processed_aligned_sessions.append({
+                    'id': sess.get('id'),
+                    'name': sess.get('name'),
+                    'processed_data': p_data,
+                    'metrics': metrics,
+                    'duration': duration
+                })
+
+            self._send_json({
+                'status': 'ok',
+                'aligned_sessions': processed_aligned_sessions,
+                'meta': meta
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, 500)
+
     # ── Reprocess ──
 
     def _reprocess_session(self):
@@ -266,6 +349,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'qw': q.get('qw', 1), 'qx': q.get('qx', 0), 'qy': q.get('qy', 0), 'qz': q.get('qz', 0),
                     'haptic': sample.get('haptic_fired', False),
                     'deviation': sample.get('deviation_score', 0.0),
+                    'dev_id': sample.get('device_id', 0),
+                    'dev_role': sample.get('device_role', 0),
                     'cal': {
                         'sys': cal.get('sys', 0), 'accel': cal.get('accel', 0),
                         'gyro': cal.get('gyro', 0), 'mag': cal.get('mag', 0)
@@ -394,6 +479,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'qz': sample.get('qz', 0),
                         'haptic': sample.get('haptic', False),
                         'deviation': sample.get('deviation', 0.0),
+                        'dev_id': sample.get('dev_id', 0),
+                        'dev_role': sample.get('dev_role', 0),
                         'cal': {
                             'sys': sample.get('cal_sys', 0),
                             'accel': sample.get('cal_accel', 0),
@@ -425,7 +512,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'raw_samples': len(data),
                     'processed_samples': len(processed_data),
                     'duration': duration,
-                    'syncedAt': datetime.now().isoformat()
+                    'syncedAt': datetime.now().isoformat(),
+                    'raw_data': data
                 })
 
             integrity_ok = (expected_total is None or expected_total == actual_total)

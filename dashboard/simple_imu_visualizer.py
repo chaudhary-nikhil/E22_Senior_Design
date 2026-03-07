@@ -616,6 +616,10 @@ class StrokeProcessor:
             "haptic_fired": data_dict.get('haptic', False),
             "deviation_score": data_dict.get('deviation', 0.0),
             
+            # Module/Device ID 
+            "device_id": data_dict.get('dev_id', 0),
+            "device_role": data_dict.get('dev_role', 0),
+            
             "stroke_debug": {
                 "world_az": round(self.debug_world_az, 2),
                 "accel_mag": round(self.debug_accel_mag, 2),

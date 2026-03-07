@@ -104,8 +104,12 @@
                 <div class="card">
                     <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
                             id="session-count-badge">0</span></div>
-                    <button class="btn btn-gold" style="width:100%;margin-bottom:10px;" id="sync-btn"
-                        onclick="syncFromDevice()">Sync from Device</button>
+                    <div style="display:flex;gap:4px;margin-bottom:10px;">
+                        <button class="btn btn-gold" style="flex:1;" id="sync-btn" onclick="syncFromDevice()">Sync from
+                            Device</button>
+                        <button class="btn btn-blue" style="flex:1;" id="merge-btn"
+                            onclick="mergeLatestSessions()">Merge Devices</button>
+                    </div>
                     <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
                     <div class="session-list" id="session-cards"></div>
                 </div>

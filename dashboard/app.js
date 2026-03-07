@@ -153,7 +153,14 @@ async function syncFromDevice() {
         try {
             const cached = await apiGet('/cached');
             if (cached && cached.sessions) {
-                for (const s of cached.sessions) addSession({ name: s.name || 'Cached', processed_data: s.processed_data, metrics: s.metrics, duration: s.duration, syncedAt: s.syncedAt });
+                for (const s of cached.sessions) addSession({
+                    name: s.name || 'Cached',
+                    processed_data: s.processed_data,
+                    raw_data: s.raw_data,
+                    metrics: s.metrics,
+                    duration: s.duration,
+                    syncedAt: s.syncedAt
+                });
                 if (cached.sessions.length > 0) selectSession(savedSessions.length - 1);
                 statusEl.textContent = 'Loaded from cache';
                 showToast('Loaded cached session data', 'info');
@@ -177,7 +184,55 @@ function addSession(obj) {
     while (savedSessions.length > 8) savedSessions.shift();
     persistSessions();
     renderSessionList();
-    apiPost('/api/sessions/save', { processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: [] }).catch(() => { });
+    apiPost('/api/sessions/save', { raw_data: obj.raw_data, processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: [] }).then(res => {
+        if (res && res.session_id) {
+            obj.id = res.session_id;
+            persistSessions();
+        }
+    }).catch(() => { });
+}
+
+async function mergeLatestSessions() {
+    const btn = document.getElementById('merge-btn');
+    if (!btn) return;
+    const sessionIdsToMerge = savedSessions.filter(s => s.id).slice(-3).map(s => s.id);
+    if (sessionIdsToMerge.length < 2) {
+        showToast('Need at least 2 saved sessions (synced with DB) to merge', 'error');
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Merging...';
+    try {
+        const res = await apiPost('/api/sessions/merge', { session_ids: sessionIdsToMerge });
+        if (res.aligned_sessions && res.aligned_sessions.length > 0) {
+            let combined = [];
+            for (const sess of res.aligned_sessions) {
+                for (const p of sess.processed_data) {
+                    p._origin_id = sess.id;
+                    combined.push(p);
+                }
+            }
+            // Interleave by timestamp
+            combined.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            const obj = {
+                name: 'Merged Session (' + sessionIdsToMerge.length + ')',
+                processed_data: combined,
+                duration: res.aligned_sessions[0].duration,
+                metrics: res.aligned_sessions[0].metrics,
+                syncedAt: new Date().toISOString()
+            };
+            addSession(obj);
+            selectSession(savedSessions.length - 1);
+            showToast('Merged successfully', 'success');
+        } else if (res.error) {
+            showToast('Merge error: ' + res.error, 'error');
+        }
+    } catch (e) {
+        showToast('Merge failed: ' + e, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Merge Devices';
+    }
 }
 function renderSessionList() {
     const c = document.getElementById('session-cards');
@@ -582,18 +637,21 @@ function updateCharts(idx) {
 //  Addresses TIDR 6-1-3 (drift prevention) and 2-1-2 (haptic markers)
 // ══════════════════════════════════════════════════════════════════
 let scene, camera, renderer, controls;
-let imuBox;           // wrist device representation
+let deviceMeshes = {}; // keyed by dev_role
 let waterPlane;
-let positionLine, currentStrokePoints = [], strokeTrails = [];
+let positionLines = {}, currentStrokePoints = {}, strokeTrails = {};
 let hapticMarkers3D = [];
 let idealTrailLine = null;
-let lastStrokeCount = 0;
-let initialQuaternion = null;
+let lastStrokeCounts = {};
+let initialQuaternions = {};
 
 // Stroke-phase position model state
-let phaseVelocity = { x: 0, y: 0, z: 0 };
-let phasePosition = { x: 0, y: 0, z: 0 };
-let lastPhaseTimestamp = 0;
+let phaseStates = {}; // dev_role -> { vel: {x,y,z}, pos: {x,y,z} }
+
+function getPhaseState(role) {
+    if (!phaseStates[role]) phaseStates[role] = { vel: { x: 0, y: 0, z: 0 }, pos: { x: 0, y: 0, z: 0 } };
+    return phaseStates[role];
+}
 
 function init3D() {
     const canvas = document.getElementById('canvas3d');
@@ -610,22 +668,43 @@ function init3D() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
 
-    // Wrist device model (flat box like the GoldenForm enclosure)
-    const boxGeo = new THREE.BoxGeometry(0.12, 0.025, 0.08);
-    const boxMat = new THREE.MeshPhongMaterial({
-        color: 0xC5A55A, emissive: 0x2a1e08,
-        specular: 0xffffff, shininess: 60
-    });
-    imuBox = new THREE.Mesh(boxGeo, boxMat);
-    imuBox.castShadow = true;
-    scene.add(imuBox);
+    // Devices 1=WristL, 2=WristR, 3=Head, 4=AnkleL, 5=AnkleR
+    const wristGeo = new THREE.BoxGeometry(0.12, 0.025, 0.08);
+    const boxMatL = new THREE.MeshPhongMaterial({ color: 0x5A85C5, emissive: 0x1a2e4a, specular: 0xffffff, shininess: 60 });
+    const boxMatR = new THREE.MeshPhongMaterial({ color: 0xC5A55A, emissive: 0x2a1e08, specular: 0xffffff, shininess: 60 });
 
-    // Strap indicator (dark band across wrist box)
+    deviceMeshes[1] = new THREE.Mesh(wristGeo, boxMatL);
+    deviceMeshes[2] = new THREE.Mesh(wristGeo, boxMatR);
+
+    const headGeo = new THREE.SphereGeometry(0.06, 32, 32);
+    const headMat = new THREE.MeshPhongMaterial({ color: 0xef4444, emissive: 0x4a1e1e });
+    deviceMeshes[3] = new THREE.Mesh(headGeo, headMat);
+
+    const ankleGeo = new THREE.BoxGeometry(0.1, 0.04, 0.08);
+    const ankleMatL = new THREE.MeshPhongMaterial({ color: 0x9333ea, emissive: 0x2e1a4a });
+    const ankleMatR = new THREE.MeshPhongMaterial({ color: 0xdb2777, emissive: 0x4a1a2e });
+    deviceMeshes[4] = new THREE.Mesh(ankleGeo, ankleMatL);
+    deviceMeshes[5] = new THREE.Mesh(ankleGeo, ankleMatR);
+
     const strapGeo = new THREE.BoxGeometry(0.13, 0.005, 0.015);
     const strapMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
-    const strap = new THREE.Mesh(strapGeo, strapMat);
-    strap.position.y = 0.015;
-    imuBox.add(strap);
+    [1, 2, 4, 5].forEach(role => {
+        const s = new THREE.Mesh(strapGeo, strapMat);
+        s.position.y = 0.015;
+        deviceMeshes[role].add(s);
+    });
+
+    [1, 2, 3, 4, 5].forEach(role => {
+        deviceMeshes[role].castShadow = true;
+        deviceMeshes[role].visible = false;
+        scene.add(deviceMeshes[role]);
+    });
+
+    // Default fallback
+    deviceMeshes[0] = new THREE.Mesh(wristGeo, boxMatR);
+    deviceMeshes[0].castShadow = true;
+    deviceMeshes[0].visible = false;
+    scene.add(deviceMeshes[0]);
 
     // Lights
     const ambient = new THREE.AmbientLight(0x404060, 0.5);
@@ -696,7 +775,7 @@ function animate() {
 //   Glide:    hand forward, slight descent (negative Z, steady X)
 //   Pull:     hand pulls backward through water (positive X sweep, Z dips)
 //   Recovery: hand exits water, sweeps forward over surface (arc up and forward)
-function computePhasePosition(d, dt) {
+function computePhasePosition(d, dt, role) {
     const phase = d.stroke_phase || 'idle';
     const liaMag = Math.sqrt(
         (d.acceleration?.ax || 0) ** 2 +
@@ -704,91 +783,111 @@ function computePhasePosition(d, dt) {
         (d.acceleration?.az || 0) ** 2
     );
 
-    // Exponential velocity decay prevents unbounded drift
+    const state = getPhaseState(role);
     const decay = 0.92;
-    phaseVelocity.x *= decay;
-    phaseVelocity.y *= decay;
-    phaseVelocity.z *= decay;
+    state.vel.x *= decay;
+    state.vel.y *= decay;
+    state.vel.z *= decay;
 
-    // Phase-specific velocity contributions (scaled by actual LIA for detail)
     const speed = Math.min(liaMag * 0.02, 0.15) * positionScale * 0.3;
 
     if (phase === 'pull') {
-        phaseVelocity.x += speed * 0.8;   // hand moves backward
-        phaseVelocity.z -= speed * 0.3;    // dips slightly
+        state.vel.x += speed * 0.8;
+        state.vel.z -= speed * 0.3;
     } else if (phase === 'recovery') {
-        phaseVelocity.x -= speed * 0.6;    // hand sweeps forward
-        phaseVelocity.z += speed * 0.5;    // rises above water
-        phaseVelocity.y += speed * 0.2;    // slight lateral
-    } else { // glide or idle
-        phaseVelocity.x -= speed * 0.2;    // extending forward
-        phaseVelocity.z -= speed * 0.1;    // below water
+        state.vel.x -= speed * 0.6;
+        state.vel.z += speed * 0.5;
+        state.vel.y += speed * 0.2;
+    } else {
+        state.vel.x -= speed * 0.2;
+        state.vel.z -= speed * 0.1;
     }
 
-    phasePosition.x += phaseVelocity.x * dt;
-    phasePosition.y += phaseVelocity.y * dt;
-    phasePosition.z += phaseVelocity.z * dt;
+    state.pos.x += state.vel.x * dt;
+    state.pos.y += state.vel.y * dt;
+    state.pos.z += state.vel.z * dt;
 
-    return { x: phasePosition.x, y: phasePosition.z, z: -phasePosition.y };
+    return { x: state.pos.x, y: state.pos.z, z: -state.pos.y };
 }
 
 function renderFrame(idx) {
     if (!processedData.length || idx >= processedData.length) return;
     const d = processedData[idx];
-    const prevD = idx > 0 ? processedData[idx - 1] : null;
-    const dt = prevD ? (d.timestamp - prevD.timestamp) / 1000 : 0.01;
+    const role = d.dev_role || 0;
+    const mesh = deviceMeshes[role] || deviceMeshes[0];
+    if (mesh) mesh.visible = true;
 
-    // ── ORIENTATION (quaternion-driven — BNO055's strength) ──
-    if (imuBox && d.quaternion) {
-        const q = d.quaternion;
-        if (!initialQuaternion) initialQuaternion = new THREE.Quaternion(q.qx, q.qy, q.qz, q.qw).invert();
-        const rawQ = new THREE.Quaternion(q.qx, q.qy, q.qz, q.qw);
-        const corrected = initialQuaternion.clone().multiply(rawQ);
-        imuBox.quaternion.copy(corrected);
-    }
-
-    // ── POSITION (stroke-phase model — prevents TIDR 6-1-3 drift) ──
-    if (d.tracking_active && dt > 0 && dt < 0.5) {
-        const pos = computePhasePosition(d, dt);
-        if (imuBox) imuBox.position.set(pos.x, pos.y, pos.z);
-        currentStrokePoints.push(new THREE.Vector3(pos.x, pos.y, pos.z));
-        if (positionLine) {
-            positionLine.geometry.dispose();
-            positionLine.geometry = new THREE.BufferGeometry().setFromPoints(currentStrokePoints);
+    let dt = 0.01;
+    for (let i = idx - 1; i >= 0 && i >= idx - 50; i--) {
+        if ((processedData[i].dev_role || 0) === role) {
+            dt = (d.timestamp - processedData[i].timestamp) / 1000;
+            break;
         }
     }
+    if (dt <= 0 || dt > 1) dt = 0.01;
 
-    // ── STROKE BOUNDARY — reset position (TIDR 6-1-3 drift prevention) ──
-    if (d.stroke_count > lastStrokeCount) {
-        // Archive current trail with stroke-specific color
-        if (currentStrokePoints.length > 3) {
+    // ── ORIENTATION ──
+    if (mesh && d.quaternion) {
+        const q = d.quaternion;
+        if (!initialQuaternions[role]) initialQuaternions[role] = new THREE.Quaternion(q.qx, q.qy, q.qz, q.qw).invert();
+        const rawQ = new THREE.Quaternion(q.qx, q.qy, q.qz, q.qw);
+        const corrected = initialQuaternions[role].clone().multiply(rawQ);
+        mesh.quaternion.copy(corrected);
+    }
+
+    // ── POSITION ──
+    if (!currentStrokePoints[role]) currentStrokePoints[role] = [];
+    if (d.tracking_active && dt > 0 && dt < 0.5) {
+        const pos = computePhasePosition(d, dt, role);
+        let baseY = 0, baseX = 0, baseZ = 0;
+        if (role === 3) baseY = 0.4;
+        else if (role === 4) { baseY = -0.5; baseX = -0.2; }
+        else if (role === 5) { baseY = -0.5; baseX = 0.2; }
+        else if (role === 1) baseX = -0.3;
+        else if (role === 2) baseX = 0.3;
+
+        if (mesh) mesh.position.set(pos.x + baseX, pos.y + baseY, pos.z + baseZ);
+        currentStrokePoints[role].push(new THREE.Vector3(pos.x + baseX, pos.y + baseY, pos.z + baseZ));
+
+        if (!positionLines[role]) {
+            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]);
+            const colors = { 1: 0x5A85C5, 2: 0xC5A55A, 3: 0xef4444, 4: 0x9333ea, 5: 0xdb2777, 0: 0xffffff };
+            positionLines[role] = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: colors[role] || 0xffffff, linewidth: 2 }));
+            scene.add(positionLines[role]);
+        }
+        positionLines[role].geometry.dispose();
+        positionLines[role].geometry = new THREE.BufferGeometry().setFromPoints(currentStrokePoints[role]);
+    }
+
+    // ── STROKE BOUNDARY ──
+    const lastCount = lastStrokeCounts[role] || 0;
+    if (d.stroke_count > lastCount) {
+        if (currentStrokePoints[role].length > 3) {
             const colors = [0x3b82f6, 0x22c55e, 0xf59e0b, 0xa855f7, 0xef4444, 0x06b6d4, 0xec4899, 0x84cc16];
-            const tg = new THREE.BufferGeometry().setFromPoints([...currentStrokePoints]);
+            const tg = new THREE.BufferGeometry().setFromPoints([...currentStrokePoints[role]]);
             const tl = new THREE.Line(tg, new THREE.LineBasicMaterial({
-                color: colors[strokeTrails.length % colors.length],
+                color: colors[Object.keys(strokeTrails).length % colors.length],
                 transparent: true, opacity: 0.6
             }));
             scene.add(tl);
-            strokeTrails.push(tl);
-            while (strokeTrails.length > 12) { const old = strokeTrails.shift(); scene.remove(old); old.geometry.dispose(); }
+            if (!strokeTrails[role]) strokeTrails[role] = [];
+            strokeTrails[role].push(tl);
+            while (strokeTrails[role].length > 5) { const old = strokeTrails[role].shift(); scene.remove(old); old.geometry.dispose(); }
         }
-        // Reset position for new stroke
-        currentStrokePoints = [];
-        phasePosition = { x: 0, y: 0, z: 0 };
-        phaseVelocity = { x: 0, y: 0, z: 0 };
-        lastStrokeCount = d.stroke_count;
+        currentStrokePoints[role] = [];
+        getPhaseState(role).pos = { x: 0, y: 0, z: 0 };
+        getPhaseState(role).vel = { x: 0, y: 0, z: 0 };
+        lastStrokeCounts[role] = d.stroke_count;
     }
 
-    // ── HAPTIC MARKER (TIDR 2-1-2) ──
-    if (d.haptic_fired && imuBox) {
-        // Flash red
-        imuBox.material.emissive.setHex(0xff2200);
-        setTimeout(() => { if (imuBox) imuBox.material.emissive.setHex(0x2a1e08); }, 200);
-        // Drop persistent red marker in 3D
+    // ── HAPTIC MARKER ──
+    if (d.haptic_fired && mesh) {
+        mesh.material.emissive.setHex(0xff2200);
+        setTimeout(() => { if (mesh) mesh.material.emissive.setHex(0x2a1e08); }, 200);
         const markerGeo = new THREE.OctahedronGeometry(0.02, 0);
         const markerMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
         const marker = new THREE.Mesh(markerGeo, markerMat);
-        marker.position.copy(imuBox.position);
+        marker.position.copy(mesh.position);
         scene.add(marker);
         hapticMarkers3D.push(marker);
     }
@@ -801,26 +900,24 @@ function renderFrame(idx) {
     const total = processedData.length > 1 ? (processedData[processedData.length - 1].timestamp - processedData[0].timestamp) / 1000 : 0;
     setText('play-time', formatTime(t) + ' / ' + formatTime(total));
 
-    // Live sidebar data
     setText('live-strokes', d.stroke_count || 0);
     setText('live-phase', d.stroke_phase || 'idle');
     setText('live-angle', (d.entry_angle || 0).toFixed(1) + '°');
-
-    // Calibration display
     updateCalibrationDisplay(d);
-
-    // Charts (throttled)
     if (idx % 3 === 0) updateCharts(idx);
 }
 
 function clearViz() {
     processedData = []; sessionMetrics = null; currentIndex = 0;
-    lastStrokeCount = 0; currentStrokePoints = [];
-    phasePosition = { x: 0, y: 0, z: 0 };
-    phaseVelocity = { x: 0, y: 0, z: 0 };
-    strokeTrails.forEach(t => { if (scene) scene.remove(t); t.geometry.dispose(); }); strokeTrails = [];
+    lastStrokeCounts = {}; currentStrokePoints = {};
+    phaseStates = {};
+    Object.values(strokeTrails).forEach(arr => arr.forEach(t => { if (scene) scene.remove(t); t.geometry.dispose(); }));
+    strokeTrails = {};
+    Object.values(positionLines).forEach(l => { if (scene) scene.remove(l); l.geometry.dispose(); });
+    positionLines = {};
     hapticMarkers3D.forEach(m => { if (scene) scene.remove(m); m.geometry.dispose(); }); hapticMarkers3D = [];
-    initialQuaternion = null;
+    initialQuaternions = {};
+    Object.values(deviceMeshes).forEach(m => { if (m) m.visible = false; });
 }
 function resetView() {
     if (camera) { camera.position.set(0.8, 0.6, 1.5); if (controls) controls.target.set(0, 0, 0); }
