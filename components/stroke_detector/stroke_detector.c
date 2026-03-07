@@ -1,0 +1,408 @@
+/**
+ * @file stroke_detector.c
+ * @brief On-device stroke detection and ideal stroke comparison
+ *
+ * C port of the Python StrokeProcessor's detection logic, optimized for
+ * real-time execution on ESP32-S3. Uses world-frame vertical acceleration
+ * derived from quaternion rotation to detect water-entry impacts.
+ *
+ * Research basis:
+ *   - SwimBIT (PMC6915422): water entry creates distinct deceleration spike
+ *   - Frontiers IMU swimming papers: jerk-based sharp change detection
+ *   - Typical stroke rate: 40-80 strokes/min = 0.75-1.5s per stroke
+ */
+
+#include "stroke_detector.h"
+#include "esp_log.h"
+#include "haptic.h"
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+static const char *TAG = "STROKE_DET";
+
+// ============================================================================
+// Configuration (mirrors Python StrokeProcessor thresholds)
+// ============================================================================
+#define WATER_ENTRY_ACCEL_THRESHOLD 6.0f // m/s² total accel at impact
+#define DOWNWARD_ACCEL_THRESHOLD -0.8f   // m/s² world_az for "moving down"
+#define DOWNWARD_SAMPLE_WINDOW 8         // samples to check for downward motion
+#define DOWNWARD_REQUIRED_COUNT 4        // min samples showing downward
+#define IMPACT_REVERSAL_THRESHOLD 2.0f   // m/s² world_az must rise above
+#define IMPACT_JERK_THRESHOLD 250.0f     // m/s³ sharp change detection
+#define IMPACT_DELTA_A_THRESHOLD 4.0f    // m/s² fallback delta
+#define ENTRY_GYRO_THRESHOLD 0.8f        // rad/s hand rotation
+#define MIN_STROKE_INTERVAL_MS 1100      // 1.1s between strokes
+#define WALL_IMPACT_THRESHOLD 20.0f      // m/s² for turn detection
+#define WALL_SUSTAINED_COUNT 3           // consecutive high-accel samples
+#define TURN_LOCKOUT_MS 2500             // 2.5s lockout after turn
+#define STROKE_INTEGRATION_TIMEOUT_MS 600 // 0.6s integration window
+
+// Ideal stroke comparison
+#define MAX_IDEAL_SAMPLES 200   // max samples for ideal stroke (~2s at 100Hz)
+#define MAX_CURRENT_SAMPLES 200 // max samples to accumulate per stroke
+#define DEFAULT_HAPTIC_THRESHOLD 0.5f // deviation score threshold
+
+// History buffer
+#define MAX_RECENT_SAMPLES 12
+
+// ============================================================================
+// Internal state
+// ============================================================================
+typedef struct {
+  // Stroke detection state
+  uint32_t stroke_count;
+  uint32_t turn_count;
+  uint32_t last_stroke_time_ms;
+  uint32_t last_wall_impact_time_ms;
+  uint32_t last_timestamp_ms;
+  bool has_previous_sample;
+
+  // History buffers
+  float recent_world_az[MAX_RECENT_SAMPLES];
+  int recent_world_az_count;
+  int recent_world_az_idx; // circular index
+  float prev_accel_mag;
+  bool has_prev_accel_mag;
+  int wall_high_count;
+
+  // Stroke integration window
+  bool stroke_integrating;
+  uint32_t stroke_integration_start_ms;
+
+  // Current stroke accumulation (for ideal comparison)
+  float current_stroke_lia[MAX_CURRENT_SAMPLES * 3]; // lia_x, lia_y, lia_z
+  int current_stroke_count;
+
+  // Ideal stroke reference
+  float ideal_lia[MAX_IDEAL_SAMPLES * 3]; // lia_x, lia_y, lia_z
+  int ideal_sample_count;
+  bool ideal_loaded;
+
+  // Comparison results
+  float last_deviation;
+
+  // Haptic config
+  float haptic_threshold;
+  bool haptic_enabled;
+} detector_state_t;
+
+static detector_state_t s_state;
+
+// ============================================================================
+// Helper: Quaternion rotation (sensor frame → world frame)
+// ============================================================================
+static void rotate_to_world(float qw, float qx, float qy, float qz, float ax,
+                            float ay, float az, float *wx, float *wy,
+                            float *wz) {
+  float ww = qw * qw, xx = qx * qx, yy = qy * qy, zz = qz * qz;
+  float _wx = qw * qx, _wy = qw * qy, _wz = qw * qz;
+  float xy = qx * qy, xz = qx * qz, yz = qy * qz;
+
+  *wx = (ww + xx - yy - zz) * ax + 2 * (xy - _wz) * ay + 2 * (xz + _wy) * az;
+  *wy = 2 * (xy + _wz) * ax + (ww - xx + yy - zz) * ay + 2 * (yz - _wx) * az;
+  *wz = 2 * (xz - _wy) * ax + 2 * (yz + _wx) * ay + (ww - xx - yy + zz) * az;
+}
+
+// ============================================================================
+// Helper: Compare current stroke against ideal using normalized Euclidean
+// ============================================================================
+static float compare_strokes(const float *current, int cur_count,
+                             const float *ideal, int ideal_count) {
+  if (cur_count == 0 || ideal_count == 0)
+    return 0.0f;
+
+  // Simple approach: resample the shorter to match the longer, then
+  // compute per-sample Euclidean distance in LIA space.
+  // This is a lightweight DTW alternative suitable for MCU.
+
+  int ref_count = ideal_count; // Reference length
+  float total_dist = 0.0f;
+
+  for (int i = 0; i < ref_count; i++) {
+    // Map ideal index to current index (linear interpolation)
+    float t = (cur_count > 1)
+                  ? (float)i / (float)(ref_count - 1) * (float)(cur_count - 1)
+                  : 0;
+    int idx = (int)t;
+    float frac = t - (float)idx;
+    if (idx >= cur_count - 1) {
+      idx = cur_count - 1;
+      frac = 0.0f;
+    }
+
+    // Interpolate current stroke at this position
+    float cx, cy, cz;
+    if (frac < 0.001f || idx >= cur_count - 1) {
+      cx = current[idx * 3 + 0];
+      cy = current[idx * 3 + 1];
+      cz = current[idx * 3 + 2];
+    } else {
+      cx = current[idx * 3 + 0] * (1.0f - frac) +
+           current[(idx + 1) * 3 + 0] * frac;
+      cy = current[idx * 3 + 1] * (1.0f - frac) +
+           current[(idx + 1) * 3 + 1] * frac;
+      cz = current[idx * 3 + 2] * (1.0f - frac) +
+           current[(idx + 1) * 3 + 2] * frac;
+    }
+
+    // Ideal sample
+    float ix = ideal[i * 3 + 0];
+    float iy = ideal[i * 3 + 1];
+    float iz = ideal[i * 3 + 2];
+
+    // Euclidean distance for this sample
+    float dx = cx - ix, dy = cy - iy, dz = cz - iz;
+    total_dist += sqrtf(dx * dx + dy * dy + dz * dz);
+  }
+
+  // Normalize by reference length and a typical LIA magnitude (~5 m/s²)
+  // This gives a score where 0.0 = perfect and 1.0 = average deviation of ~5
+  // m/s²
+  float avg_dist = total_dist / (float)ref_count;
+  return avg_dist / 5.0f; // Normalized to ~[0, 1+]
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+void stroke_detector_init(void) {
+  memset(&s_state, 0, sizeof(s_state));
+  s_state.haptic_threshold = DEFAULT_HAPTIC_THRESHOLD;
+  s_state.haptic_enabled = true;
+  ESP_LOGI(TAG, "Stroke detector initialized (haptic threshold: %.2f)",
+           s_state.haptic_threshold);
+}
+
+stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
+  stroke_event_t event = {0};
+
+  uint32_t t_ms = sample->t_ms;
+
+  // Skip first sample (need dt)
+  if (!s_state.has_previous_sample) {
+    s_state.has_previous_sample = true;
+    s_state.last_timestamp_ms = t_ms;
+    return event;
+  }
+
+  float dt = (float)(t_ms - s_state.last_timestamp_ms) / 1000.0f;
+  s_state.last_timestamp_ms = t_ms;
+
+  if (dt <= 0.0f || dt > 0.5f)
+    return event;
+
+  // Compute accel magnitude from LIA
+  float lia_x = sample->lia_x, lia_y = sample->lia_y, lia_z = sample->lia_z;
+  float accel_mag = sqrtf(lia_x * lia_x + lia_y * lia_y + lia_z * lia_z);
+
+  // Compute world-frame vertical acceleration
+  float world_ax, world_ay, world_az;
+  rotate_to_world(sample->qw, sample->qx, sample->qy, sample->qz, lia_x, lia_y,
+                  lia_z, &world_ax, &world_ay, &world_az);
+
+  // Gyroscope magnitude
+  float gyro_mag = sqrtf(sample->gx * sample->gx + sample->gy * sample->gy +
+                         sample->gz * sample->gz);
+
+  // --- WALL / TURN DETECTION ---
+  if (accel_mag > WALL_IMPACT_THRESHOLD) {
+    s_state.wall_high_count++;
+    if (s_state.wall_high_count >= WALL_SUSTAINED_COUNT) {
+      uint32_t time_since_wall = t_ms - s_state.last_wall_impact_time_ms;
+      if (time_since_wall > TURN_LOCKOUT_MS) {
+        s_state.turn_count++;
+        event.turn_detected = true;
+      }
+      s_state.last_wall_impact_time_ms = t_ms;
+      s_state.recent_world_az_count = 0;
+      s_state.wall_high_count = 0;
+    }
+  } else {
+    s_state.wall_high_count = 0;
+  }
+
+  bool in_turn_lockout =
+      ((t_ms - s_state.last_wall_impact_time_ms) < TURN_LOCKOUT_MS) &&
+      (s_state.last_wall_impact_time_ms > 0);
+
+  // --- UPDATE HISTORY BUFFER (circular) ---
+  int az_idx = s_state.recent_world_az_idx % MAX_RECENT_SAMPLES;
+  s_state.recent_world_az[az_idx] = world_az;
+  s_state.recent_world_az_idx++;
+  if (s_state.recent_world_az_count < MAX_RECENT_SAMPLES) {
+    s_state.recent_world_az_count++;
+  }
+
+  // --- CHECK DOWNWARD MOTION HISTORY ---
+  bool was_moving_downward = false;
+  if (s_state.recent_world_az_count > DOWNWARD_SAMPLE_WINDOW) {
+    int down_count = 0;
+    for (int i = 1; i <= DOWNWARD_SAMPLE_WINDOW; i++) {
+      int idx =
+          (s_state.recent_world_az_idx - 1 - i + MAX_RECENT_SAMPLES * 100) %
+          MAX_RECENT_SAMPLES;
+      if (s_state.recent_world_az[idx] < DOWNWARD_ACCEL_THRESHOLD) {
+        down_count++;
+      }
+    }
+    was_moving_downward = (down_count >= DOWNWARD_REQUIRED_COUNT);
+  }
+
+  // --- IMPACT DETECTION ---
+  bool is_impact_spike = (accel_mag > WATER_ENTRY_ACCEL_THRESHOLD) &&
+                         (world_az > IMPACT_REVERSAL_THRESHOLD);
+
+  // Jerk-based fallback
+  float accel_delta = 0.0f, jerk = 0.0f;
+  if (s_state.has_prev_accel_mag) {
+    accel_delta = accel_mag - s_state.prev_accel_mag;
+    jerk = (dt > 0.0f) ? (accel_delta / dt) : 0.0f;
+  }
+  s_state.prev_accel_mag = accel_mag;
+  s_state.has_prev_accel_mag = true;
+
+  bool is_impact_by_jerk =
+      (accel_mag > WATER_ENTRY_ACCEL_THRESHOLD) &&
+      (jerk > IMPACT_JERK_THRESHOLD || accel_delta > IMPACT_DELTA_A_THRESHOLD);
+
+  bool impact_detected = is_impact_spike || is_impact_by_jerk;
+
+  // --- STROKE INTERVAL CHECK ---
+  bool interval_ok =
+      ((t_ms - s_state.last_stroke_time_ms) >= MIN_STROKE_INTERVAL_MS) ||
+      (s_state.last_stroke_time_ms == 0);
+
+  // --- ENTRY ROTATION CHECK ---
+  bool has_entry_rotation = (gyro_mag > ENTRY_GYRO_THRESHOLD);
+
+  // --- FINAL STROKE DECISION ---
+  bool stroke_detected = impact_detected && interval_ok && has_entry_rotation &&
+                         !in_turn_lockout && !s_state.stroke_integrating &&
+                         (was_moving_downward || is_impact_by_jerk);
+
+  if (stroke_detected) {
+    s_state.stroke_count++;
+    s_state.last_stroke_time_ms = t_ms;
+    s_state.recent_world_az_count = 0;
+    s_state.recent_world_az_idx = 0;
+
+    // Start integration window for ideal comparison
+    s_state.stroke_integrating = true;
+    s_state.stroke_integration_start_ms = t_ms;
+    s_state.current_stroke_count = 0;
+
+    // Compute entry angle from quaternion pitch (water entry angle)
+    // pitch = asin(2*(qw*qy - qz*qx)) per BNO055 quaternion convention
+    float pitch_sin =
+        2.0f * (sample->qw * sample->qy - sample->qz * sample->qx);
+    if (pitch_sin > 1.0f)
+      pitch_sin = 1.0f;
+    if (pitch_sin < -1.0f)
+      pitch_sin = -1.0f;
+    float entry_angle_deg = asinf(pitch_sin) * (180.0f / (float)M_PI);
+    event.entry_angle = fabsf(entry_angle_deg);
+
+    event.stroke_detected = true;
+    ESP_LOGD(TAG,
+             "Stroke #%u detected (accel=%.1f, world_az=%.1f, gyro=%.1f, "
+             "entry=%.1f°)",
+             (unsigned)s_state.stroke_count, accel_mag, world_az, gyro_mag,
+             event.entry_angle);
+  }
+
+  // --- INTEGRATION WINDOW (accumulate LIA for comparison) ---
+  if (s_state.stroke_integrating) {
+    uint32_t time_in_stroke = t_ms - s_state.stroke_integration_start_ms;
+    if (time_in_stroke > STROKE_INTEGRATION_TIMEOUT_MS) {
+      // Window closed — run comparison if ideal data loaded
+      s_state.stroke_integrating = false;
+
+      if (s_state.ideal_loaded && s_state.current_stroke_count > 5) {
+        s_state.last_deviation = compare_strokes(
+            s_state.current_stroke_lia, s_state.current_stroke_count,
+            s_state.ideal_lia, s_state.ideal_sample_count);
+
+        ESP_LOGI(TAG, "Stroke deviation: %.3f (threshold: %.3f)",
+                 s_state.last_deviation, s_state.haptic_threshold);
+
+        // Trigger haptic if deviation exceeds threshold
+        if (s_state.haptic_enabled &&
+            s_state.last_deviation > s_state.haptic_threshold &&
+            haptic_is_available()) {
+
+          if (s_state.last_deviation > 1.0f) {
+            haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE);
+          } else if (s_state.last_deviation > 0.7f) {
+            haptic_play_pattern(HAPTIC_PATTERN_DOUBLE_PULSE);
+          } else {
+            haptic_play_pattern(HAPTIC_PATTERN_SINGLE_SHORT);
+          }
+          event.haptic_fired = true;
+          ESP_LOGD(TAG, "Haptic fired (deviation=%.3f)",
+                   s_state.last_deviation);
+        }
+      }
+    } else {
+      // Accumulate LIA sample
+      if (s_state.current_stroke_count < MAX_CURRENT_SAMPLES) {
+        int i = s_state.current_stroke_count * 3;
+        s_state.current_stroke_lia[i + 0] = lia_x;
+        s_state.current_stroke_lia[i + 1] = lia_y;
+        s_state.current_stroke_lia[i + 2] = lia_z;
+        s_state.current_stroke_count++;
+      }
+    }
+  }
+
+  // Populate event
+  event.deviation_score = s_state.last_deviation;
+  event.stroke_count = s_state.stroke_count;
+  event.turn_count = s_state.turn_count;
+
+  return event;
+}
+
+esp_err_t stroke_detector_load_ideal(const float *lia_data,
+                                     size_t num_samples) {
+  if (num_samples > MAX_IDEAL_SAMPLES) {
+    ESP_LOGW(TAG, "Ideal stroke too large (%zu samples, max %d) — truncating",
+             num_samples, MAX_IDEAL_SAMPLES);
+    num_samples = MAX_IDEAL_SAMPLES;
+  }
+  if (num_samples == 0 || lia_data == NULL) {
+    s_state.ideal_loaded = false;
+    s_state.ideal_sample_count = 0;
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  memcpy(s_state.ideal_lia, lia_data, num_samples * 3 * sizeof(float));
+  s_state.ideal_sample_count = (int)num_samples;
+  s_state.ideal_loaded = true;
+  ESP_LOGI(TAG, "Ideal stroke loaded: %zu samples (%.1f KB)", num_samples,
+           (float)(num_samples * 12) / 1024.0f);
+  return ESP_OK;
+}
+
+bool stroke_detector_has_ideal(void) { return s_state.ideal_loaded; }
+
+uint32_t stroke_detector_get_count(void) { return s_state.stroke_count; }
+
+uint32_t stroke_detector_get_turn_count(void) { return s_state.turn_count; }
+
+float stroke_detector_get_deviation(void) { return s_state.last_deviation; }
+
+void stroke_detector_set_haptic_threshold(float threshold) {
+  s_state.haptic_threshold = threshold;
+  ESP_LOGI(TAG, "Haptic threshold set to %.2f", threshold);
+}
+
+void stroke_detector_enable_haptic(bool enable) {
+  s_state.haptic_enabled = enable;
+  ESP_LOGI(TAG, "Haptic triggering %s", enable ? "enabled" : "disabled");
+}

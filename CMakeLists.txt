@@ -15,7 +15,7 @@ endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 # Set project name
-project(FormSync)
+project(GoldenForm)
 
 # Add required components
 set(EXTRA_COMPONENT_DIRS components)
