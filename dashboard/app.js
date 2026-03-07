@@ -256,7 +256,7 @@ function selectSession(i) {
     if (i < 0 || i >= savedSessions.length) return;
     activeSessionIdx = i;
     const s = savedSessions[i];
-    processedData = s.processed_data || [];
+    processedData = s.processed_data || s.processedData || [];
     sessionMetrics = s.metrics || {};
     currentIndex = 0;
     isPlaying = false;
@@ -266,10 +266,15 @@ function selectSession(i) {
     renderSessionList();
     updateSessionSummary();
     updateAnalysis();
-    initCharts();
-    buildHapticTimeline();
-    renderFrame(0);
+    // Switch to Session tab first so chart canvases have real dimensions (not 0x0)
     switchTab('session');
+    buildHapticTimeline();
+    // Defer chart init and first frame so layout is complete and charts render with data
+    requestAnimationFrame(() => {
+        initCharts();
+        renderFrame(0);
+        if (processedData.length > 0 && accelChart && gyroChart) updateCharts(0);
+    });
 }
 
 // ── STROKE BOUNDARIES & HAPTIC TIMELINE ──
