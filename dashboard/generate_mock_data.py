@@ -63,6 +63,15 @@ def main():
     
     sessions = []
     
+    # Import database module and init
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    import database as db
+    db.init_db()
+    
+    # Create an initial user to satisfy the foreign key constraint
+    uid = db.upsert_user(name="Test User", height_cm=180, wingspan_cm=180, skill_level="beginner")
+    
     # Generate the processed objects layout
     db_id_ctr = 100
     for role, name in roles:
@@ -92,11 +101,8 @@ def main():
             'raw_data': processed # Cheat code for the backend to merge
         })
         
-        import sys
-        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-        import database as db
         # Inject into db so that /api/sessions/merge can find the raw bodies!
-        db.save_session(user_id=1, device_ids=[role*100], processed_data=processed, metrics=metrics, duration=30.0, raw_data=processed)
+        db.save_session(user_id=uid, device_ids=[role*100], processed_data=processed, metrics=metrics, duration=30.0, raw_data=processed)
         db_id_ctr += 1
 
     payload = {
