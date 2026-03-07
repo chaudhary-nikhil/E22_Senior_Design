@@ -72,8 +72,6 @@ def main():
     # Create an initial user to satisfy the foreign key constraint
     uid = db.upsert_user(name="Test User", height_cm=180, wingspan_cm=180, skill_level="beginner")
     
-    # Generate the processed objects layout
-    db_id_ctr = 100
     for role, name in roles:
         print(f"Sending mock data for {name}...")
         processed = generate_mock_session(role)
@@ -91,8 +89,11 @@ def main():
             'avg_deviation': 0.5
         }
         
+        # Inject into db first so that we have a real sqlite ID!
+        sid = db.save_session(user_id=uid, device_ids=[role*100], processed_data=processed, metrics=metrics, duration=30.0, raw_data=processed)
+        
         sessions.append({
-            'id': db_id_ctr,
+            'id': sid,
             'name': name + ' - ' + datetime.now().strftime('%b %d, %-I:%M %p'),
             'processed_data': processed,
             'metrics': metrics,
@@ -100,10 +101,6 @@ def main():
             'syncedAt': datetime.now().isoformat(),
             'raw_data': processed # Cheat code for the backend to merge
         })
-        
-        # Inject into db so that /api/sessions/merge can find the raw bodies!
-        db.save_session(user_id=uid, device_ids=[role*100], processed_data=processed, metrics=metrics, duration=30.0, raw_data=processed)
-        db_id_ctr += 1
 
     payload = {
         'sessions': sessions

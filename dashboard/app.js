@@ -155,6 +155,7 @@ async function syncFromDevice() {
             if (cached && cached.sessions) {
                 for (const s of cached.sessions) addSession({
                     name: s.name || 'Cached',
+                    id: s.id,
                     processed_data: s.processed_data,
                     raw_data: s.raw_data,
                     metrics: s.metrics,
@@ -184,12 +185,14 @@ function addSession(obj) {
     while (savedSessions.length > 8) savedSessions.shift();
     persistSessions();
     renderSessionList();
-    apiPost('/api/sessions/save', { raw_data: obj.raw_data, processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: [] }).then(res => {
-        if (res && res.session_id) {
-            obj.id = res.session_id;
-            persistSessions();
-        }
-    }).catch(() => { });
+    if (!obj.id) {
+        apiPost('/api/sessions/save', { raw_data: obj.raw_data, processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: [] }).then(res => {
+            if (res && res.session_id) {
+                obj.id = res.session_id;
+                persistSessions();
+            }
+        }).catch(() => { });
+    }
 }
 
 async function mergeLatestSessions() {
