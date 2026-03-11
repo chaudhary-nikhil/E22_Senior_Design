@@ -6,10 +6,10 @@
 #error Regenerate this file with the current version of nanopb generator.
 #endif
 
-PB_BIND(formsync_ImuSample, formsync_ImuSample, AUTO)
+PB_BIND(goldenform_ImuSample, goldenform_ImuSample, AUTO)
 
 
-PB_BIND(formsync_ImuSampleBatch, formsync_ImuSampleBatch, 4)
+PB_BIND(goldenform_ImuSampleBatch, goldenform_ImuSampleBatch, 4)
 
 
 

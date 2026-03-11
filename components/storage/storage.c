@@ -726,9 +726,9 @@ esp_err_t storage_read_all_bin_into_buffer(bno055_sample_t *out,
 static esp_err_t mount_sd_card(void) {
     // Configure SPI bus with internal pullups enabled
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = CONFIG_FORMSYNC_SD_MOSI_GPIO,
-        .miso_io_num = CONFIG_FORMSYNC_SD_MISO_GPIO,
-        .sclk_io_num = CONFIG_FORMSYNC_SD_SCK_GPIO,
+        .mosi_io_num = CONFIG_GOLDENFORM_SD_MOSI_GPIO,
+        .miso_io_num = CONFIG_GOLDENFORM_SD_MISO_GPIO,
+        .sclk_io_num = CONFIG_GOLDENFORM_SD_SCK_GPIO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
@@ -736,11 +736,11 @@ static esp_err_t mount_sd_card(void) {
     };
 
     ESP_LOGI(TAG, "SD SPI pins: MOSI=%d, MISO=%d, SCK=%d, CS=%d",
-             CONFIG_FORMSYNC_SD_MOSI_GPIO, CONFIG_FORMSYNC_SD_MISO_GPIO,
-             CONFIG_FORMSYNC_SD_SCK_GPIO, CONFIG_FORMSYNC_SD_CS_GPIO);
+             CONFIG_GOLDENFORM_SD_MOSI_GPIO, CONFIG_GOLDENFORM_SD_MISO_GPIO,
+             CONFIG_GOLDENFORM_SD_SCK_GPIO, CONFIG_GOLDENFORM_SD_CS_GPIO);
 
     // Enable internal pullups on MISO (required for SD card)
-    gpio_set_pull_mode(CONFIG_FORMSYNC_SD_MISO_GPIO, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(CONFIG_GOLDENFORM_SD_MISO_GPIO, GPIO_PULLUP_ONLY);
     
     // Use SPI_DMA_CH_AUTO for ESP32-S3 compatibility (or disable DMA with 0)
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
@@ -753,7 +753,7 @@ static esp_err_t mount_sd_card(void) {
     host.max_freq_khz = 400;  // Start very slow (400kHz) for initialization
     
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = CONFIG_FORMSYNC_SD_CS_GPIO;
+    slot_config.gpio_cs = CONFIG_GOLDENFORM_SD_CS_GPIO;
     slot_config.host_id = SPI2_HOST;
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {

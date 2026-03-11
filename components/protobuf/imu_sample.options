@@ -2,4 +2,4 @@
 # These options optimize the generated code for embedded use
 
 # Set maximum count for repeated samples field (batch size)
-formsync.ImuSampleBatch.samples  max_count:256
+goldenform.ImuSampleBatch.samples  max_count:256

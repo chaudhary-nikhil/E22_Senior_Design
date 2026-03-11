@@ -186,15 +186,31 @@ class StrokeProcessor:
         self.stroke_integrating = False
         self.stroke_integration_start = 0
         
-        self.MIN_CAL_LEVEL = 0 if batch_mode else 2
+        self.MIN_CAL_LEVEL = 0  # Relaxed: IMUPLUS mode makes 3/3 accel impossible while swimming
         self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor
-        self.ACCEL_DEADZONE_UNCAL = 1.5  # m/s² - larger deadzone for uncalibrated accel
+        self.ACCEL_DEADZONE_UNCAL = 1.0  # m/s² - larger deadzone for uncalibrated accel
         self.VELOCITY_DECAY = 0.97  # Base friction during active stroke
         self.STATIONARY_FRICTION = 0.85  # Braking when accel is low
 
         self.stroke_count = 0  # Track number of strokes
         self.stroke_start_time = 0  # To track duration
         # MIN_STROKE_DURATION removed - integration window uses settle detection instead
+        
+        # ANGLE OF ATTACK (entry angle from quaternion pitch at stroke start)
+        # Research: eolab SwimBETTER tracks hand angle at water entry via gyroscope.
+        # We compute it from the quaternion pitch at the exact sample where stroke detected.
+        # Ideal freestyle entry angle: ~15-40 degrees (fingertips-first)
+        self.last_entry_angle = 0.0
+        self.entry_angles = []  # All entry angles this session
+        self.ideal_entry_angle = 30.0  # degrees, configurable per user
+        
+        # STROKE PHASE TRACKING
+        # Phases: glide, pull (catch+pull), recovery (arm out of water)
+        # Detected from acceleration state and integration window
+        self.current_phase = 'idle'  # idle, glide, pull, recovery
+        self.phase_start_time = 0
+        self.phase_durations = {'glide': [], 'pull': [], 'recovery': []}
+        self.last_phase_pcts = {'glide': 0, 'pull': 0, 'recovery': 0}
         
         # DEBUG: Track stroke detection state for troubleshooting
         self.debug_world_az = 0.0
@@ -444,6 +460,38 @@ class StrokeProcessor:
             self.debug_is_impact_by_jerk = is_impact_by_jerk
             self.debug_in_turn_lockout = in_turn_lockout
             
+            # --- STROKE PHASE TRACKING ---
+            # Before stroke detection: determine current phase from accel state
+            prev_phase = self.current_phase
+            if self.is_gliding:
+                new_phase = 'glide'
+            elif self.stroke_integrating:
+                new_phase = 'pull'
+            elif self.stroke_count > 0 and not self.stroke_integrating and not self.is_gliding:
+                new_phase = 'recovery'
+            else:
+                new_phase = 'idle'
+            
+            if new_phase != prev_phase and prev_phase in ('glide', 'pull', 'recovery'):
+                phase_dur = (t_ms - self.phase_start_time) / 1000.0
+                if phase_dur > 0.05:  # ignore sub-50ms transitions
+                    self.phase_durations[prev_phase].append(phase_dur)
+                self.phase_start_time = t_ms
+            elif new_phase != prev_phase:
+                self.phase_start_time = t_ms
+            self.current_phase = new_phase
+            
+            # Compute phase percentages from recent cycle (last 3 of each)
+            recent_n = 3
+            total_dur = 0
+            for ph in ('glide', 'pull', 'recovery'):
+                durs = self.phase_durations[ph][-recent_n:]
+                total_dur += sum(durs)
+            if total_dur > 0:
+                for ph in ('glide', 'pull', 'recovery'):
+                    durs = self.phase_durations[ph][-recent_n:]
+                    self.last_phase_pcts[ph] = round(sum(durs) / total_dur * 100, 1)
+
             if stroke_detected:
                 self.stroke_count += 1
                 self.last_stroke_time_ms = t_ms
@@ -457,6 +505,14 @@ class StrokeProcessor:
                 self.stroke_integrating = True
                 self.stroke_integration_start = t_ms
                 self.stroke_settle_count = 0
+                
+                # ANGLE OF ATTACK: compute hand pitch from quaternion at entry
+                # Euler pitch from quaternion: pitch = asin(2*(qw*qy - qz*qx))
+                sinp = 2.0 * (qw * qy - qz * qx)
+                sinp = max(-1.0, min(1.0, sinp))  # clamp for asin
+                pitch_rad = math.asin(sinp)
+                self.last_entry_angle = abs(math.degrees(pitch_rad))
+                self.entry_angles.append(self.last_entry_angle)
             
             # =================================================================
             # INTEGRATION WINDOW MANAGEMENT
@@ -533,6 +589,7 @@ class StrokeProcessor:
                 self.velocity = [0.0, 0.0, 0.0]
 
         # 6. Create the final JSON for the visualizer
+        avg_entry = sum(self.entry_angles) / len(self.entry_angles) if self.entry_angles else 0
         vis_data = {
             "timestamp": t_ms,
             "quaternion": {"qw": quat_w, "qx": quat_x, "qy": quat_y, "qz": quat_z},
@@ -545,6 +602,23 @@ class StrokeProcessor:
             "stroke_count": self.stroke_count,
             "turn_count": self.turn_count,
             "just_reset": self.just_reset,
+            
+            # Angle of attack (water entry angle)
+            "entry_angle": round(self.last_entry_angle, 1),
+            "avg_entry_angle": round(avg_entry, 1),
+            "ideal_entry_angle": self.ideal_entry_angle,
+            
+            # Stroke phase
+            "stroke_phase": self.current_phase,
+            "phase_pcts": dict(self.last_phase_pcts),
+            
+            # Haptic/deviation (from device data if present)
+            "haptic_fired": data_dict.get('haptic', False),
+            "deviation_score": data_dict.get('deviation', 0.0),
+            
+            # Module/Device ID 
+            "device_id": data_dict.get('dev_id', 0),
+            "device_role": data_dict.get('dev_role', 0),
             
             "stroke_debug": {
                 "world_az": round(self.debug_world_az, 2),
@@ -564,6 +638,158 @@ class StrokeProcessor:
             self.just_reset = False
         
         return json.dumps(vis_data)
+
+
+class BreathingDetector:
+    """
+    Detects breathing events from head-worn IMU quaternion data.
+    
+    Research basis: Head roll >30 degrees during freestyle indicates breath turn.
+    Roll direction (positive vs negative) indicates left vs right side breathing.
+    Breath should correlate with arm recovery phase for proper timing.
+    """
+    def __init__(self):
+        self.breaths = []  # list of {timestamp, side, roll_angle, quality}
+        self.breath_count = 0
+        self.last_breath_time = 0
+        self.MIN_BREATH_INTERVAL = 1.5  # seconds between breaths
+        self.ROLL_THRESHOLD = 30.0  # degrees, head must rotate more than this
+        self.in_breath = False
+        self.breath_start_roll = 0
+        self.neutral_roll = 0  # calibrated neutral head position
+        self.calibrated = False
+        self.calibration_rolls = []
+        self.CALIBRATION_SAMPLES = 50  # first 50 samples to find neutral
+
+    def feed(self, t_ms, qw, qx, qy, qz):
+        """Process one sample. Returns breath event dict or None."""
+        # Compute roll from quaternion: roll = atan2(2*(qw*qx + qy*qz), 1 - 2*(qx² + qy²))
+        sinr = 2.0 * (qw * qx + qy * qz)
+        cosr = 1.0 - 2.0 * (qx * qx + qy * qy)
+        roll_deg = math.degrees(math.atan2(sinr, cosr))
+
+        # Calibrate neutral position from first N samples
+        if not self.calibrated:
+            self.calibration_rolls.append(roll_deg)
+            if len(self.calibration_rolls) >= self.CALIBRATION_SAMPLES:
+                self.neutral_roll = sum(self.calibration_rolls) / len(self.calibration_rolls)
+                self.calibrated = True
+            return None
+
+        relative_roll = roll_deg - self.neutral_roll
+        abs_roll = abs(relative_roll)
+        time_since_last = (t_ms - self.last_breath_time) / 1000.0
+
+        if abs_roll > self.ROLL_THRESHOLD and not self.in_breath and time_since_last > self.MIN_BREATH_INTERVAL:
+            self.in_breath = True
+            self.breath_start_roll = relative_roll
+        elif self.in_breath and abs_roll < self.ROLL_THRESHOLD * 0.5:
+            # Head returned to neutral, breath complete
+            self.in_breath = False
+            self.breath_count += 1
+            self.last_breath_time = t_ms
+            side = 'right' if self.breath_start_roll > 0 else 'left'
+            event = {
+                'timestamp': t_ms,
+                'side': side,
+                'roll_angle': round(abs(self.breath_start_roll), 1),
+                'breath_number': self.breath_count
+            }
+            self.breaths.append(event)
+            return event
+        return None
+
+    def get_stats(self):
+        if not self.breaths:
+            return {'breath_count': 0, 'breaths_per_minute': 0, 'left_pct': 0, 'right_pct': 0, 'avg_roll': 0}
+        left = sum(1 for b in self.breaths if b['side'] == 'left')
+        right = len(self.breaths) - left
+        total = len(self.breaths)
+        if total >= 2:
+            dur = (self.breaths[-1]['timestamp'] - self.breaths[0]['timestamp']) / 60000.0
+            bpm = total / dur if dur > 0 else 0
+        else:
+            bpm = 0
+        return {
+            'breath_count': total,
+            'breaths_per_minute': round(bpm, 1),
+            'left_pct': round(left / total * 100) if total else 0,
+            'right_pct': round(right / total * 100) if total else 0,
+            'avg_roll': round(sum(b['roll_angle'] for b in self.breaths) / total, 1) if total else 0
+        }
+
+
+def align_sessions_by_hop(sessions):
+    """
+    Align multiple device sessions by detecting a synchronization hop/jump.
+    
+    Each device's data should contain a deliberate high acceleration spike
+    (hop) in the first 30 seconds. We find the peak LIA magnitude for each
+    session, compute timestamp offsets relative to the first session,
+    and shift all timestamps accordingly.
+    
+    Args:
+        sessions: list of dicts, each with 'data' (list of sample dicts with 't', 'lia_x', 'lia_y', 'lia_z')
+    
+    Returns:
+        list of sessions with aligned timestamps, plus alignment metadata
+    """
+    if len(sessions) < 2:
+        return sessions, {'aligned': False, 'reason': 'Need at least 2 sessions'}
+
+    hop_times = []
+    hop_mags = []
+    WINDOW_MS = 30000  # Search first 30 seconds
+
+    for sess in sessions:
+        data = sess.get('data', [])
+        if not data:
+            hop_times.append(0)
+            hop_mags.append(0)
+            continue
+
+        t0 = data[0].get('t', 0)
+        peak_mag = 0
+        peak_time = t0
+
+        for s in data:
+            t = s.get('t', 0)
+            if (t - t0) > WINDOW_MS:
+                break
+            lx = s.get('lia_x', s.get('ax', 0))
+            ly = s.get('lia_y', s.get('ay', 0))
+            lz = s.get('lia_z', s.get('az', 0))
+            mag = math.sqrt(lx * lx + ly * ly + lz * lz)
+            if mag > peak_mag:
+                peak_mag = mag
+                peak_time = t
+
+        hop_times.append(peak_time)
+        hop_mags.append(peak_mag)
+
+    # Compute offsets relative to first session
+    reference_time = hop_times[0]
+    offsets = [ht - reference_time for ht in hop_times]
+
+    # Apply offsets
+    aligned_sessions = []
+    for i, sess in enumerate(sessions):
+        new_sess = dict(sess)
+        new_data = []
+        for s in sess.get('data', []):
+            ns = dict(s)
+            ns['t'] = s.get('t', 0) - offsets[i]
+            new_data.append(ns)
+        new_sess['data'] = new_data
+        aligned_sessions.append(new_sess)
+
+    meta = {
+        'aligned': True,
+        'offsets_ms': offsets,
+        'hop_magnitudes': [round(m, 2) for m in hop_mags],
+        'quality': 'good' if all(m > 5.0 for m in hop_mags) else 'weak'
+    }
+    return aligned_sessions, meta
 
 
 # --- HTTP Server (Unchanged) ---

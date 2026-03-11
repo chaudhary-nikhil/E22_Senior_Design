@@ -64,3 +64,5 @@ Thumbs.db
 ./**/*.lck
 
 9600/
+
+.vscode
