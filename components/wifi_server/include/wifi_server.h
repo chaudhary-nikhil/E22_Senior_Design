@@ -37,6 +37,12 @@ esp_err_t wifi_server_init(void);
 wifi_server_state_t wifi_server_get_state(void);
 
 /**
+ * @brief Get the actual AP SSID in use (may include device suffix)
+ * @return Pointer to internal static string (valid while WiFi server is running)
+ */
+const char *wifi_server_get_ap_ssid(void);
+
+/**
  * @brief Check if any client is connected to AP
  * @return true if at least one client connected
  */

@@ -33,6 +33,9 @@ static httpd_handle_t server = NULL;
 static bool is_syncing = false;
 static uint8_t connected_clients = 0;
 
+// AP identity (helps distinguish multiple devices when scanning WiFi)
+static char s_ap_ssid[33] = WIFI_AP_SSID;
+
 // Streaming state for SD card -> WiFi transfer
 typedef struct {
   char **file_names;              // List of .BIN file names to stream
@@ -249,6 +252,28 @@ static esp_err_t wifi_init_softap(void) {
              .authmode = WIFI_AUTH_WPA_WPA2_PSK},
   };
 
+  // Multi-device: add suffix so each AP shows uniquely in WiFi list.
+  // Example: GoldenForm_GF7 for device_name="GF" and device_id=7.
+  // Keep <= 32 bytes per 802.11 SSID limit.
+  {
+    const int dev_id = CONFIG_GOLDENFORM_DEVICE_ID;
+    const char *dev_name = CONFIG_GOLDENFORM_DEVICE_NAME;
+    if (dev_id > 0) {
+      if (!dev_name || dev_name[0] == '\0') {
+        dev_name = "GF";
+      }
+      snprintf(s_ap_ssid, sizeof(s_ap_ssid), "GoldenForm_%s%d", dev_name,
+               dev_id);
+    } else {
+      snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s", WIFI_AP_SSID);
+    }
+
+    memset(wifi_config.ap.ssid, 0, sizeof(wifi_config.ap.ssid));
+    strncpy((char *)wifi_config.ap.ssid, s_ap_ssid,
+            sizeof(wifi_config.ap.ssid) - 1);
+    wifi_config.ap.ssid_len = strlen((char *)wifi_config.ap.ssid);
+  }
+
   if (strlen(WIFI_AP_PASSWORD) == 0) {
     wifi_config.ap.authmode = WIFI_AUTH_OPEN;
   }
@@ -257,7 +282,7 @@ static esp_err_t wifi_init_softap(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(TAG, "WiFi AP started: SSID=%s, password=%s", WIFI_AP_SSID,
+  ESP_LOGI(TAG, "WiFi AP started: SSID=%s, password=%s", s_ap_ssid,
            WIFI_AP_PASSWORD);
   return ESP_OK;
 }
@@ -344,6 +369,10 @@ static esp_err_t root_handler(httpd_req_t *req) {
       "function fetchStatus(){"
       "fetch('/status').then(r=>r.json()).then(d=>{"
       "document.getElementById('status').innerHTML="
+      "\"<div class='status-row'><span class='label'>Device:</span><span "
+      "class='value'>\"+(d.device_label||'unknown')+'</span></div>'"
+      "+\"<div class='status-row'><span class='label'>WiFi SSID:</span><span "
+      "class='value'>\"+(d.ssid||'')+'</span></div>'"
       "\"<div class='status-row'><span class='label'>Syncing:</span><span "
       "class='value'>\"+(d.syncing?'YES - Ready':'NO')+'</span></div>'"
       "+\"<div class='status-row'><span class='label'>Samples:</span><span "
@@ -400,15 +429,20 @@ static esp_err_t status_handler(httpd_req_t *req) {
     xSemaphoreGive(stream_state.mutex);
   }
 
-  // Match JavaScript field names: samples, size_bytes, checksum
-  snprintf(json_buf, sizeof(json_buf),
-           "{\"syncing\":%s,\"files\":%zu,\"samples\":%zu,\"size_bytes\":%zu,"
-           "\"checksum\":%" PRIu32
-           ",\"transfer_complete\":%s,\"connected_clients\":%u}",
-           is_syncing ? "true" : "false", stream_state.file_count, samples,
-           size_bytes, checksum,
-           (is_syncing && stream_state.transfer_complete) ? "true" : "false",
-           connected_clients);
+  // Match JavaScript field names: samples, size_bytes, checksum (+ device info)
+  snprintf(
+      json_buf, sizeof(json_buf),
+      "{\"syncing\":%s,\"files\":%zu,\"samples\":%zu,\"size_bytes\":%zu,"
+      "\"checksum\":%" PRIu32
+      ",\"transfer_complete\":%s,\"connected_clients\":%u,"
+      "\"ssid\":\"%s\",\"device_id\":%d,\"device_name\":\"%s\","
+      "\"device_label\":\"%s\"}",
+      is_syncing ? "true" : "false", stream_state.file_count, samples,
+      size_bytes, checksum,
+      (is_syncing && stream_state.transfer_complete) ? "true" : "false",
+      connected_clients, s_ap_ssid, CONFIG_GOLDENFORM_DEVICE_ID,
+      CONFIG_GOLDENFORM_DEVICE_NAME,
+      (CONFIG_GOLDENFORM_DEVICE_ID > 0) ? s_ap_ssid : WIFI_AP_SSID);
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, json_buf, strlen(json_buf));
@@ -1209,6 +1243,8 @@ esp_err_t wifi_server_init(void) {
 }
 
 wifi_server_state_t wifi_server_get_state(void) { return current_state; }
+
+const char *wifi_server_get_ap_ssid(void) { return s_ap_ssid; }
 
 bool wifi_server_has_clients(void) { return connected_clients > 0; }
 

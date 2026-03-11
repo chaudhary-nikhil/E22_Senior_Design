@@ -14,6 +14,7 @@ let isPlaying = false;
 let playbackInterval = null;
 let positionScale = 3.0;
 let idealStrokeData = null;
+let activeDeviceFilters = null; // Set of device_ids to show (null = all)
 
 // ── TAB NAVIGATION ──
 function switchTab(tab) {
@@ -197,7 +198,16 @@ async function syncFromDevice() {
         showToast(`Synced ${sessions.length} session(s) from device`, 'success');
 
         for (const s of sessions) {
-            addSession({ name: s.name, processed_data: s.processed_data, metrics: s.metrics, duration: s.duration, syncedAt: s.syncedAt });
+            addSession({
+                name: s.name,
+                processed_data: s.processed_data,
+                metrics: s.metrics,
+                duration: s.duration,
+                syncedAt: s.syncedAt,
+                raw_data: s.raw_data,
+                device_ids: s.device_ids || [],
+                device_info: s.device_info || null
+            });
         }
         if (sessions.length > 0) selectSession(savedSessions.length - 1);
         
@@ -244,7 +254,18 @@ function addSession(obj) {
     persistSessions();
     renderSessionList();
     if (!obj.id) {
-        apiPost('/api/sessions/save', { raw_data: obj.raw_data, processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: [] }).then(res => {
+        // Prefer explicit device_ids; fall back to extracting from processed_data
+        const deviceIds = Array.isArray(obj.device_ids) && obj.device_ids.length
+            ? obj.device_ids
+            : Array.from(new Set((obj.processed_data || []).map(p => p.device_id).filter(v => typeof v === 'number'))).sort((a, b) => a - b);
+
+        apiPost('/api/sessions/save', {
+            raw_data: obj.raw_data,
+            processed_data: obj.processed_data,
+            metrics: obj.metrics,
+            duration: obj.duration,
+            device_ids: deviceIds
+        }).then(res => {
             if (res && res.session_id) {
                 obj.id = res.session_id;
                 persistSessions();
@@ -315,6 +336,8 @@ function selectSession(i) {
     activeSessionIdx = i;
     const s = savedSessions[i];
     processedData = s.processed_data || s.processedData || [];
+    // Reset device filters on each new selection; can be toggled in UI
+    activeDeviceFilters = null;
     sessionMetrics = s.metrics || {};
     currentIndex = 0;
     isPlaying = false;
@@ -756,6 +779,75 @@ async function testHapticDevice() {
 
 // ── CHARTS ──
 let accelChart, gyroChart;
+
+function getDeviceColor(devId) {
+    const palette = ['#ef4444', '#22c55e', '#3b82f6', '#f97316', '#a855f7', '#06b6d4', '#eab308', '#14b8a6'];
+    const idx = Math.abs(parseInt(devId || 0, 10)) % palette.length;
+    return palette[idx];
+}
+
+function getVisibleDeviceIds() {
+    const ids = Array.from(new Set((processedData || []).map(d => d.device_id).filter(v => typeof v === 'number')));
+    ids.sort((a, b) => a - b);
+    if (!ids.length) return [0];
+    if (activeDeviceFilters && activeDeviceFilters.size) {
+        return ids.filter(id => activeDeviceFilters.has(id));
+    }
+    return ids;
+}
+
+function ensureDeviceFilterUI() {
+    // Inject a lightweight device filter row near the charts (no HTML file edits needed).
+    const host = document.querySelector('.grid-2');
+    if (!host) return;
+    if (document.getElementById('device-filter-row')) return;
+    const row = document.createElement('div');
+    row.id = 'device-filter-row';
+    row.className = 'card';
+    row.style.marginTop = '12px';
+    row.innerHTML = `
+        <div class="card-title">Device Overlay</div>
+        <div id="device-filter-controls" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;"></div>
+        <div style="color:var(--text3);font-size:0.8em;margin-top:8px;">
+            Tip: Sync each device separately (connect to its WiFi), then use “Merge Devices”.
+        </div>
+    `;
+    // Insert just before charts grid, so it stays close to accel/gyro graphs.
+    host.parentElement.insertBefore(row, host);
+}
+
+function renderDeviceFilterControls() {
+    ensureDeviceFilterUI();
+    const el = document.getElementById('device-filter-controls');
+    if (!el) return;
+    const ids = Array.from(new Set((processedData || []).map(d => d.device_id).filter(v => typeof v === 'number'))).sort((a, b) => a - b);
+    if (ids.length <= 1) {
+        el.innerHTML = `<span class="badge badge-green">Single device</span>`;
+        return;
+    }
+    if (!activeDeviceFilters) activeDeviceFilters = new Set(ids);
+    el.innerHTML = ids.map(id => {
+        const checked = activeDeviceFilters.has(id) ? 'checked' : '';
+        const color = getDeviceColor(id);
+        return `
+            <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--bg4);border-radius:10px;cursor:pointer;">
+                <input type="checkbox" data-dev="${id}" ${checked} />
+                <span style="display:inline-block;width:10px;height:10px;border-radius:999px;background:${color};"></span>
+                <span>Dev ${id}</span>
+            </label>
+        `;
+    }).join('');
+    el.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            const id = parseInt(cb.getAttribute('data-dev') || '0', 10);
+            if (!activeDeviceFilters) activeDeviceFilters = new Set(ids);
+            if (cb.checked) activeDeviceFilters.add(id);
+            else activeDeviceFilters.delete(id);
+            updateCharts(currentIndex);
+        });
+    });
+}
+
 function initCharts() {
     if (!window.Chart) return;
     const accelCtx = document.getElementById('accelChart');
@@ -769,41 +861,54 @@ function initCharts() {
         plugins: { legend: { labels: { color: '#888', font: { size: 10 } } } },
         scales: { x: { display: false }, y: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#1a1a25' } } }
     };
-    accelChart = new Chart(accelCtx, {
-        type: 'line', data: {
-            labels: [], datasets: [
-                { label: 'X', data: [], borderColor: '#ef4444' },
-                { label: 'Y', data: [], borderColor: '#22c55e' },
-                { label: 'Z', data: [], borderColor: '#3b82f6' }
-            ]
-        }, options: chartOpts
-    });
-    gyroChart = new Chart(gyroCtx, {
-        type: 'line', data: {
-            labels: [], datasets: [
-                { label: 'X', data: [], borderColor: '#f97316' },
-                { label: 'Y', data: [], borderColor: '#a855f7' },
-                { label: 'Z', data: [], borderColor: '#06b6d4' }
-            ]
-        }, options: chartOpts
-    });
+    accelChart = new Chart(accelCtx, { type: 'line', data: { labels: [], datasets: [] }, options: chartOpts });
+    gyroChart = new Chart(gyroCtx, { type: 'line', data: { labels: [], datasets: [] }, options: chartOpts });
+    renderDeviceFilterControls();
 }
 
 function updateCharts(idx) {
     if (!accelChart || !gyroChart) return;
     const windowSize = 200;
     const start = Math.max(0, idx - windowSize);
-    const slice = processedData.slice(start, idx + 1);
+    const sliceAll = processedData.slice(start, idx + 1);
+    const visibleIds = getVisibleDeviceIds();
+    const slice = visibleIds.length <= 1
+        ? sliceAll
+        : sliceAll.filter(d => visibleIds.includes(d.device_id));
     const labels = slice.map((_, i) => i);
     accelChart.data.labels = labels;
-    accelChart.data.datasets[0].data = slice.map(d => d.acceleration?.ax || 0);
-    accelChart.data.datasets[1].data = slice.map(d => d.acceleration?.ay || 0);
-    accelChart.data.datasets[2].data = slice.map(d => d.acceleration?.az || 0);
-    accelChart.update('none');
     gyroChart.data.labels = labels;
-    gyroChart.data.datasets[0].data = slice.map(d => d.angular_velocity?.gx || 0);
-    gyroChart.data.datasets[1].data = slice.map(d => d.angular_velocity?.gy || 0);
-    gyroChart.data.datasets[2].data = slice.map(d => d.angular_velocity?.gz || 0);
+
+    // Build per-device datasets (overlay)
+    const byDev = new Map();
+    for (const d of sliceAll) {
+        const id = (typeof d.device_id === 'number') ? d.device_id : 0;
+        if (visibleIds.length > 1 && !visibleIds.includes(id)) continue;
+        if (!byDev.has(id)) byDev.set(id, []);
+        byDev.get(id).push(d);
+    }
+
+    const accelDatasets = [];
+    const gyroDatasets = [];
+    const ids = Array.from(byDev.keys()).sort((a, b) => a - b);
+    for (const id of ids) {
+        const arr = byDev.get(id) || [];
+        const base = getDeviceColor(id);
+        accelDatasets.push(
+            { label: `Dev ${id} · X`, data: arr.map(d => d.acceleration?.ax || 0), borderColor: base, borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+            { label: `Dev ${id} · Y`, data: arr.map(d => d.acceleration?.ay || 0), borderColor: base, borderDash: [6, 3], borderWidth: 1.2, pointRadius: 0, tension: 0.1 },
+            { label: `Dev ${id} · Z`, data: arr.map(d => d.acceleration?.az || 0), borderColor: base, borderDash: [2, 2], borderWidth: 1.2, pointRadius: 0, tension: 0.1 }
+        );
+        gyroDatasets.push(
+            { label: `Dev ${id} · X`, data: arr.map(d => d.angular_velocity?.gx || 0), borderColor: base, borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+            { label: `Dev ${id} · Y`, data: arr.map(d => d.angular_velocity?.gy || 0), borderColor: base, borderDash: [6, 3], borderWidth: 1.2, pointRadius: 0, tension: 0.1 },
+            { label: `Dev ${id} · Z`, data: arr.map(d => d.angular_velocity?.gz || 0), borderColor: base, borderDash: [2, 2], borderWidth: 1.2, pointRadius: 0, tension: 0.1 }
+        );
+    }
+
+    accelChart.data.datasets = accelDatasets;
+    accelChart.update('none');
+    gyroChart.data.datasets = gyroDatasets;
     gyroChart.update('none');
 }
 

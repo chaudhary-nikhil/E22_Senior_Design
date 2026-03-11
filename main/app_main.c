@@ -329,7 +329,8 @@ static void transition_to_syncing(void) {
   led_blink_start();
   ESP_LOGI(TAG, ">>> STATE: SYNCING");
   ESP_LOGI(TAG, "[LED] Status=BLINK Power=BLINK -> Wireless sync active");
-  ESP_LOGI(TAG, "Connect to WiFi: %s (pw: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  ESP_LOGI(TAG, "Connect to WiFi: %s (pw: %s)", wifi_server_get_ap_ssid(),
+           WIFI_AP_PASSWORD);
   ESP_LOGI(TAG, "Blink stops automatically after data transfer.");
   ESP_LOGI(TAG, "========================================");
 }

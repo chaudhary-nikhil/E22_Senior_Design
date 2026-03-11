@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from simple_imu_visualizer import StrokeProcessor, SimpleKalmanFilter, BreathingDetector, align_sessions_by_hop
 import database as db
 
-ESP32_URL = 'http://192.168.4.1'
+ESP32_URL = os.environ.get('GOLDENFORM_ESP32_URL', 'http://192.168.4.1')
 CACHE_DIR = os.path.join(os.path.dirname(__file__), '.session_cache')
 RAW_CACHE = os.path.join(CACHE_DIR, 'last_raw.json')
 PROCESSED_CACHE = os.path.join(CACHE_DIR, 'last_processed.json')
@@ -267,7 +267,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
     def _get_device_info(self):
         try:
-            resp = urllib.request.urlopen(f'{ESP32_URL}/status', timeout=3)
+            resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=3)
             data = json.loads(resp.read().decode())
             self._send_json(data)
         except Exception:
@@ -511,6 +511,14 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def _process_wifi_session(self):
         """Fetch data from ESP32 and process each session independently."""
         try:
+            # Fetch device metadata (so sessions can be labeled and merged later)
+            device_info = {}
+            try:
+                with urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=3) as r:
+                    device_info = json.loads(r.read().decode('utf-8'))
+            except Exception:
+                device_info = {}
+
             url = f'{ESP32_URL}/data.json'
             req = urllib.request.Request(url)
             req.add_header('Accept', 'application/json')
@@ -542,10 +550,18 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 processor = StrokeProcessor(batch_mode=True)
                 processed_data = []
 
+                # Track which device IDs are present in this session (should be 1 in normal use)
+                dev_ids_in_session = set()
+                dev_roles_in_session = set()
+
                 for sample in data:
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
                     lia_y = sample.get('lia_y', sample.get('ay', 0))
                     lia_z = sample.get('lia_z', sample.get('az', 0))
+                    if 'dev_id' in sample:
+                        dev_ids_in_session.add(sample.get('dev_id', 0))
+                    if 'dev_role' in sample:
+                        dev_roles_in_session.add(sample.get('dev_role', 0))
                     data_dict = {
                         't': sample.get('t', 0),
                         'lia_x': lia_x, 'lia_y': lia_y, 'lia_z': lia_z,
@@ -581,7 +597,21 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     duration = (t1 - t0) / 1000.0
 
                 now_str = datetime.now().strftime('%b %d, %-I:%M %p')
-                sess_name = f"Session {sess.get('id', '?')} - {now_str}"
+                # Prefer labeling by device_info if available; fall back to dev_id in samples
+                dev_id_label = device_info.get('device_id', None)
+                if dev_id_label is None:
+                    dev_id_label = next(iter(dev_ids_in_session), 0)
+                dev_role_label = device_info.get('device_role', None)
+                if dev_role_label is None:
+                    dev_role_label = next(iter(dev_roles_in_session), 0)
+                dev_role_str = device_info.get('device_role', None)
+                if isinstance(dev_role_str, str):
+                    role_str = dev_role_str
+                else:
+                    role_str = str(dev_role_label)
+
+                prefix = f"[Dev {dev_id_label} / role {role_str}] "
+                sess_name = prefix + f"Session {sess.get('id', '?')} - {now_str}"
 
                 processed_sessions.append({
                     'id': sess.get('id', 0),
@@ -592,7 +622,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'processed_samples': len(processed_data),
                     'duration': duration,
                     'syncedAt': datetime.now().isoformat(),
-                    'raw_data': data
+                    'raw_data': data,
+                    'device_info': device_info,
+                    'device_ids': sorted([x for x in dev_ids_in_session if x is not None]),
+                    'device_roles': sorted([x for x in dev_roles_in_session if x is not None]),
                 })
 
             integrity_ok = (expected_total is None or expected_total == actual_total)
@@ -605,7 +638,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'expected': expected_total,
                     'received': actual_total,
                     'verified': integrity_ok
-                }
+                },
+                'device_info': device_info
             }
             try:
                 with open(RAW_CACHE, 'w') as f:
