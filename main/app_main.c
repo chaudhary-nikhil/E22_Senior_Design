@@ -254,8 +254,8 @@ static void transition_to_logging(void) {
   session_sample_count = 0;
   session_start_time = esp_timer_get_time() / 1000;
 
-  // Reset stroke detector state for the new session
-  stroke_detector_init();
+  // Reset stroke detector state for the new session (preserves ideal stroke)
+  stroke_detector_reset_session();
 
   led_blink_stop_and_wait();
   status_led_blink_stop_and_wait();
@@ -601,7 +601,7 @@ void app_main(void) {
           size_t read_bytes = fread(ideal_data, 1, file_size, ideal_file);
           size_t num_samples = read_bytes / (3 * sizeof(float));
           if (num_samples > 0) {
-            stroke_detector_load_ideal(ideal_data, num_samples);
+            stroke_detector_load_ideal(ideal_data, num_samples, 30.0f);
             ESP_LOGI(TAG, "Loaded ideal stroke: %zu samples from SD",
                      num_samples);
           }
@@ -612,6 +612,27 @@ void app_main(void) {
     } else {
       ESP_LOGI(TAG, "No ideal stroke data on SD card (normal for first use)");
     }
+  }
+
+  // Load user configuration from NVS
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READONLY, &nvs) == ESP_OK) {
+    float w_cm = 180.0f;
+    float h_cm = 180.0f;
+    int skill_val = 1; // intermediate
+
+    size_t required_size = sizeof(float);
+    if (nvs_get_blob(nvs, "user_cfg_w", &w_cm, &required_size) != ESP_OK) w_cm = 180.0f;
+    required_size = sizeof(float);
+    if (nvs_get_blob(nvs, "user_cfg_h", &h_cm, &required_size) != ESP_OK) h_cm = 180.0f;
+    required_size = sizeof(int);
+    if (nvs_get_blob(nvs, "user_cfg_s", &skill_val, &required_size) != ESP_OK) skill_val = 1;
+
+    stroke_detector_set_user_params(w_cm, (haptic_skill_level_t)skill_val);
+    nvs_close(nvs);
+  } else {
+    // defaults
+    stroke_detector_set_user_params(180.0f, HAPTIC_SKILL_INTERMEDIATE);
   }
 
   // Print status
@@ -766,9 +787,13 @@ void app_main(void) {
         }
 
         // --- Stroke Detection & Haptic Feedback ---
-        // Feed every IMU sample through the on-device stroke detector.
-        // This runs all thresholding, ideal comparison, and haptic triggering.
-        stroke_event_t stroke_event = stroke_detector_feed(&sample);
+        // Feed IMU samples through the on-device stroke detector ONLY during LOGGING.
+        // This prevents "ghost strokes" in the logs while the device is IDLE.
+        stroke_event_t stroke_event = {0};
+        if (current_state == STATE_LOGGING) {
+            stroke_event = stroke_detector_feed(&sample);
+        }
+        
         sample.haptic_fired = stroke_event.haptic_fired ? 1 : 0;
         sample.deviation_score = stroke_event.deviation_score;
         sample.stroke_count = stroke_event.stroke_count;
@@ -796,9 +821,7 @@ void app_main(void) {
         sample.breath_count = 0; // Head device will populate this
 
         if (stroke_event.stroke_detected) {
-          ESP_LOGI(TAG, "Stroke #%u (deviation: %.3f)",
-                   (unsigned)stroke_event.stroke_count,
-                   stroke_event.deviation_score);
+          ESP_LOGI(TAG, "Stroke #%u detected", (unsigned)stroke_event.stroke_count);
         }
         if (stroke_event.turn_detected) {
           ESP_LOGI(TAG, "Turn #%u detected", (unsigned)stroke_event.turn_count);

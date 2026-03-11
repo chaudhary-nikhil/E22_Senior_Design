@@ -33,12 +33,22 @@ typedef struct {
   uint32_t turn_count;   // Running total of turns detected
 } stroke_event_t;
 
-/**
- * @brief Initialize the stroke detector
- *
- * Resets all internal state. Call before first use or to reset mid-session.
- */
+// Skill levels for haptic thresholding
+typedef enum {
+  HAPTIC_SKILL_BEGINNER = 0,
+  HAPTIC_SKILL_INTERMEDIATE = 1,
+  HAPTIC_SKILL_ADVANCED = 2
+} haptic_skill_level_t;
+
 void stroke_detector_init(void);
+
+/**
+ * @brief Reset session-specific state
+ * 
+ * Clears stroke and turn counts, history buffers, and current integration.
+ * Preserves ideal stroke reference and user configuration.
+ */
+void stroke_detector_reset_session(void);
 
 /**
  * @brief Process one IMU sample through the detector
@@ -62,7 +72,7 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample);
  * @param num_samples Number of 3-float samples (array length / 3)
  * @return ESP_OK on success, ESP_ERR_NO_MEM if too large
  */
-esp_err_t stroke_detector_load_ideal(const float *lia_data, size_t num_samples);
+esp_err_t stroke_detector_load_ideal(const float *lia_data, size_t num_samples, float ideal_entry_angle);
 
 /**
  * @brief Check if ideal stroke data is loaded
@@ -95,6 +105,25 @@ float stroke_detector_get_deviation(void);
  * @param threshold Deviation threshold (0.0-2.0 typical range)
  */
 void stroke_detector_set_haptic_threshold(float threshold);
+/**
+ * @brief Get the currently loaded ideal entry angle
+ * @return float entry angle in degrees
+ */
+float stroke_detector_get_ideal_entry_angle(void);
+
+/**
+ * @brief Get the last calculated stroke deviation
+ * @return float deviation score
+ */
+float stroke_detector_get_last_deviation(void);
+
+/**
+ * @brief Set user physical parameters for stroke normalization
+ *
+ * @param wingspan_cm Wingspan in centimeters (used to scale LIA)
+ * @param skill_level Skill level (adjusts strictness of haptic thresholds)
+ */
+void stroke_detector_set_user_params(float wingspan_cm, haptic_skill_level_t skill_level);
 
 /**
  * @brief Enable or disable haptic feedback triggering

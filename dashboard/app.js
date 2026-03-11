@@ -70,20 +70,28 @@ function updateProfileUI() {
 }
 async function registerUser(e) {
     if (e) e.preventDefault();
-    const name = (document.getElementById('reg-name') || document.getElementById('settings-name')).value.trim();
-    if (!name) return;
+    
+    // Determine which form triggered this (modal vs settings page)
+    const isModal = document.getElementById('reg-modal').classList.contains('show');
+    const prefix = isModal ? 'reg-' : 'settings-';
+    
+    const nameInput = document.getElementById(prefix + 'name')?.value.trim();
+    if (!nameInput) return;
+
     const body = {
-        name,
-        height_cm: parseFloat((document.getElementById('reg-height') || document.getElementById('settings-height')).value) || 0,
-        wingspan_cm: parseFloat((document.getElementById('reg-wingspan') || document.getElementById('settings-wingspan')).value) || 0,
-        skill_level: (document.getElementById('reg-skill') || document.getElementById('settings-skill')).value || 'beginner'
+        name: nameInput,
+        height_cm: parseFloat(document.getElementById(prefix + 'height')?.value) || 0,
+        wingspan_cm: parseFloat(document.getElementById(prefix + 'wingspan')?.value) || 0,
+        skill_level: document.getElementById(prefix + 'skill')?.value || 'beginner'
     };
+    
     const res = await apiPost('/api/register', body);
     if (res && res.status === 'ok') {
         userProfile = res.profile;
         updateProfileUI();
         document.getElementById('reg-modal').classList.remove('show');
         showToast('Profile saved!', 'success');
+        pushUserConfigToDevice(true); // Auto-sync to device
     }
 }
 
@@ -110,12 +118,58 @@ async function registerDevice(e) {
     loadDevices();
 }
 
-// ── SYNC & SESSIONS ──
+let isDeviceOnline = false;
+let pendingConfigSync = false;
+let pendingIdealSync = false;
+let devicePollInterval = null;
+
 function setConnStatus(state) {
     const dot = document.querySelector('.status-dot');
     const txt = document.getElementById('conn-text');
     if (dot) dot.className = 'status-dot ' + state;
     if (txt) txt.textContent = state === 'connected' ? 'Connected' : state === 'syncing' ? 'Syncing...' : 'Offline';
+}
+
+function startDevicePolling() {
+    if (devicePollInterval) clearInterval(devicePollInterval);
+    // Poll immediately on start
+    pollDevice();
+    devicePollInterval = setInterval(pollDevice, 5000);
+}
+
+async function pollDevice() {
+    try {
+        const res = await apiGet('/api/device_info');
+        const wasOnline = isDeviceOnline;
+        isDeviceOnline = res && !res.error && res.status !== 'disconnected';
+        
+        // Don't override 'syncing' status if we are currently mid-sync
+        const txt = document.getElementById('conn-text');
+        if (txt && txt.textContent !== 'Syncing...') {
+            setConnStatus(isDeviceOnline ? 'connected' : 'offline');
+        }
+
+        if (res && res.cal) {
+            updateCalibrationDisplay(res);
+        }
+
+        if (!wasOnline && isDeviceOnline) {
+            if (pendingConfigSync) {
+                await pushUserConfigToDevice(true);
+                pendingConfigSync = false;
+            }
+            if (pendingIdealSync) {
+                await pushIdealToDevice(true);
+                pendingIdealSync = false;
+            }
+        }
+    } catch(e) {
+        isDeviceOnline = false;
+        const txt = document.getElementById('conn-text');
+        if (txt && txt.textContent !== 'Syncing...') {
+            setConnStatus('offline');
+        }
+    }
 }
 
 async function syncFromDevice() {
@@ -146,6 +200,10 @@ async function syncFromDevice() {
             addSession({ name: s.name, processed_data: s.processed_data, metrics: s.metrics, duration: s.duration, syncedAt: s.syncedAt });
         }
         if (sessions.length > 0) selectSession(savedSessions.length - 1);
+        
+        // Auto-push settings when we know we have an active connection
+        pushUserConfigToDevice(true);
+        pushIdealToDevice(true);
     } catch (e) {
         statusEl.textContent = 'Device unreachable. Using cached data...';
         statusEl.className = 'badge badge-amber';
@@ -386,12 +444,12 @@ function setText(id, val) { const el = document.getElementById(id); if (el) el.t
 
 // ── CALIBRATION DISPLAY (TIDR 6-1-4) ──
 function updateCalibrationDisplay(d) {
-    if (!d) return;
+    if (!d || !d.cal) return;
     const fields = [
-        { id: 'cal-sys', val: d.sys_cal },
-        { id: 'cal-gyro', val: d.gyro_cal },
-        { id: 'cal-accel', val: d.accel_cal },
-        { id: 'cal-mag', val: d.mag_cal }
+        { id: 'cal-sys', val: d.cal.sys },
+        { id: 'cal-gyro', val: d.cal.gyro },
+        { id: 'cal-accel', val: d.cal.accel },
+        { id: 'cal-mag', val: d.cal.mag }
     ];
     fields.forEach(f => {
         const el = document.getElementById(f.id);
@@ -400,9 +458,12 @@ function updateCalibrationDisplay(d) {
         el.textContent = v + '/3';
         el.className = 'cal-badge ' + (v >= 3 ? 'cal-good' : v >= 1 ? 'cal-warn' : 'cal-bad');
     });
-    // Overall quality
-    const total = (d.sys_cal || 0) + (d.gyro_cal || 0) + (d.accel_cal || 0) + (d.mag_cal || 0);
-    const quality = Math.round(total / 12 * 100);
+    // Overall quality - in IMU mode, Mag is 0 and can be ignored for "perfect" score
+    const sys = d.cal.sys || 0;
+    const gyro = d.cal.gyro || 0;
+    const accel = d.cal.accel || 0;
+    const total = sys + gyro + accel;
+    const quality = Math.round(total / 9 * 100);
     setText('cal-quality', quality + '%');
 }
 
@@ -474,12 +535,31 @@ function drawGauge(canvasId, value, min, max, idealLow, idealHigh) {
 function buildStrokeTable() {
     const tbody = document.getElementById('stroke-table-body');
     if (!tbody || !processedData.length) return;
-    let rows = [], lastCount = 0;
-    for (let i = 0; i < processedData.length; i++) {
-        const p = processedData[i];
-        if (p.stroke_count > lastCount) {
-            rows.push({ num: p.stroke_count, time: (p.timestamp / 1000).toFixed(1), angle: p.entry_angle || 0, haptic: p.haptic_fired, deviation: p.deviation_score || 0 });
-            lastCount = p.stroke_count;
+    let rows = [];
+    const startTime = processedData[0].timestamp || 0;
+
+    if (sessionMetrics && sessionMetrics.stroke_breakdown && sessionMetrics.stroke_breakdown.length > 0) {
+        rows = sessionMetrics.stroke_breakdown.map(p => ({
+            num: p.number, 
+            time: Math.max(0, p.timestamp_s - (startTime / 1000)).toFixed(1), 
+            angle: p.entry_angle || 0, 
+            haptic: p.haptic_fired, 
+            deviation: p.deviation || 0
+        }));
+    } else {
+        let lastCount = 0;
+        for (let i = 0; i < processedData.length; i++) {
+            const p = processedData[i];
+            if (p.stroke_count > lastCount) {
+                rows.push({ 
+                    num: p.stroke_count, 
+                    time: Math.max(0, (p.timestamp - startTime) / 1000).toFixed(1), 
+                    angle: p.entry_angle || 0, 
+                    haptic: p.haptic_fired, 
+                    deviation: p.deviation_score || 0 
+                });
+                lastCount = p.stroke_count;
+            }
         }
     }
     tbody.innerHTML = rows.map(r =>
@@ -593,14 +673,85 @@ async function loadIdealStroke() {
 async function setCurrentAsIdeal() {
     if (!processedData.length || !sessionMetrics || sessionMetrics.stroke_count < 1) { showToast('Record a session with strokes first', 'error'); return; }
     const samples = processedData.map(p => ({ lia_x: p.acceleration?.ax || 0, lia_y: p.acceleration?.ay || 0, lia_z: p.acceleration?.az || 0 }));
-    await apiPost('/api/ideal_stroke', { name: 'From Session', samples });
+    
+    // Compute average entry angle from session if available
+    const avgAngle = sessionMetrics ? sessionMetrics.avg_entry_angle : 30.0;
+    
+    await apiPost('/api/ideal_stroke', { name: 'From Session', samples, ideal_entry_angle: avgAngle });
     await loadIdealStroke();
-    showToast('Ideal stroke saved!', 'success');
+    showToast('Ideal stroke saved! Pushing to device...', 'success');
+    await pushIdealToDevice(true);
 }
-async function pushIdealToDevice() {
-    if (!idealStrokeData || !idealStrokeData.length) { showToast('No ideal stroke to push', 'error'); return; }
-    const result = await apiPost('/api/ideal_stroke/push', { samples: idealStrokeData });
-    showToast(result && result.status === 'ok' ? 'Pushed ideal to device!' : 'Failed: ' + ((result && result.error) || 'unknown'), result && result.status === 'ok' ? 'success' : 'error');
+async function pushIdealToDevice(silent = false) {
+    if (!idealStrokeData || !idealStrokeData.length) {
+        if (!silent) showToast('No ideal stroke to push', 'error');
+        return;
+    }
+    if (!isDeviceOnline && !silent) {
+        pendingIdealSync = true;
+        showToast('Device offline. Ideal stroke queued for next connection.', 'info');
+        return;
+    } else if (!isDeviceOnline) {
+        pendingIdealSync = true;
+        return;
+    }
+    const result = await apiPost('/api/ideal_stroke/push', { 
+        samples: idealStrokeData,
+        ideal_entry_angle: sessionMetrics ? sessionMetrics.avg_entry_angle : 30.0
+    });
+    if (!silent) {
+        showToast(result && result.status === 'ok' ? 'Pushed ideal to device!' : 'Failed: ' + ((result && result.error) || 'unknown'), result && result.status === 'ok' ? 'success' : 'error');
+    }
+}
+
+async function deleteIdealStroke() {
+    if (!confirm("Delete ideal stroke? This will clear it from the app and device.")) return;
+    const result = await apiPost('/api/ideal_stroke/delete', {});
+    if (result && result.status === 'ok') {
+        idealStrokeData = null;
+        setText('ideal-status', 'No ideal stroke saved');
+        showToast('Ideal stroke deleted', 'success');
+    } else {
+        showToast('Failed to delete: ' + ((result && result.error) || 'unknown'), 'error');
+    }
+}
+
+async function pushUserConfigToDevice(silent = false) {
+    const wingspan = document.getElementById('settings-wingspan') ? parseFloat(document.getElementById('settings-wingspan').value) : 180;
+    const height = document.getElementById('settings-height') ? parseFloat(document.getElementById('settings-height').value) : 180;
+    const skill = document.getElementById('settings-skill') ? document.getElementById('settings-skill').value : 'beginner';
+    
+    if (!isDeviceOnline && !silent) {
+        pendingConfigSync = true;
+        showToast('Device offline. Profile queued for next connection.', 'info');
+        return;
+    } else if (!isDeviceOnline) {
+        pendingConfigSync = true;
+        return;
+    }
+
+    const result = await apiPost('/api/user_config/push', {
+        wingspan_cm: isNaN(wingspan) ? 180 : wingspan,
+        height_cm: isNaN(height) ? 180 : height,
+        skill_level: skill
+    });
+    
+    if (!silent) {
+        if (result && result.status === 'ok') {
+            showToast('Profile pushed to device', 'success');
+        } else {
+            showToast('Failed to push profile: ' + ((result && result.error) || 'unknown'), 'error');
+        }
+    }
+}
+
+async function testHapticDevice() {
+    const result = await apiPost('/api/test_buzz', {});
+    if (result && result.status === 'ok') {
+        showToast('Test buzz sent', 'success');
+    } else {
+        showToast('Test buzz failed: ' + ((result && result.error) || 'unknown'), 'error');
+    }
 }
 
 // ── CHARTS ──
@@ -970,6 +1121,7 @@ window.addEventListener('DOMContentLoaded', () => {
     loadSavedSessions();
     loadIdealStroke();
     init3D();
+    startDevicePolling();
     window.addEventListener('resize', () => {
         if (renderer && camera) {
             const c = document.getElementById('canvas3d');

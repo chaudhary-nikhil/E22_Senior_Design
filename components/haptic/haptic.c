@@ -1,14 +1,25 @@
 /**
  * @file haptic.c
- * @brief Haptic feedback driver for piezoelectric buzzer (LEDC PWM)
+ * @brief Haptic feedback driver for ERM vibration motor (LEDC PWM duty-cycle)
  *
- * Uses ESP-IDF LEDC peripheral to generate PWM at the piezo's resonant
- * frequency. Pattern playback runs via a FreeRTOS task so pulses can
- * be multi-step without blocking the main loop.
+ * Drives an ERM (Eccentric Rotating Mass) vibration motor via LEDC PWM on a
+ * configurable GPIO pin. The motor is connected through an N-channel MOSFET
+ * (AO3400A) low-side switch with a flyback diode for inductive protection.
+ *
+ * ERM motors respond to average voltage (duty cycle), NOT frequency like piezo
+ * buzzers. We use a fixed 1kHz PWM frequency and modulate the duty cycle
+ * (0-100%) to control vibration intensity.
+ *
+ * Hardware: ERM motor on GPIO 38 (CONFIG_GOLDENFORM_HAPTIC_GPIO)
+ *   ESP32 GPIO -> 100Ω -> MOSFET Gate (AO3400A)
+ *   Motor(+) -> 3.3V rail
+ *   Motor(-) -> MOSFET Drain
+ *   MOSFET Source -> GND
+ *   Flyback diode (1N5817) across motor terminals
  */
 
 #include "haptic.h"
-#include "driver/ledc.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -17,13 +28,10 @@
 
 static const char *TAG = "HAPTIC";
 
-// LEDC configuration
-#define HAPTIC_LEDC_TIMER LEDC_TIMER_1
-#define HAPTIC_LEDC_CHANNEL LEDC_CHANNEL_1
-#define HAPTIC_LEDC_MODE LEDC_LOW_SPEED_MODE
-#define HAPTIC_LEDC_DUTY_RES LEDC_TIMER_10_BIT
-#define HAPTIC_DEFAULT_FREQ_HZ 2700 // Typical piezo resonant frequency
-#define HAPTIC_DUTY_50PCT 512       // 50% duty cycle for 10-bit resolution
+// Motor timing constraints
+#define ERM_SPINUP_MS 30         // Minimum pulse to overcome inertia
+#define ERM_COOLDOWN_MS 100      // Minimum gap between patterns
+#define ERM_MIN_PATTERN_GAP_MS 150 // Debounce rapid-fire pattern requests
 
 // State
 static bool s_initialized = false;
@@ -32,29 +40,33 @@ static int s_gpio_num = -1;
 static esp_timer_handle_t s_pulse_timer = NULL;
 static TaskHandle_t s_pattern_task = NULL;
 static volatile bool s_pattern_stop = false;
+static uint32_t s_last_pattern_time_ms = 0;
 
-// --- Internal helpers ---
-
-static void haptic_on(uint32_t freq_hz) {
+static void haptic_on(void) {
   if (!s_available)
     return;
-
-  // Update frequency
-  ledc_set_freq(HAPTIC_LEDC_MODE, HAPTIC_LEDC_TIMER, freq_hz);
-  // Set 50% duty (maximum loudness for piezo)
-  ledc_set_duty(HAPTIC_LEDC_MODE, HAPTIC_LEDC_CHANNEL, HAPTIC_DUTY_50PCT);
-  ledc_update_duty(HAPTIC_LEDC_MODE, HAPTIC_LEDC_CHANNEL);
+  gpio_set_level(s_gpio_num, 1);
 }
 
 static void haptic_off(void) {
   if (!s_available)
     return;
-  ledc_set_duty(HAPTIC_LEDC_MODE, HAPTIC_LEDC_CHANNEL, 0);
-  ledc_update_duty(HAPTIC_LEDC_MODE, HAPTIC_LEDC_CHANNEL);
+  // Temporary: turn pin full OFF
+  gpio_set_level(s_gpio_num, 0);
 }
 
 // Timer callback for single pulse stop
 static void pulse_timer_cb(void *arg) { haptic_off(); }
+
+// Get current time in ms
+static uint32_t now_ms(void) {
+  return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+// Check if enough time has passed since last pattern
+static bool can_start_pattern(void) {
+  return (now_ms() - s_last_pattern_time_ms) >= ERM_MIN_PATTERN_GAP_MS;
+}
 
 // Pattern playback task
 static void pattern_task(void *arg) {
@@ -63,20 +75,23 @@ static void pattern_task(void *arg) {
 
   switch (pattern) {
   case HAPTIC_PATTERN_SINGLE_SHORT:
-    haptic_on(HAPTIC_DEFAULT_FREQ_HZ);
+    // Quick 80ms buzz — stroke detected acknowledgment
+    haptic_on();
     vTaskDelay(pdMS_TO_TICKS(80));
     haptic_off();
     break;
 
   case HAPTIC_PATTERN_SINGLE_LONG:
-    haptic_on(HAPTIC_DEFAULT_FREQ_HZ);
+    // 200ms buzz — moderate deviation alert
+    haptic_on();
     vTaskDelay(pdMS_TO_TICKS(200));
     haptic_off();
     break;
 
   case HAPTIC_PATTERN_DOUBLE_PULSE:
+    // Two 80ms pulses, 60ms gap — high deviation
     for (int i = 0; i < 2 && !s_pattern_stop; i++) {
-      haptic_on(HAPTIC_DEFAULT_FREQ_HZ);
+      haptic_on();
       vTaskDelay(pdMS_TO_TICKS(80));
       haptic_off();
       if (i < 1)
@@ -85,8 +100,9 @@ static void pattern_task(void *arg) {
     break;
 
   case HAPTIC_PATTERN_TRIPLE_PULSE:
+    // Three 50ms pulses, 40ms gaps — critical deviation
     for (int i = 0; i < 3 && !s_pattern_stop; i++) {
-      haptic_on(HAPTIC_DEFAULT_FREQ_HZ);
+      haptic_on();
       vTaskDelay(pdMS_TO_TICKS(50));
       haptic_off();
       if (i < 2)
@@ -95,16 +111,41 @@ static void pattern_task(void *arg) {
     break;
 
   case HAPTIC_PATTERN_RAMP_UP:
-    // Rising frequency from 1500 to 3500 Hz over 300ms
-    for (int f = 1500; f <= 3500 && !s_pattern_stop; f += 200) {
-      haptic_on((uint32_t)f);
+    // Fast stuttering pulses ending in a long pulse — turn/wall alert
+    for (int i = 0; i < 3 && !s_pattern_stop; i++) {
+      haptic_on();
+      vTaskDelay(pdMS_TO_TICKS(20));
+      haptic_off();
       vTaskDelay(pdMS_TO_TICKS(30));
     }
+    if (!s_pattern_stop) {
+      haptic_on();
+      vTaskDelay(pdMS_TO_TICKS(150));
+      haptic_off();
+    }
+    break;
+
+  case HAPTIC_PATTERN_DEVIATION_MILD:
+    // Gentle 120ms buzz — mild deviation (beginner-friendly)
+    haptic_on();
+    vTaskDelay(pdMS_TO_TICKS(120));
+    haptic_off();
+    break;
+
+  case HAPTIC_PATTERN_DEVIATION_STRONG:
+    // Strong 150ms, pause, 100ms — strong deviation
+    haptic_on();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    haptic_off();
+    vTaskDelay(pdMS_TO_TICKS(50));
+    haptic_on();
+    vTaskDelay(pdMS_TO_TICKS(100));
     haptic_off();
     break;
   }
 
   haptic_off(); // Ensure off
+  s_last_pattern_time_ms = now_ms();
   s_pattern_task = NULL;
   vTaskDelete(NULL);
 }
@@ -118,37 +159,21 @@ esp_err_t haptic_init(int gpio_num) {
   }
 
   s_gpio_num = gpio_num;
-  ESP_LOGI(TAG, "Initializing haptic motor on GPIO%d", gpio_num);
+  ESP_LOGI(TAG, "Initializing ERM haptic motor on GPIO%d", gpio_num);
 
-  // Configure LEDC timer
-  ledc_timer_config_t timer_cfg = {
-      .speed_mode = HAPTIC_LEDC_MODE,
-      .timer_num = HAPTIC_LEDC_TIMER,
-      .duty_resolution = HAPTIC_LEDC_DUTY_RES,
-      .freq_hz = HAPTIC_DEFAULT_FREQ_HZ,
-      .clk_cfg = LEDC_AUTO_CLK,
-  };
-  esp_err_t err = ledc_timer_config(&timer_cfg);
+  // Temporary override: Configure as simple GPIO output instead of LEDC PWM to test the LED
+  gpio_config_t io_conf = {};
+  io_conf.intr_type = GPIO_INTR_DISABLE;
+  io_conf.mode = GPIO_MODE_OUTPUT;
+  io_conf.pin_bit_mask = (1ULL << gpio_num);
+  io_conf.pull_down_en = 0;
+  io_conf.pull_up_en = 0;
+  esp_err_t err = gpio_config(&io_conf);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "LEDC timer config failed: %s", esp_err_to_name(err));
-    return err;
+      ESP_LOGE(TAG, "GPIO config failed for debugging");
+      return err;
   }
-
-  // Configure LEDC channel
-  ledc_channel_config_t ch_cfg = {
-      .speed_mode = HAPTIC_LEDC_MODE,
-      .channel = HAPTIC_LEDC_CHANNEL,
-      .timer_sel = HAPTIC_LEDC_TIMER,
-      .intr_type = LEDC_INTR_DISABLE,
-      .gpio_num = gpio_num,
-      .duty = 0, // Start off
-      .hpoint = 0,
-  };
-  err = ledc_channel_config(&ch_cfg);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "LEDC channel config failed: %s", esp_err_to_name(err));
-    return err;
-  }
+  gpio_set_level(gpio_num, 0);
 
   // Create one-shot timer for pulse stop
   esp_timer_create_args_t timer_args = {
@@ -164,8 +189,7 @@ esp_err_t haptic_init(int gpio_num) {
 
   s_initialized = true;
   s_available = true;
-  ESP_LOGI(TAG, "Haptic motor initialized on GPIO%d (LEDC ch%d, %dHz default)",
-           gpio_num, HAPTIC_LEDC_CHANNEL, HAPTIC_DEFAULT_FREQ_HZ);
+  ESP_LOGI(TAG, "ERM haptic motor initialized on GPIO%d (Pure GPIO Control)", gpio_num);
 
   return ESP_OK;
 }
@@ -180,19 +204,15 @@ esp_err_t haptic_pulse(uint32_t duration_ms, uint32_t freq_hz) {
     return ESP_OK;
   }
 
-  // Clamp values
-  if (duration_ms < 10)
-    duration_ms = 10;
+  // Clamp duration (freq_hz parameter is ignored for ERM — kept for API compat)
+  if (duration_ms < ERM_SPINUP_MS)
+    duration_ms = ERM_SPINUP_MS;
   if (duration_ms > 500)
     duration_ms = 500;
-  if (freq_hz < 100)
-    freq_hz = 100;
-  if (freq_hz > 5000)
-    freq_hz = 5000;
 
-  ESP_LOGD(TAG, "Pulse: %ums @ %uHz", (unsigned)duration_ms, (unsigned)freq_hz);
+  ESP_LOGD(TAG, "Pulse: %ums", (unsigned)duration_ms);
 
-  haptic_on(freq_hz);
+  haptic_on(); // Turn on motor
 
   // Schedule stop
   if (s_pulse_timer) {
@@ -203,9 +223,27 @@ esp_err_t haptic_pulse(uint32_t duration_ms, uint32_t freq_hz) {
   return ESP_OK;
 }
 
+esp_err_t haptic_set_intensity(uint8_t intensity_pct) {
+  if (!s_initialized)
+    return ESP_ERR_INVALID_STATE;
+
+  if (intensity_pct == 0) {
+    haptic_off();
+  } else {
+    haptic_on();
+  }
+  return ESP_OK;
+}
+
 esp_err_t haptic_play_pattern(haptic_pattern_t pattern) {
   if (!s_initialized)
     return ESP_ERR_INVALID_STATE;
+
+  // Debounce rapid-fire pattern requests to prevent motor burnout
+  if (!can_start_pattern()) {
+    ESP_LOGD(TAG, "Pattern debounced (cooldown)");
+    return ESP_OK;
+  }
 
   // Stop any running pattern
   if (s_pattern_task != NULL) {

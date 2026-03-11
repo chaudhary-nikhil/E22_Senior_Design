@@ -1,4 +1,5 @@
 #include "wifi_server.h"
+#include "driver/i2c.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
@@ -19,6 +20,7 @@
 
 #include "bno055.h"
 #include "cJSON.h"
+#include "haptic.h"
 #include "protobuf_utils.h"
 #include "storage.h"
 #include "stroke_detector.h"
@@ -147,6 +149,10 @@ static esp_err_t
 ideal_stroke_post_handler(httpd_req_t *req); // POST ideal stroke data
 static esp_err_t
 device_status_handler(httpd_req_t *req); // Extended device status
+static esp_err_t user_config_post_handler(httpd_req_t *req);
+static esp_err_t ideal_stroke_get_handler(httpd_req_t *req);
+static esp_err_t ideal_stroke_delete_handler(httpd_req_t *req);
+static esp_err_t test_buzz_handler(httpd_req_t *req);
 
 // URI definitions
 static const httpd_uri_t root_uri = {
@@ -182,6 +188,26 @@ static const httpd_uri_t device_status_uri = {.uri = "/api/device_info",
                                               .method = HTTP_GET,
                                               .handler = device_status_handler,
                                               .user_ctx = NULL};
+
+static const httpd_uri_t user_config_post_uri = {.uri = "/api/user_config",
+                                                 .method = HTTP_POST,
+                                                 .handler = user_config_post_handler,
+                                                 .user_ctx = NULL};
+
+static const httpd_uri_t ideal_stroke_get_uri = {.uri = "/api/ideal_stroke",
+                                                 .method = HTTP_GET,
+                                                 .handler = ideal_stroke_get_handler,
+                                                 .user_ctx = NULL};
+
+static const httpd_uri_t ideal_stroke_delete_uri = {.uri = "/api/ideal_stroke",
+                                                    .method = HTTP_DELETE,
+                                                    .handler = ideal_stroke_delete_handler,
+                                                    .user_ctx = NULL};
+
+static const httpd_uri_t test_buzz_post_uri = {.uri = "/api/test_buzz",
+                                               .method = HTTP_POST,
+                                               .handler = test_buzz_handler,
+                                               .user_ctx = NULL};
 
 // WiFi event handler
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -242,6 +268,7 @@ static esp_err_t start_http_server(void) {
   config.server_port = HTTP_SERVER_PORT;
   config.max_open_sockets = 4;
   config.lru_purge_enable = true;
+  config.max_uri_handlers = 16; // Increased to accommodate all endpoints
   config.stack_size = 8192; // Larger stack for JSON generation
   config.recv_wait_timeout = 10;
   config.send_wait_timeout = 10;
@@ -253,6 +280,10 @@ static esp_err_t start_http_server(void) {
     httpd_register_uri_handler(server, &data_json_uri);
     httpd_register_uri_handler(server, &ideal_stroke_post_uri);
     httpd_register_uri_handler(server, &device_status_uri);
+    httpd_register_uri_handler(server, &user_config_post_uri);
+    httpd_register_uri_handler(server, &ideal_stroke_get_uri);
+    httpd_register_uri_handler(server, &ideal_stroke_delete_uri);
+    httpd_register_uri_handler(server, &test_buzz_post_uri);
     // Register catch-all handler LAST (lowest priority) to suppress warnings
     httpd_register_uri_handler(server, &catch_all_uri);
     ESP_LOGI(TAG, "HTTP server started on port %d (stack: %d)",
@@ -796,11 +827,11 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
           char sb[320];
           snprintf(
               sb, sizeof(sb),
-              "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+                            "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
               "\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,"
               "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
               "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,"
-              "\"cal_sys\":%u,\"cal_gyro\":%u,\"cal_accel\":%u,\"cal_mag\":%u,"
+              "\"cal\":{\"sys\":%u,\"gyro\":%u,\"accel\":%u,\"mag\":%u},"
               "\"haptic\":%u,\"deviation\":%.3f,\"strokes\":%u,\"turns\":%u,"
               "\"dev_id\":%u,\"dev_role\":%u}",
               (sess_sent > 0) ? "," : "", (unsigned)s->t_ms, s->ax, s->ay,
@@ -892,11 +923,13 @@ static esp_err_t ideal_stroke_post_handler(httpd_req_t *req) {
   }
 
   cJSON *samples_arr = cJSON_GetObjectItem(root, "samples");
+  cJSON *entry_angle_item = cJSON_GetObjectItem(root, "ideal_entry_angle");
   if (!cJSON_IsArray(samples_arr)) {
     cJSON_Delete(root);
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing samples array");
     return ESP_FAIL;
   }
+  float ideal_entry_angle = (entry_angle_item && cJSON_IsNumber(entry_angle_item)) ? (float)entry_angle_item->valuedouble : 0.0f;
 
   int count = cJSON_GetArraySize(samples_arr);
   if (count <= 0 || count > 200) {
@@ -934,7 +967,7 @@ static esp_err_t ideal_stroke_post_handler(httpd_req_t *req) {
   }
 
   // Load into stroke detector immediately
-  stroke_detector_load_ideal(ideal_data, count);
+  stroke_detector_load_ideal(ideal_data, count, ideal_entry_angle);
   free(ideal_data);
 
   // Respond with success
@@ -946,15 +979,170 @@ static esp_err_t ideal_stroke_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static esp_err_t ideal_stroke_get_handler(httpd_req_t *req) {
+  FILE *f = fopen("/sdcard/ideal_stroke.bin", "rb");
+  if (!f) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No ideal stroke found");
+    return ESP_FAIL;
+  }
+
+  fseek(f, 0, SEEK_END);
+  long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+
+  if (size <= 0 || size > 200 * 3 * sizeof(float)) {
+    fclose(f);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Invalid ideal stroke file");
+    return ESP_FAIL;
+  }
+
+  int count = size / (3 * sizeof(float));
+  float *ideal_data = malloc(size);
+  if (!ideal_data) {
+    fclose(f);
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+    return ESP_FAIL;
+  }
+
+  fread(ideal_data, 1, size, f);
+  fclose(f);
+
+  // Convert to JSON
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "status", "ok");
+  cJSON *samples_arr = cJSON_CreateArray();
+
+  for (int i = 0; i < count; i++) {
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddNumberToObject(item, "lia_x", ideal_data[i * 3 + 0]);
+    cJSON_AddNumberToObject(item, "lia_y", ideal_data[i * 3 + 1]);
+    cJSON_AddNumberToObject(item, "lia_z", ideal_data[i * 3 + 2]);
+    cJSON_AddItemToArray(samples_arr, item);
+  }
+  cJSON_AddItemToObject(root, "samples", samples_arr);
+  cJSON_AddNumberToObject(root, "ideal_entry_angle", stroke_detector_get_ideal_entry_angle());
+  free(ideal_data);
+
+  cJSON_AddItemToObject(root, "samples", samples_arr);
+  char *json_str = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, json_str, strlen(json_str));
+  free(json_str);
+
+  return ESP_OK;
+}
+
+static esp_err_t ideal_stroke_delete_handler(httpd_req_t *req) {
+  remove("/sdcard/ideal_stroke.bin");
+  // Also clear it from stroke detector
+  stroke_detector_load_ideal(NULL, 0, 0.0f);
+
+  const char *resp = "{\"status\":\"ok\"}";
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, resp, strlen(resp));
+  ESP_LOGI(TAG, "Ideal stroke deleted");
+  return ESP_OK;
+}
+
+static esp_err_t user_config_post_handler(httpd_req_t *req) {
+  int total_len = req->content_len;
+  if (total_len <= 0 || total_len > 1024) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid content length");
+    return ESP_FAIL;
+  }
+
+  char *buf = malloc(total_len + 1);
+  if (!buf) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+    return ESP_FAIL;
+  }
+
+  int received = 0;
+  while (received < total_len) {
+    int ret = httpd_req_recv(req, buf + received, total_len - received);
+    if (ret <= 0) {
+      free(buf);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+      return ESP_FAIL;
+    }
+    received += ret;
+  }
+  buf[total_len] = '\0';
+
+  cJSON *root = cJSON_Parse(buf);
+  free(buf);
+  if (!root) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+    return ESP_FAIL;
+  }
+
+  cJSON *wingspan = cJSON_GetObjectItem(root, "wingspan_cm");
+  cJSON *skill_str = cJSON_GetObjectItem(root, "skill_level");
+  cJSON *height = cJSON_GetObjectItem(root, "height_cm");
+
+  float w_cm = wingspan ? (float)wingspan->valuedouble : 180.0f;
+  float h_cm = height ? (float)height->valuedouble : 180.0f;
+  const char *skill = skill_str ? skill_str->valuestring : "intermediate";
+
+  int skill_val = 1; // intermediate
+  if (strcmp(skill, "beginner") == 0) skill_val = 0;
+  else if (strcmp(skill, "advanced") == 0) skill_val = 2;
+
+  cJSON_Delete(root);
+
+  // Apply to stroke detector
+  stroke_detector_set_user_params(w_cm, skill_val);
+
+  // Save to NVS
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READWRITE, &nvs) == ESP_OK) {
+    nvs_set_blob(nvs, "user_cfg_w", &w_cm, sizeof(w_cm));
+    nvs_set_blob(nvs, "user_cfg_h", &h_cm, sizeof(h_cm));
+    nvs_set_blob(nvs, "user_cfg_s", &skill_val, sizeof(skill_val));
+    nvs_commit(nvs);
+    nvs_close(nvs);
+    ESP_LOGI(TAG, "User config saved to NVS: wingspan=%.1f, skill=%d", w_cm, skill_val);
+  }
+
+  const char *resp = "{\"status\":\"ok\"}";
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, resp, strlen(resp));
+  return ESP_OK;
+}
+
+static esp_err_t test_buzz_handler(httpd_req_t *req) {
+  extern esp_err_t haptic_play_pattern(haptic_pattern_t pattern);
+  // Using a strong, long double-pulse so it's unmistakably visible on an LED
+  haptic_play_pattern(HAPTIC_PATTERN_DEVIATION_STRONG);
+  
+  const char *resp = "{\"status\":\"ok\"}";
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_send(req, resp, strlen(resp));
+  ESP_LOGI(TAG, "Test haptic buzz triggered");
+  return ESP_OK;
+}
+
 // GET /api/device_info - extended device status with stretch goal info
 static esp_err_t device_status_handler(httpd_req_t *req) {
   extern bool haptic_is_available(void);
   extern bool stroke_detector_has_ideal(void);
+  extern esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys, uint8_t *gyro, uint8_t *accel, uint8_t *mag);
+
+  // Read BNO055 status
+  uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
+  bno055_get_calibration_status(I2C_NUM_0, BNO055_ADDR_A, &sys, &gyro, &accel, &mag);
 
   char json[512];
   snprintf(json, sizeof(json),
            "{\"device_id\":%d,\"device_role\":\"%s\","
            "\"haptic_available\":%s,\"ideal_loaded\":%s,"
+           "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d},"
            "\"firmware\":\"GoldenForm v1.0\",\"mcu\":\"ESP32-S3-WROOM-1\","
            "\"sample_hz\":%d,\"multi_device\":%s}",
            CONFIG_GOLDENFORM_DEVICE_ID,
@@ -969,6 +1157,7 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
 #endif
            haptic_is_available() ? "true" : "false",
            stroke_detector_has_ideal() ? "true" : "false",
+           sys, gyro, accel, mag,
            CONFIG_GOLDENFORM_SAMPLE_HZ,
 #if defined(CONFIG_GOLDENFORM_MULTI_DEVICE_ENABLE)
            "true"

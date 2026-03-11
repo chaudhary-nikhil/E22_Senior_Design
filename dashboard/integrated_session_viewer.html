@@ -219,7 +219,7 @@
                     <thead>
                         <tr>
                             <th>#</th>
-                            <th>Time</th>
+                            <th>Time (rel. s)</th>
                             <th>Entry Angle</th>
                             <th>Haptic</th>
                             <th>Deviation</th>
@@ -285,12 +285,18 @@
             </div>
         </div>
         <div class="card" style="margin-top:16px;">
+            <div class="card-title">Haptic & Device Config</div>
+            <p style="color:var(--text3);font-size:0.85em;margin-top:6px;">Your profile (wingspan & skill) automatically syncs with the device upon connection to calibrate haptic thresholds.</p>
+            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+                <button class="btn btn-outline btn-sm" onclick="testHapticDevice()">Test Haptic Buzz</button>
+            </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
             <div class="card-title">Ideal Stroke Data</div>
             <p style="color:var(--text3);font-size:0.85em;margin-top:6px;" id="ideal-status">No ideal stroke saved</p>
             <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-                <button class="btn btn-outline btn-sm" onclick="setCurrentAsIdeal()">Set Current Session as
-                    Ideal</button>
-                <button class="btn btn-outline btn-sm" onclick="pushIdealToDevice()">Push Ideal to Device</button>
+                <button class="btn btn-gold btn-sm" onclick="setCurrentAsIdeal()">Record from Session</button>
+                <button class="btn btn-outline btn-sm" style="border-color:#ef4444;color:#ef4444" onclick="deleteIdealStroke()">Delete Ideal</button>
             </div>
         </div>
     </div>

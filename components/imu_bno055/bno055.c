@@ -171,11 +171,11 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     return err;
   }
 
-  // Set to NDOF mode
-  ESP_LOGI(TAG, "Setting BNO055 to NDOF mode...");
-  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+  // Set to IMUPLUS mode (6-DOF, ignores magnetometer for stable swimming tracking)
+  ESP_LOGI(TAG, "Setting BNO055 to IMUPLUS mode...");
+  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "BNO055 set NDOF mode failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "BNO055 set IMUPLUS mode failed: %s", esp_err_to_name(err));
     return err;
   }
 
@@ -184,7 +184,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
 
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  ESP_LOGI(TAG, "BNO055 initialized successfully");
+  ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X", BNO055_OPERATION_MODE_IMUPLUS);
   return ESP_OK;
 }
 
@@ -337,17 +337,26 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
   bno055_get_calibration_status(port, addr, &out->sys_cal, &out->gyro_cal,
                                 &out->accel_cal, &out->mag_cal);
 
+  // Heartbeat log for mode/status debugging (every 500 samples ~5s)
+  static uint32_t hb_count = 0;
+  if (++hb_count % 500 == 0) {
+    uint8_t mode = 0;
+    bno055_read8(port, addr, BNO055_OPR_MODE_ADDR, &mode);
+    ESP_LOGI(TAG, "Status: Mode=0x%02X, Cal: S%d G%d A%d M%d", 
+             mode, out->sys_cal, out->gyro_cal, out->accel_cal, out->mag_cal);
+  }
+
   return ESP_OK;
 }
 
 esp_err_t bno055_start_calibration(int port, uint8_t addr) {
-  // BNO055 auto-calibrates in NDOF mode. This function just ensures we're in
-  // NDOF mode and logs guidance for the user.
-  ESP_LOGI(TAG, "Starting BNO055 calibration in NDOF mode");
+  // BNO055 auto-calibrates in IMUPLUS mode. This function just ensures we're in
+  // IMUPLUS mode and logs guidance for the user.
+  ESP_LOGI(TAG, "Starting BNO055 calibration in IMUPLUS mode");
   ESP_LOGI(TAG, "  Gyro: Leave device still for 3-5 seconds");
-  ESP_LOGI(TAG, "  Accel: Slowly rotate device through 6 orientations");
-  ESP_LOGI(TAG, "  Mag: Draw figure-8 pattern in the air");
-  return bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+  ESP_LOGI(TAG, "  Accel: Slowly rotate device through 6 orientations (less strict in IMUPLUS)");
+  // Mag guidance removed because it's ignored in IMUPLUS
+  return bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
 }
 
 esp_err_t bno055_save_calibration_data(int port, uint8_t addr,
@@ -370,14 +379,14 @@ esp_err_t bno055_save_calibration_data(int port, uint8_t addr,
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to read cal offset at reg 0x%02X",
                BNO055_ACCEL_OFFSET_X_LSB_ADDR + i);
-      // Restore NDOF mode before returning error
-      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+      // Restore IMUPLUS mode before returning error
+      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
       return err;
     }
   }
 
-  // Restore NDOF mode
-  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+  // Restore IMUPLUS mode
+  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
   vTaskDelay(pdMS_TO_TICKS(20));
 
   ESP_LOGI(TAG, "Calibration data saved (22 bytes)");
@@ -403,13 +412,13 @@ esp_err_t bno055_load_calibration_data(int port, uint8_t addr,
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to write cal offset at reg 0x%02X",
                BNO055_ACCEL_OFFSET_X_LSB_ADDR + i);
-      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
       return err;
     }
   }
 
-  // Restore NDOF mode
-  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_NDOF);
+  // Restore IMUPLUS mode
+  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
   vTaskDelay(pdMS_TO_TICKS(20));
 
   ESP_LOGI(TAG, "Calibration data restored (22 bytes)");

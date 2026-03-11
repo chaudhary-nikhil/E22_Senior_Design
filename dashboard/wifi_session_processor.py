@@ -7,7 +7,7 @@ Supports multiple sessions per sync, user registration, ideal strokes, and SQLit
 import json
 import urllib.request
 import urllib.error
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import os
 import sys
 
@@ -76,8 +76,14 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._register_user()
         elif self.path == '/api/ideal_stroke':
             self._upload_ideal_stroke()
+        elif self.path == '/api/ideal_stroke/delete':
+            self._delete_ideal_stroke()
         elif self.path == '/api/ideal_stroke/push':
             self._push_ideal_to_device()
+        elif self.path == '/api/user_config/push':
+            self._push_user_config_to_device()
+        elif self.path == '/api/test_buzz':
+            self._test_buzz()
         elif self.path == '/api/devices/register':
             self._register_device()
         elif self.path == '/api/sessions/save':
@@ -171,6 +177,16 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         """Forward ideal stroke data to ESP32 device."""
         try:
             body = self._read_body()
+            samples = body.get('samples', [])
+            
+            # ESP32 firmware strictly limits ideal strokes to 200 samples to save RAM
+            if len(samples) > 200:
+                print(f"Downsampling ideal stroke from {len(samples)} to 200 samples for ESP32 constraints")
+                # Evenly distribute 200 points across the original array
+                step = len(samples) / 200.0
+                downsampled = [samples[int(i * step)] for i in range(200)]
+                body['samples'] = downsampled
+                
             data = json.dumps(body).encode()
             req = urllib.request.Request(
                 f'{ESP32_URL}/api/ideal_stroke',
@@ -183,6 +199,69 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._send_json({'status': 'ok', 'device_response': result})
         except Exception as e:
             self._send_json({'error': f'Failed to push to device: {str(e)}'}, 500)
+
+    def _delete_ideal_stroke(self):
+        try:
+            # Delete from internal cache
+            ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
+            if os.path.exists(ideal_path):
+                os.remove(ideal_path)
+            
+            user = db.get_user()
+            uid = user['id'] if user else None
+            if uid:
+                conn = db._connect()
+                c = conn.cursor()
+                c.execute('DELETE FROM ideal_strokes WHERE user_id = ?', (uid,))
+                conn.commit()
+                conn.close()
+            
+            # Forward delete to ESP32
+            req = urllib.request.Request(
+                f'{ESP32_URL}/api/ideal_stroke',
+                method='DELETE'
+            )
+            try:
+                resp = urllib.request.urlopen(req, timeout=5)
+                result = json.loads(resp.read().decode())
+            except Exception:
+                result = {'status': 'device offline or unreachable'}
+                
+            self._send_json({'status': 'ok', 'device_response': result})
+        except Exception as e:
+            self._send_json({'error': f'Failed to delete: {str(e)}'}, 500)
+
+    def _push_user_config_to_device(self):
+        try:
+            body = self._read_body()
+            data = json.dumps(body).encode()
+            req = urllib.request.Request(
+                f'{ESP32_URL}/api/user_config',
+                data=data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            result = json.loads(resp.read().decode())
+            self._send_json({'status': 'ok', 'device_response': result})
+        except Exception as e:
+            self._send_json({'error': f'Failed to push user config: {str(e)}'}, 500)
+
+    def _test_buzz(self):
+        try:
+            req = urllib.request.Request(
+                f'{ESP32_URL}/api/test_buzz',
+                data=b'{}',
+                headers={'Content-Type': 'application/json', 'Content-Length': '2'},
+                method='POST'
+            )
+            resp = urllib.request.urlopen(req, timeout=4)
+            result = json.loads(resp.read().decode())
+            self._send_json({'status': 'ok', 'device_response': result})
+        except urllib.error.HTTPError as e:
+            self._send_json({'error': f'HTTP Error {e.code}: {e.reason}'}, 500)
+        except Exception as e:
+            self._send_json({'error': f'Failed to send test buzz: {str(e)}'}, 500)
 
     # ── Device Info ──
 
@@ -293,10 +372,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'deviation': sample.get('deviation', sample.get('deviation_score', 0.0)),
                         'dev_id': sample.get('dev_id', sample.get('device_id', 0)),
                         'dev_role': sample.get('dev_role', sample.get('device_role', 0)),
-                        'cal': {
+                        'cal': sample.get('cal', {
                             'sys': sample.get('cal_sys', 0), 'accel': sample.get('cal_accel', 0),
                             'gyro': sample.get('cal_gyro', 0), 'mag': sample.get('cal_mag', 0)
-                        }
+                        })
                     }
                     result = processor.process_data(data_dict)
                     if result:
@@ -351,10 +430,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'deviation': sample.get('deviation_score', 0.0),
                     'dev_id': sample.get('device_id', 0),
                     'dev_role': sample.get('device_role', 0),
-                    'cal': {
+                    'cal': sample.get('cal', {
                         'sys': cal.get('sys', 0), 'accel': cal.get('accel', 0),
                         'gyro': cal.get('gyro', 0), 'mag': cal.get('mag', 0)
-                    }
+                    })
                 }
                 result = processor.process_data(data_dict)
                 if result:
@@ -481,12 +560,12 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'deviation': sample.get('deviation', 0.0),
                         'dev_id': sample.get('dev_id', 0),
                         'dev_role': sample.get('dev_role', 0),
-                        'cal': {
+                        'cal': sample.get('cal', {
                             'sys': sample.get('cal_sys', 0),
                             'accel': sample.get('cal_accel', 0),
                             'gyro': sample.get('cal_gyro', 0),
                             'mag': sample.get('cal_mag', 0),
-                        }
+                        })
                     }
 
                     processed_json = processor.process_data(data_dict)
@@ -565,14 +644,25 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         haptic_count = 0
         deviation_scores = []
         last_stroke_count = 0
+        stroke_breakdown = []
 
         for p in processed_data:
             stroke_count = p.get('stroke_count', 0)
             if stroke_count > last_stroke_count:
-                stroke_times.append(p.get('timestamp', 0))
+                t_ms = p.get('timestamp', 0)
+                stroke_times.append(t_ms)
                 debug = p.get('stroke_debug', {})
                 if debug.get('accel_mag', 0) > 0:
                     peak_accels.append(debug['accel_mag'])
+                
+                dev = p.get('deviation_score', 0)
+                stroke_breakdown.append({
+                    'number': stroke_count,
+                    'timestamp_s': t_ms / 1000.0,
+                    'entry_angle': p.get('entry_angle', 0),
+                    'haptic_fired': p.get('haptic_fired', False),
+                    'deviation': dev
+                })
             last_stroke_count = stroke_count
 
             if p.get('haptic_fired', False):
@@ -618,7 +708,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             'cal_quality': {
                 'accel_pct': round(accel_good / n * 100) if n > 0 else 0,
                 'gyro_pct': round(gyro_good / n * 100) if n > 0 else 0
-            }
+            },
+            'stroke_breakdown': stroke_breakdown
         }
 
         if len(stroke_times) >= 2:
@@ -660,7 +751,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
 def start_server(port=8004):
     db.init_db()
-    server = HTTPServer(('0.0.0.0', port), WiFiSessionHandler)
+    server = ThreadingHTTPServer(('0.0.0.0', port), WiFiSessionHandler)
     print(f'GoldenForm Session Processor running on http://localhost:{port}')
     print(f'Open: http://localhost:{port}/')
     print('Press Ctrl+C to stop')

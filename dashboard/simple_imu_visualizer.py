@@ -186,9 +186,9 @@ class StrokeProcessor:
         self.stroke_integrating = False
         self.stroke_integration_start = 0
         
-        self.MIN_CAL_LEVEL = 0 if batch_mode else 2
+        self.MIN_CAL_LEVEL = 0  # Relaxed: IMUPLUS mode makes 3/3 accel impossible while swimming
         self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor
-        self.ACCEL_DEADZONE_UNCAL = 1.5  # m/s² - larger deadzone for uncalibrated accel
+        self.ACCEL_DEADZONE_UNCAL = 1.0  # m/s² - larger deadzone for uncalibrated accel
         self.VELOCITY_DECAY = 0.97  # Base friction during active stroke
         self.STATIONARY_FRICTION = 0.85  # Braking when accel is low
 

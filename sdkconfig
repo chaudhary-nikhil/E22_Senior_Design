@@ -897,6 +897,15 @@ CONFIG_SECURE_ROM_DL_MODE_ENABLED=y
 # end of Security features
 
 #
+# Example Board Configuration
+#
+# default:
+# CONFIG_ESP_LYRAT_V4_3_BOARD is not set
+# default:
+CONFIG_ESP_CUSTOM_BOARD=y
+# end of Example Board Configuration
+
+#
 # Application manager
 #
 # default:
@@ -1820,6 +1829,13 @@ CONFIG_BT_ALARM_MAX_NUM=50
 
 # default:
 # CONFIG_BLE_MESH is not set
+
+#
+# BTstack Configuration
+#
+# default:
+# CONFIG_BTSTACK_AUDIO is not set
+# end of BTstack Configuration
 
 #
 # Console Library

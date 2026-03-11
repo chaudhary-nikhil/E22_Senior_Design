@@ -82,6 +82,7 @@ typedef struct {
   // Ideal stroke reference
   float ideal_lia[MAX_IDEAL_SAMPLES * 3]; // lia_x, lia_y, lia_z
   int ideal_sample_count;
+  float ideal_entry_angle;
   bool ideal_loaded;
 
   // Comparison results
@@ -90,6 +91,10 @@ typedef struct {
   // Haptic config
   float haptic_threshold;
   bool haptic_enabled;
+
+  // User parameters
+  float wingspan_cm;
+  haptic_skill_level_t skill_level;
 } detector_state_t;
 
 static detector_state_t s_state;
@@ -129,10 +134,38 @@ static float compare_strokes(const float *current, int cur_count,
 
 void stroke_detector_init(void) {
   memset(&s_state, 0, sizeof(s_state));
-  s_state.haptic_threshold = DEFAULT_HAPTIC_THRESHOLD;
+  s_state.haptic_threshold = 0.5f; // Default intermediate
   s_state.haptic_enabled = true;
+  s_state.wingspan_cm = 180.0f; // Default reference wingspan
+  s_state.skill_level = HAPTIC_SKILL_INTERMEDIATE;
   ESP_LOGI(TAG, "Stroke detector initialized (haptic threshold: %.2f)",
            s_state.haptic_threshold);
+}
+
+void stroke_detector_reset_session(void) {
+  // Reset only session-specific fields
+  s_state.stroke_count = 0;
+  s_state.turn_count = 0;
+  s_state.last_stroke_time_ms = 0;
+  s_state.last_wall_impact_time_ms = 0;
+  s_state.has_previous_sample = false;
+  
+  memset(s_state.recent_world_az, 0, sizeof(s_state.recent_world_az));
+  s_state.recent_world_az_count = 0;
+  s_state.recent_world_az_idx = 0;
+  s_state.prev_accel_mag = 0.0f;
+  s_state.has_prev_accel_mag = false;
+  s_state.wall_high_count = 0;
+  
+  s_state.stroke_integrating = false;
+  s_state.stroke_integration_start_ms = 0;
+  
+  memset(s_state.current_stroke_lia, 0, sizeof(s_state.current_stroke_lia));
+  s_state.current_stroke_count = 0;
+  s_state.last_deviation = 0.0f;
+
+  ESP_LOGI(TAG, "Stroke detector session reset (ideal persists: %s)", 
+           s_state.ideal_loaded ? "YES" : "NO");
 }
 
 stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
@@ -277,47 +310,74 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
     uint32_t time_in_stroke = t_ms - s_state.stroke_integration_start_ms;
     if (time_in_stroke > STROKE_INTEGRATION_TIMEOUT_MS) {
       // Window closed — run comparison if ideal data loaded
+      // Ensure we have an ideal stoke loaded and some current samples
+      // (minimum 5 samples = 250ms guard against too-short strokes)
       s_state.stroke_integrating = false;
 
-      if (s_state.ideal_loaded && s_state.current_stroke_count > 5) {
-        s_state.last_deviation = compare_strokes(
-            s_state.current_stroke_lia, s_state.current_stroke_count,
-            s_state.ideal_lia, s_state.ideal_sample_count);
+      if (s_state.ideal_loaded) {
+        if (s_state.current_stroke_count > 5) {
+          int num_ideal = s_state.ideal_sample_count;
+          s_state.last_deviation = compare_strokes(
+              s_state.current_stroke_lia, s_state.current_stroke_count,
+              s_state.ideal_lia, num_ideal);
+          event.deviation_score = s_state.last_deviation;
 
-        ESP_LOGI(TAG, "Stroke deviation: %.3f (threshold: %.3f)",
-                 s_state.last_deviation, s_state.haptic_threshold);
+          bool technique_bad = (event.deviation_score > s_state.haptic_threshold);
+          bool entry_bad = (s_state.ideal_entry_angle > 5.0f) && 
+                           (fabsf(event.entry_angle - s_state.ideal_entry_angle) > 15.0f);
 
-        // Trigger haptic if deviation exceeds threshold
-        if (s_state.haptic_enabled &&
-            s_state.last_deviation > s_state.haptic_threshold &&
-            haptic_is_available()) {
+          ESP_LOGI(TAG, "Stroke deviation: %.3f (entry: %.1f, target: %.1f, thresh: %.3f)",
+                   event.deviation_score, event.entry_angle, s_state.ideal_entry_angle, s_state.haptic_threshold);
 
-          if (s_state.last_deviation > 1.0f) {
-            haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE);
-          } else if (s_state.last_deviation > 0.7f) {
-            haptic_play_pattern(HAPTIC_PATTERN_DOUBLE_PULSE);
-          } else {
-            haptic_play_pattern(HAPTIC_PATTERN_SINGLE_SHORT);
+          if (s_state.haptic_enabled && haptic_is_available() && (technique_bad || entry_bad)) {
+            if (event.deviation_score > (s_state.haptic_threshold + 0.3f) || entry_bad) {
+              haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE); // Critical/Severe
+              event.haptic_fired = true;
+            } else if (event.deviation_score > (s_state.haptic_threshold + 0.15f)) {
+              haptic_play_pattern(HAPTIC_PATTERN_DOUBLE_PULSE); // High
+              event.haptic_fired = true;
+            } else if (technique_bad) {
+              if (s_state.skill_level == HAPTIC_SKILL_BEGINNER) {
+                haptic_play_pattern(HAPTIC_PATTERN_DEVIATION_MILD); // Mild
+              } else {
+                haptic_play_pattern(HAPTIC_PATTERN_SINGLE_LONG); // Moderate
+              }
+              event.haptic_fired = true;
+            }
           }
-          event.haptic_fired = true;
-          ESP_LOGD(TAG, "Haptic fired (deviation=%.3f)",
-                   s_state.last_deviation);
+
+          if (event.haptic_fired) {
+            ESP_LOGI(TAG, "Haptic fired! (dev=%.3f, entry_diff=%.1f)", 
+                     event.deviation_score, fabsf(event.entry_angle - s_state.ideal_entry_angle));
+          } else {
+            ESP_LOGI(TAG, "Stroke #%u: Score=%.3f (No haptic)",
+                     (unsigned)s_state.stroke_count, event.deviation_score);
+          }
+        } else {
+          ESP_LOGW(TAG, "Stroke #%u too short for DTW scoring", (unsigned)s_state.stroke_count);
         }
+      } else {
+        ESP_LOGW(TAG, "Stroke #%u detected but no ideal stroke loaded - skipping deviation scoring", (unsigned)s_state.stroke_count);
       }
-    } else {
-      // Accumulate LIA sample
-      if (s_state.current_stroke_count < MAX_CURRENT_SAMPLES) {
-        int i = s_state.current_stroke_count * 3;
-        s_state.current_stroke_lia[i + 0] = lia_x;
-        s_state.current_stroke_lia[i + 1] = lia_y;
-        s_state.current_stroke_lia[i + 2] = lia_z;
-        s_state.current_stroke_count++;
+    }
+  } else {
+    // Accumulate LIA sample
+    if (s_state.current_stroke_count < MAX_CURRENT_SAMPLES) {
+      // Normalize LIA magnitude by wingspan (reference = 180cm)
+      float scale = 1.0f;
+      if (s_state.wingspan_cm > 50.0f && s_state.wingspan_cm < 250.0f) {
+        scale = 180.0f / s_state.wingspan_cm;
       }
+
+      int i = s_state.current_stroke_count * 3;
+      s_state.current_stroke_lia[i + 0] = lia_x * scale;
+      s_state.current_stroke_lia[i + 1] = lia_y * scale;
+      s_state.current_stroke_lia[i + 2] = lia_z * scale;
+      s_state.current_stroke_count++;
     }
   }
 
-  // Populate event
-  event.deviation_score = s_state.last_deviation;
+  // Populate event (note: deviation_score already set if window closed this frame)
   event.stroke_count = s_state.stroke_count;
   event.turn_count = s_state.turn_count;
 
@@ -325,23 +385,29 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 }
 
 esp_err_t stroke_detector_load_ideal(const float *lia_data,
-                                     size_t num_samples) {
+                                     size_t num_samples, float ideal_entry_angle) {
+  s_state.ideal_loaded = false; // Disable during modification
+  
   if (num_samples > MAX_IDEAL_SAMPLES) {
     ESP_LOGW(TAG, "Ideal stroke too large (%zu samples, max %d) — truncating",
              num_samples, MAX_IDEAL_SAMPLES);
     num_samples = MAX_IDEAL_SAMPLES;
   }
+  
   if (num_samples == 0 || lia_data == NULL) {
-    s_state.ideal_loaded = false;
     s_state.ideal_sample_count = 0;
-    return ESP_ERR_INVALID_ARG;
+    ESP_LOGI(TAG, "Ideal stroke cleared");
+    return ESP_OK; // Cleared
   }
 
+  // Copy into static array
   memcpy(s_state.ideal_lia, lia_data, num_samples * 3 * sizeof(float));
   s_state.ideal_sample_count = (int)num_samples;
+  s_state.ideal_entry_angle = ideal_entry_angle;
   s_state.ideal_loaded = true;
-  ESP_LOGI(TAG, "Ideal stroke loaded: %zu samples (%.1f KB)", num_samples,
-           (float)(num_samples * 12) / 1024.0f);
+
+  ESP_LOGI(TAG, "Loaded ideal stroke: %zu samples, entry_angle: %.1f°", 
+           num_samples, ideal_entry_angle);
   return ESP_OK;
 }
 
@@ -362,3 +428,31 @@ void stroke_detector_enable_haptic(bool enable) {
   s_state.haptic_enabled = enable;
   ESP_LOGI(TAG, "Haptic triggering %s", enable ? "enabled" : "disabled");
 }
+
+void stroke_detector_set_user_params(float wingspan_cm, haptic_skill_level_t skill_level) {
+  if (wingspan_cm > 50.0f && wingspan_cm < 250.0f) {
+    s_state.wingspan_cm = wingspan_cm;
+  }
+  s_state.skill_level = skill_level;
+
+  // Update threshold based on skill level
+  switch (skill_level) {
+  case HAPTIC_SKILL_BEGINNER:
+    s_state.haptic_threshold = 0.80f;
+    break;
+  case HAPTIC_SKILL_INTERMEDIATE:
+    s_state.haptic_threshold = 0.50f;
+    break;
+  case HAPTIC_SKILL_ADVANCED:
+    s_state.haptic_threshold = 0.30f;
+    break;
+  default:
+    s_state.haptic_threshold = 0.50f;
+  }
+
+  ESP_LOGI(TAG, "User params updated: wingspan=%.1fcm, skill=%d, haptic_threshold=%.2f",
+           s_state.wingspan_cm, (int)s_state.skill_level, s_state.haptic_threshold);
+}
+
+float stroke_detector_get_ideal_entry_angle(void) { return s_state.ideal_entry_angle; }
+float stroke_detector_get_last_deviation(void) { return s_state.last_deviation; }
