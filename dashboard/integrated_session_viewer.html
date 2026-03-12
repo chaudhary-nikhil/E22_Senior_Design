@@ -19,11 +19,11 @@
     <nav class="app-nav">
         <span class="nav-brand">GoldenForm</span>
         <div class="nav-tabs">
-            <button class="nav-tab active" id="tab-home" onclick="switchTab('home')">Home</button>
-            <button class="nav-tab" id="tab-session" onclick="switchTab('session')">Session</button>
-            <button class="nav-tab" id="tab-analysis" onclick="switchTab('analysis')">Analysis</button>
-            <button class="nav-tab" id="tab-insights" onclick="switchTab('insights')">Insights</button>
-            <button class="nav-tab" id="tab-settings" onclick="switchTab('settings')">Settings</button>
+            <button type="button" class="nav-tab active" id="tab-home" data-tab-target="home" onclick="switchTab('home')">Home</button>
+            <button type="button" class="nav-tab" id="tab-session" data-tab-target="session" onclick="switchTab('session')">Session</button>
+            <button type="button" class="nav-tab" id="tab-analysis" data-tab-target="analysis" onclick="switchTab('analysis')">Analysis</button>
+            <button type="button" class="nav-tab" id="tab-insights" data-tab-target="insights" onclick="switchTab('insights')">Insights</button>
+            <button type="button" class="nav-tab" id="tab-settings" data-tab-target="settings" onclick="switchTab('settings')">Settings</button>
         </div>
         <div class="nav-status"><span class="status-dot"></span><span id="conn-text">Offline</span></div>
     </nav>
@@ -52,9 +52,9 @@
         <div class="card" style="margin-top:16px;">
             <div class="card-title">Quick Actions</div>
             <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;">
-                <button class="btn btn-gold" onclick="switchTab('session')">Go to Session</button>
-                <button class="btn btn-outline" onclick="switchTab('settings')">Manage Devices</button>
-                <button class="btn btn-outline" onclick="switchTab('insights')">View Progress</button>
+                <button type="button" class="btn btn-gold" data-tab-target="session" onclick="switchTab('session')">Go to Session</button>
+                <button type="button" class="btn btn-outline" data-tab-target="settings" onclick="switchTab('settings')">Manage Devices</button>
+                <button type="button" class="btn btn-outline" data-tab-target="insights" onclick="switchTab('insights')">View Progress</button>
             </div>
         </div>
     </div>
@@ -69,10 +69,10 @@
                 </div>
                 <!-- Playback Controls -->
                 <div class="playback-bar">
-                    <button class="play-btn" id="play-btn" onclick="togglePlayback()">▶</button>
-                    <button class="pb-btn" onclick="resetPlayback()" title="Reset">⏮</button>
-                    <button class="pb-btn" onclick="skipBackward()" title="Back 50">⏪</button>
-                    <button class="pb-btn" onclick="skipForward()" title="Forward 50">⏩</button>
+                    <button type="button" class="play-btn" id="play-btn" onclick="togglePlayback()">▶</button>
+                    <button type="button" class="pb-btn" onclick="resetPlayback()" title="Reset">⏮</button>
+                    <button type="button" class="pb-btn" onclick="skipBackward()" title="Back 50">⏪</button>
+                    <button type="button" class="pb-btn" onclick="skipForward()" title="Forward 50">⏩</button>
                     <div class="progress-container">
                         <div class="progress-track" onclick="seekPlayback(event)">
                             <div class="progress-fill" id="progress-fill"></div>
@@ -105,9 +105,9 @@
                     <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
                             id="session-count-badge">0</span></div>
                     <div style="display:flex;gap:4px;margin-bottom:10px;">
-                        <button class="btn btn-gold" style="flex:1;" id="sync-btn" onclick="syncFromDevice()">Sync from
+                        <button type="button" class="btn btn-gold" style="flex:1;" id="sync-btn" onclick="syncFromDevice()">Sync from
                             Device</button>
-                        <button class="btn btn-blue" style="flex:1;" id="merge-btn"
+                        <button type="button" class="btn btn-blue" style="flex:1;" id="merge-btn"
                             onclick="mergeLatestSessions()">Merge Devices</button>
                     </div>
                     <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
@@ -160,8 +160,8 @@
                         <span>Show 3D hand along stroke path</span>
                     </label>
                     <div style="display:flex;gap:6px;margin-top:8px;">
-                        <button class="btn btn-outline btn-sm" onclick="resetView()">Reset View</button>
-                        <button class="btn btn-outline btn-sm" onclick="clearViz()">Clear Trails</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset View</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="clearViz()">Clear Trails</button>
                     </div>
                 </div>
             </div>
@@ -329,7 +329,7 @@
     <script src="/viz/three.min.js"></script>
     <script src="/viz/OrbitControls.js"></script>
     <script src="/viz/chart.umd.min.js"></script>
-    <script src="/app.js"></script>
+    <script defer src="/app.js"></script>
 </body>
 
 </html>

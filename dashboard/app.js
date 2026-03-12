@@ -1115,8 +1115,45 @@ function resetView() {
 }
 function updateScale(v) { positionScale = parseFloat(v) || 3; setText('scale-val', positionScale.toFixed(1) + 'x'); }
 
+
+
+// Expose handlers for inline HTML onclick usage
+Object.assign(window, {
+    switchTab,
+    syncFromDevice,
+    mergeLatestSessions,
+    togglePlayback,
+    resetPlayback,
+    skipBackward,
+    skipForward,
+    seekPlayback,
+    updateScale,
+    resetView,
+    clearViz,
+    registerUser,
+    registerDevice,
+    setCurrentAsIdeal,
+    pushIdealToDevice,
+    deleteIdealStroke,
+    pushUserConfigToDevice,
+    testHapticDevice,
+    selectSession,
+    deleteSession
+});
+
+function bindNavigationButtons() {
+    document.querySelectorAll('[data-tab-target]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const tab = btn.getAttribute('data-tab-target');
+            if (tab) switchTab(tab);
+        });
+    });
+}
+
 // ── INIT ──
 window.addEventListener('DOMContentLoaded', () => {
+    bindNavigationButtons();
     loadUserProfile();
     loadSavedSessions();
     loadIdealStroke();

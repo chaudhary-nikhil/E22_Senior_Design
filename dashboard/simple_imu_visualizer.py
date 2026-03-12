@@ -802,11 +802,12 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             html_path = os.path.join(os.path.dirname(__file__), 'simple_imu_3d.html')
+
+            html_path = os.path.join(os.path.dirname(__file__), 'simple_imu_3d.html')
             try:
-                with open(html_path, 'r') as f:
-                    self.wfile.write(f.read().encode())
+                with open(html_path, 'rb') as f:
+                    self.wfile.write(f.read())
             except (BrokenPipeError, ConnectionResetError, OSError):
-                # Client disconnected, ignore silently
                 pass
             except FileNotFoundError:
                 self.send_response(404)

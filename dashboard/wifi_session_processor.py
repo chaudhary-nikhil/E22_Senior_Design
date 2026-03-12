@@ -31,10 +31,14 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/' or self.path == '/integrated_session_viewer.html':
             self._serve_html()
+        elif self.path == '/integrated_session_viewer_position.html':
+            self._serve_doc('integrated_session_viewer_position.html', 'text/html')
         elif self.path == '/app.css':
             self._serve_static('app.css', 'text/css')
         elif self.path == '/app.js':
             self._serve_static('app.js', 'application/javascript')
+        elif self.path == '/app_position_trail.js':
+            self._serve_static('app_position_trail.js', 'application/javascript')
         elif self.path == '/process':
             self._process_wifi_session()
         elif self.path == '/cached':
@@ -462,19 +466,23 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
-
     def _serve_html(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/html')
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         html_path = os.path.join(os.path.dirname(__file__), 'integrated_session_viewer.html')
-        with open(html_path, 'r') as f:
-            self.wfile.write(f.read().encode())
+        with open(html_path, 'rb') as f:
+            self.wfile.write(f.read())
+
 
     _ALLOWED_JS = {
-        'simple_imu_3d_viz.js', 'three.min.js', 'OrbitControls.js', 'chart.umd.min.js'
-    }
+    'app.js',
+    'simple_imu_3d_viz.js',
+    'three.min.js',
+    'OrbitControls.js',
+    'chart.umd.min.js'
+}
 
     def _serve_static(self, filename, content_type):
         path = os.path.join(os.path.dirname(__file__), filename)
@@ -580,7 +588,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     t1 = processed_data[-1].get('timestamp', 0)
                     duration = (t1 - t0) / 1000.0
 
-                now_str = datetime.now().strftime('%b %d, %-I:%M %p')
+                now_str = datetime.now().strftime('%b %d, %I:%M %p').lstrip('0')
                 sess_name = f"Session {sess.get('id', '?')} - {now_str}"
 
                 processed_sessions.append({
