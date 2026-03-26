@@ -385,6 +385,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'qw': sample.get('qw', 1), 'qx': sample.get('qx', 0), 'qy': sample.get('qy', 0), 'qz': sample.get('qz', 0),
                         'haptic': sample.get('haptic', sample.get('haptic_fired', False)),
                         'deviation': sample.get('deviation', sample.get('deviation_score', 0.0)),
+                        'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
+                        'entry_angle': float(sample.get('entry_angle', 0) or 0),
                         'dev_id': sample.get('dev_id', sample.get('device_id', 0)),
                         'dev_role': sample.get('dev_role', sample.get('device_role', 0)),
                         'cal': sample.get('cal', {
@@ -443,6 +445,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'qw': q.get('qw', 1), 'qx': q.get('qx', 0), 'qy': q.get('qy', 0), 'qz': q.get('qz', 0),
                     'haptic': sample.get('haptic_fired', False),
                     'deviation': sample.get('deviation_score', 0.0),
+                    'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
+                    'entry_angle': float(sample.get('entry_angle', 0) or 0),
                     'dev_id': sample.get('device_id', 0),
                     'dev_role': sample.get('device_role', 0),
                     'cal': sample.get('cal', {
@@ -562,11 +566,15 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 breath_detector = BreathingDetector()
                 processed_data = []
                 breath_events = []
+                session_has_head = any(
+                    int(s.get('dev_role', 0) or 0) == 3 for s in data
+                )
 
                 for sample in data:
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
                     lia_y = sample.get('lia_y', sample.get('ay', 0))
                     lia_z = sample.get('lia_z', sample.get('az', 0))
+                    dev_role = int(sample.get('dev_role', 0) or 0)
                     data_dict = {
                         't': sample.get('t', 0),
                         'lia_x': lia_x, 'lia_y': lia_y, 'lia_z': lia_z,
@@ -579,8 +587,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'qz': sample.get('qz', 0),
                         'haptic_fired': sample.get('haptic', sample.get('haptic_fired', False)),
                         'deviation_score': sample.get('deviation', sample.get('deviation_score', 0.0)),
+                        'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
+                        'entry_angle': float(sample.get('entry_angle', 0) or 0),
                         'dev_id': sample.get('dev_id', 0),
-                        'dev_role': sample.get('dev_role', 0),
+                        'dev_role': dev_role,
                         'cal': sample.get('cal', {
                             'sys': sample.get('cal_sys', 0),
                             'accel': sample.get('cal_accel', 0),
@@ -592,20 +602,23 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     processed_json = processor.process_data(data_dict)
                     if processed_json:
                         p = json.loads(processed_json)
-                        q = p.get('quaternion', {})
-                        be = breath_detector.feed(
-                            data_dict['t'],
-                            q.get('qw', 1), q.get('qx', 0),
-                            q.get('qy', 0), q.get('qz', 0)
-                        )
-                        if be:
-                            breath_events.append(be)
-                            p['breath_event'] = be
-                        p['breath_count'] = breath_detector.breath_count
+                        if session_has_head and dev_role == 3:
+                            q = p.get('quaternion', {})
+                            be = breath_detector.feed(
+                                data_dict['t'],
+                                q.get('qw', 1), q.get('qx', 0),
+                                q.get('qy', 0), q.get('qz', 0)
+                            )
+                            if be:
+                                breath_events.append(be)
+                                p['breath_event'] = be
+                            p['breath_count'] = breath_detector.breath_count
+                        else:
+                            p['breath_count'] = 0
                         processed_data.append(p)
 
                 metrics = self._calculate_stroke_metrics(processed_data, processor)
-                breath_stats = breath_detector.get_stats()
+                breath_stats = breath_detector.get_stats() if session_has_head else {}
                 metrics['breathing'] = breath_stats
 
                 duration = 0
@@ -678,35 +691,64 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
         stroke_times = []
         peak_accels = []
-        haptic_count = 0
-        deviation_scores = []
-        last_stroke_count = 0
         stroke_breakdown = []
 
-        for p in processed_data:
-            stroke_count = p.get('stroke_count', 0)
-            if stroke_count > last_stroke_count:
-                t_ms = p.get('timestamp', 0)
-                stroke_times.append(t_ms)
-                debug = p.get('stroke_debug', {})
-                if debug.get('accel_mag', 0) > 0:
-                    peak_accels.append(debug['accel_mag'])
-                
-                dev = p.get('deviation_score', 0)
-                stroke_breakdown.append({
-                    'number': stroke_count,
-                    'timestamp_s': t_ms / 1000.0,
-                    'entry_angle': p.get('entry_angle', 0),
-                    'haptic_fired': p.get('haptic_fired', False),
-                    'deviation': dev
-                })
-            last_stroke_count = stroke_count
+        use_fw = any((p.get('strokes') or 0) > 0 for p in processed_data)
+        last_fw = 0
+        last_py = 0
+        stroke_boundary_indices = []
+        for i, p in enumerate(processed_data):
+            fw = int(p.get('strokes') or 0)
+            py = int(p.get('stroke_count') or 0)
+            t_ms = p.get('timestamp', 0)
+            if use_fw:
+                if fw > last_fw:
+                    stroke_times.append(t_ms)
+                    dbg = p.get('stroke_debug', {})
+                    if dbg.get('accel_mag', 0) > 0:
+                        peak_accels.append(dbg['accel_mag'])
+                    stroke_boundary_indices.append((i, fw, t_ms, p))
+                    last_fw = fw
+            else:
+                if py > last_py:
+                    stroke_times.append(t_ms)
+                    dbg = p.get('stroke_debug', {})
+                    if dbg.get('accel_mag', 0) > 0:
+                        peak_accels.append(dbg['accel_mag'])
+                    stroke_boundary_indices.append((i, py, t_ms, p))
+                    last_py = py
 
-            if p.get('haptic_fired', False):
-                haptic_count += 1
-            dev = p.get('deviation_score', 0)
-            if dev > 0:
-                deviation_scores.append(dev)
+        for idx, sc, t_ms, p in stroke_boundary_indices:
+            angle = float(p.get('entry_angle', 0) or 0)
+            dev = float(p.get('deviation_score', 0) or 0)
+            haptic = bool(p.get('haptic_fired', False))
+            scan_limit = min(idx + 120, len(processed_data))
+            for j in range(idx + 1, scan_limit):
+                q = processed_data[j]
+                if use_fw:
+                    if int(q.get('strokes') or 0) > sc:
+                        break
+                else:
+                    if int(q.get('stroke_count') or 0) > sc:
+                        break
+                qdev = float(q.get('deviation_score', 0) or 0)
+                if qdev > 0 and dev == 0:
+                    dev = qdev
+                if q.get('haptic_fired', False):
+                    haptic = True
+                qa = float(q.get('entry_angle', 0) or 0)
+                if qa > 0.05 and angle == 0:
+                    angle = qa
+            stroke_breakdown.append({
+                'number': sc,
+                'timestamp_s': t_ms / 1000.0,
+                'entry_angle': angle,
+                'haptic_fired': haptic,
+                'deviation': dev
+            })
+
+        haptic_count = sum(1 for s in stroke_breakdown if s['haptic_fired'])
+        deviation_scores = [s['deviation'] for s in stroke_breakdown if s['deviation'] > 0]
 
         duration = (processed_data[-1].get('timestamp', 0) -
                     processed_data[0].get('timestamp', 0)) / 1000.0
@@ -717,10 +759,14 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         if (p.get('calibration', {}).get('gyro', 0) >= 2))
         n = len(processed_data)
 
-        # Get entry angles from processor
+        # Get entry angles from processor or from stroke breakdown
         avg_entry_angle = 0
         if hasattr(processor, 'entry_angles') and processor.entry_angles:
             avg_entry_angle = sum(processor.entry_angles) / len(processor.entry_angles)
+        elif stroke_breakdown:
+            angles = [s['entry_angle'] for s in stroke_breakdown if s['entry_angle'] > 0]
+            if angles:
+                avg_entry_angle = sum(angles) / len(angles)
 
         phase_pcts = {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0}
         if hasattr(processor, 'last_phase_pcts'):
@@ -728,11 +774,12 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
         avg_deviation = sum(deviation_scores) / len(deviation_scores) if deviation_scores else 0
 
+        eff_strokes = len(stroke_breakdown) if stroke_breakdown else processor.stroke_count
         metrics = {
-            'stroke_count': processor.stroke_count,
+            'stroke_count': eff_strokes,
             'turn_count': processor.turn_count,
             'duration': duration,
-            'stroke_rate': (processor.stroke_count / duration * 60) if duration > 0 else 0,
+            'stroke_rate': (eff_strokes / duration * 60) if duration > 0 else 0,
             'avg_stroke_time': 0,
             'consistency': 0,
             'peak_accel_avg': sum(peak_accels) / len(peak_accels) if peak_accels else 0,

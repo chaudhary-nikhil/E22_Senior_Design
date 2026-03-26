@@ -82,6 +82,12 @@ bool wifi_server_is_syncing(void);
 bool wifi_server_is_transfer_complete(void);
 
 /**
+ * @brief Check if WiFi AP is currently active (SSID visible)
+ * @return true if AP is running
+ */
+bool wifi_server_is_ap_active(void);
+
+/**
  * @brief Deinitialize WiFi server
  * @return esp_err_t ESP_OK on success
  */

@@ -457,8 +457,10 @@ esp_err_t storage_delete_all_files(void) {
         if (!is_reg) continue;
 
         const char *name = entry->d_name;
+
+        if (strcmp(name, "ideal_stroke.bin") == 0) continue;
+
         bool is_csv = (strstr(name, ".csv") || strstr(name, ".CSV"));
-        // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
         bool is_protobuf = (strstr(name, ".pb") || strstr(name, ".PB") ||
                            strstr(name, ".bin") || strstr(name, ".BIN"));
         if (!is_csv && !is_protobuf) continue;

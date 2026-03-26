@@ -619,6 +619,9 @@ class StrokeProcessor:
 
         # 6. Create the final JSON for the visualizer
         avg_entry = sum(self.entry_angles) / len(self.entry_angles) if self.entry_angles else 0
+        fw_entry = float(data_dict.get('entry_angle', 0) or 0)
+        display_entry = round(fw_entry, 1) if fw_entry > 0.05 else round(self.last_entry_angle, 1)
+        fw_strokes = int(data_dict.get('strokes', 0) or 0)
         vis_data = {
             "timestamp": t_ms,
             "quaternion": {"qw": quat_w, "qx": quat_x, "qy": quat_y, "qz": quat_z},
@@ -629,11 +632,12 @@ class StrokeProcessor:
             "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
             "tracking_active": self.stroke_integrating,
             "stroke_count": self.stroke_count,
+            "strokes": fw_strokes,
             "turn_count": self.turn_count,
             "just_reset": self.just_reset,
             
-            # Angle of attack (water entry angle)
-            "entry_angle": round(self.last_entry_angle, 1),
+            # Angle of attack (prefer firmware-reported angle at impact)
+            "entry_angle": display_entry,
             "avg_entry_angle": round(avg_entry, 1),
             "ideal_entry_angle": self.ideal_entry_angle,
             

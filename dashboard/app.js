@@ -14,6 +14,8 @@ let isPlaying = false;
 let playbackInterval = null;
 let positionScale = 3.0;
 let idealStrokeData = null;
+/** True if user registered a head-mounted device in Settings (SQLite). */
+let registeredHeadDevice = false;
 
 // ── TAB NAVIGATION ──
 function switchTab(tab) {
@@ -102,8 +104,9 @@ async function registerUser(e) {
 async function loadDevices() {
     const res = await apiGet('/api/devices');
     const list = document.getElementById('device-list');
-    if (!list) return;
     const devices = (res && res.devices) || [];
+    registeredHeadDevice = devices.some(d => String(d.role || '').toLowerCase() === 'head');
+    if (!list) return;
     if (!devices.length) { list.innerHTML = '<p style="color:var(--text3);font-size:0.85em;">No devices registered yet.</p>'; return; }
     const roleIcons = { wrist_right: '🤚', wrist_left: '✋', head: '🧠', ankle_right: '🦶', ankle_left: '🦶', waist: '🫁' };
     list.innerHTML = devices.map(d => `<div class="session-item"><div><strong>${roleIcons[d.role] || '📱'} ${d.name || 'Device ' + d.device_hw_id}</strong><div class="meta">${d.role} · HW ID: ${d.device_hw_id}</div></div><button class="btn btn-sm btn-outline" onclick="deleteDevice(${d.id})" title="Remove device">✕</button></div>`).join('');
@@ -162,6 +165,8 @@ async function pollDevice() {
         }
 
         if (!wasOnline && isDeviceOnline) {
+            showToast('Device detected! Auto-syncing...', 'info');
+            await syncFromDevice();
             if (pendingConfigSync) {
                 await pushUserConfigToDevice(true);
                 pendingConfigSync = false;
@@ -261,6 +266,7 @@ async function syncFromDevice() {
 const LS_KEY = 'goldenform_sessions';
 async function loadSavedSessions() {
     try { savedSessions = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { savedSessions = []; }
+    renderSessionList();
     try {
         const dbSessions = await apiGet('/api/sessions');
         if (dbSessions && dbSessions.sessions) {
@@ -383,6 +389,10 @@ async function selectSession(i) {
     processedData = pd;
     sessionMetrics = s.metrics || {};
     currentIndex = 0;
+    integratedPositions = [];
+    rawIntegratedPositions = [];
+    lastRenderedStrokeCount = 0;
+    followHandInView = true;
     isPlaying = false;
     if (playbackInterval) { clearInterval(playbackInterval); playbackInterval = null; }
     // Pre-compute stroke boundaries and haptic events for timeline
@@ -424,15 +434,23 @@ let hapticEvents = [];     // {index, deviation}
 function computeStrokeBoundaries() {
     strokeBoundaries = [];
     hapticEvents = [];
+    refreshStrokeFieldMode();
     let lastCount = 0;
     for (let i = 0; i < processedData.length; i++) {
         const d = processedData[i];
-        if (d.stroke_count > lastCount) {
-            strokeBoundaries.push({ index: i, strokeNum: d.stroke_count });
-            lastCount = d.stroke_count;
+        const sn = strokeNumAt(d);
+        if (sn > lastCount) {
+            strokeBoundaries.push({ index: i, strokeNum: sn });
+            lastCount = sn;
         }
         if (d.haptic_fired) {
-            hapticEvents.push({ index: i, deviation: d.deviation_score || 0 });
+            let dev = d.deviation_score || 0;
+            if (dev === 0) {
+                for (let j = i; j >= Math.max(0, i - 100); j--) {
+                    if (processedData[j].deviation_score > 0) { dev = processedData[j].deviation_score; break; }
+                }
+            }
+            hapticEvents.push({ index: i, deviation: dev });
         }
     }
 }
@@ -466,6 +484,7 @@ function togglePlayback() {
     isPlaying = !isPlaying;
     const btn = document.getElementById('play-btn');
     if (isPlaying) {
+        followHandInView = true;
         if (btn) btn.textContent = '⏸';
         playbackInterval = setInterval(() => {
             if (currentIndex < processedData.length - 1) { currentIndex++; renderFrame(currentIndex); }
@@ -571,7 +590,10 @@ function updateAnalysis() {
     const br = m.breathing || {};
     const breathCard = document.getElementById('breathing-card');
     if (breathCard) {
-        if (br.breath_count > 0) {
+        const headSamples = processedData.some(d => Number(d.device_role) === 3);
+        const rightHeavy = (br.right_pct || 0) >= (br.left_pct || 0);
+        const showBreathing = registeredHeadDevice && headSamples && (br.breath_count || 0) > 0 && rightHeavy;
+        if (showBreathing) {
             breathCard.style.display = '';
             setText('breath-count', br.breath_count);
             setText('breath-rate', br.breaths_per_minute || 0);
@@ -642,12 +664,24 @@ function buildStrokeTable() {
         for (let i = 0; i < processedData.length; i++) {
             const p = processedData[i];
             if (p.stroke_count > lastCount) {
+                let angle = p.entry_angle || 0;
+                let deviation = p.deviation_score || 0;
+                let haptic = p.haptic_fired;
+                // Scan forward to find deviation/haptic/entry_angle set on integration-complete frame
+                const scanLimit = Math.min(i + 120, processedData.length);
+                for (let j = i + 1; j < scanLimit; j++) {
+                    const q = processedData[j];
+                    if (q.stroke_count > p.stroke_count) break;
+                    if (q.deviation_score > 0 && deviation === 0) deviation = q.deviation_score;
+                    if (q.haptic_fired) haptic = true;
+                    if (q.entry_angle > 0 && angle === 0) angle = q.entry_angle;
+                }
                 rows.push({ 
                     num: p.stroke_count, 
                     time: Math.max(0, (p.timestamp - startTime) / 1000).toFixed(1), 
-                    angle: p.entry_angle || 0, 
-                    haptic: p.haptic_fired, 
-                    deviation: p.deviation_score || 0 
+                    angle: angle, 
+                    haptic: haptic, 
+                    deviation: deviation 
                 });
                 lastCount = p.stroke_count;
             }
@@ -901,20 +935,141 @@ function updateCharts(idx) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  3D VISUALIZATION — Ported from integrated session viewer
-//  Single cube at path tip, green position line, live stroke arc, colored past strokes
+//  3D VISUALIZATION — Realistic hand, LIA-integrated path, phase-colored trail
 // ══════════════════════════════════════════════════════════════════
 let scene, camera, renderer, controls;
-let imuCube = null;           // Cube at origin (red/green by tracking)
-let handMesh = null;          // 3D hand at path tip (optional)
-let positionLine = null;      // Green line from origin to current tip
-let liveTrailLine = null;     // White arc for current stroke (quaternion-based)
-let strokeTrails = [];        // Colored lines for past strokes (one color per stroke)
-let playbackStrokeSegments = []; // { startIdx, endIdx, strokeNum } built from processedData
+let handGroup = null;
+let handMaterials = [];
+let trailLine = null;
+let strokeMarkerGroup = null;
+let hapticFlashUntil = 0;
+let integratedPositions = [];
+let lastRenderedStrokeCount = 0;
+let playbackStrokeSegments = [];
 
+const SKIN_COLOR = 0xc9a088;
+const SKIN_COLOR_SHADOW = 0x9a7359;
+const TRAIL_MAX_POINTS = 2000;
 const TRAIL_SMOOTH_WINDOW = 5;
-const STROKE_COLORS = [0x00d4ff, 0xff9500, 0x00ff88, 0xbf5fff, 0xffff00, 0xff4444, 0x4488ff];
-const MAX_STROKES_DISPLAYED = 10;
+const PHASE_COLOR_HEX = {
+    glide: 0x3b82f6, catch: 0x22c55e, pull: 0xf97316,
+    recovery: 0xa855f7, idle: 0x666666
+};
+const PHASE_COLOR_RGB = {
+    glide: [0.23, 0.51, 0.96], catch: [0.13, 0.77, 0.37],
+    pull: [0.98, 0.45, 0.09], recovery: [0.66, 0.33, 0.97],
+    idle: [0.4, 0.4, 0.4]
+};
+
+/** Prefer firmware `strokes` when present so motion matches device logs. */
+let useFwStrokesForViz = false;
+function refreshStrokeFieldMode() {
+    useFwStrokesForViz = processedData.some(d => (d.strokes || 0) > 0);
+}
+function strokeNumAt(d) {
+    return useFwStrokesForViz ? (d.strokes || 0) : (d.stroke_count || 0);
+}
+
+/** Raw LIA / processor positions (session-relative). */
+let rawIntegratedPositions = [];
+
+/** Lateral separation between stroke columns (world X). */
+const VIZ_STROKE_X_SPREAD = 0.14;
+/** How much real LIA integration is mixed in (rest is canonical full-stroke arc). */
+const VIZ_CANONICAL_BLEND = 0.88;
+
+/**
+ * One freestyle arm cycle in normalized time u ∈ [0,1], keyed in meters before * positionScale.
+ * Order: above water → pull under → recovery over → entry at angle → (u=1 meets next stroke reset).
+ * Matches coach visualization: full path is visible each stroke, not only IMU rotation.
+ */
+const STROKE_PATH_KEYS = [
+    { u: 0.0,  x: 0.0,  y: 0.38, z: -0.14 },
+    { u: 0.14, x: 0.02, y: 0.32, z: -0.10 },
+    { u: 0.32, x: 0.04, y: -0.06, z: 0.0 },
+    { u: 0.48, x: 0.05, y: -0.22, z: 0.08 },
+    { u: 0.62, x: 0.04, y: -0.20, z: 0.12 },
+    { u: 0.76, x: 0.0,  y: 0.34, z: 0.06 },
+    { u: 0.88, x: -0.02, y: 0.12, z: -0.04 },
+    { u: 1.0,  x: 0.0,  y: 0.38, z: -0.14 }
+];
+
+function sampleStrokeCanonical(u) {
+    const s = positionScale;
+    const uu = Math.max(0, Math.min(1, u));
+    for (let k = 0; k < STROKE_PATH_KEYS.length - 1; k++) {
+        const a = STROKE_PATH_KEYS[k];
+        const b = STROKE_PATH_KEYS[k + 1];
+        if (uu >= a.u && uu <= b.u) {
+            const t = b.u > a.u ? (uu - a.u) / (b.u - a.u) : 0;
+            const tt = t * t * (3 - 2 * t);
+            const x = THREE.MathUtils.lerp(a.x, b.x, tt);
+            const y = THREE.MathUtils.lerp(a.y, b.y, tt);
+            const z = THREE.MathUtils.lerp(a.z, b.z, tt);
+            return new THREE.Vector3(x * s, y * s, z * s);
+        }
+    }
+    const last = STROKE_PATH_KEYS[STROKE_PATH_KEYS.length - 1];
+    return new THREE.Vector3(last.x * s, last.y * s, last.z * s);
+}
+
+function getSegEnd(upToIndex) {
+    if (!processedData.length || upToIndex < 0) return 0;
+    refreshStrokeFieldMode();
+    const sc = strokeNumAt(processedData[upToIndex] || {});
+    for (let j = upToIndex + 1; j < processedData.length; j++) {
+        if (strokeNumAt(processedData[j]) > sc) return j - 1;
+    }
+    return processedData.length - 1;
+}
+
+function firstStrokeSampleIndex() {
+    for (let i = 0; i < processedData.length; i++) {
+        if (strokeNumAt(processedData[i]) > 0) return i;
+    }
+    return -1;
+}
+
+/** Normalized progress within current stroke [0,1] — drives canonical arc + reset each stroke. */
+function strokeProgressU(i) {
+    if (!processedData.length) return 0;
+    const sc = strokeNumAt(processedData[i]);
+    if (sc === 0) {
+        const fs = firstStrokeSampleIndex();
+        if (fs <= 0) return 0;
+        return Math.min(0.1, (i / fs) * 0.1);
+    }
+    const segStart = getSegStart(i);
+    const segEnd = getSegEnd(i);
+    const denom = Math.max(1, segEnd - segStart);
+    return (i - segStart) / denom;
+}
+
+/** Best entry angle (deg) for sample (device reports late; scan backward). */
+function entryAngleForSample(i) {
+    const d = processedData[i];
+    let ea = Number(d.entry_angle) || 0;
+    if (ea > 0.5) return ea;
+    for (let j = i; j >= Math.max(0, i - 80); j--) {
+        const v = Number(processedData[j].entry_angle) || 0;
+        if (v > 0.5) return v;
+    }
+    const ideal = (sessionMetrics && Number(sessionMetrics.ideal_entry_angle)) || 30;
+    return ideal;
+}
+
+/** Nudge path during entry window using reported angle (deg). */
+function entryAnglePathNudge(u, entryDeg) {
+    const s = positionScale;
+    if (u < 0.74 || u > 0.98) return new THREE.Vector3(0, 0, 0);
+    const w = Math.sin((u - 0.74) / 0.24 * Math.PI);
+    const delta = (entryDeg - 30) / 45;
+    return new THREE.Vector3(
+        -delta * 0.04 * w * s,
+        delta * 0.06 * w * s,
+        delta * 0.03 * w * s
+    );
+}
 
 function nq(q) {
     if (!q) return new THREE.Quaternion(0, 0, 0, 1);
@@ -922,18 +1077,93 @@ function nq(q) {
     const m = Math.hypot(w, x, y, z);
     return m > 1e-8 ? new THREE.Quaternion(x / m, y / m, z / m, w / m) : new THREE.Quaternion(0, 0, 0, 1);
 }
-function trailPtDisplacement(dataQ, refQ, scale) {
-    const tip = new THREE.Vector3(0, 0, scale);
-    tip.applyQuaternion(nq(dataQ));
-    const start = new THREE.Vector3(0, 0, scale);
-    start.applyQuaternion(nq(refQ));
-    return tip.sub(start);
+function buildRawIntegratedPositions() {
+    rawIntegratedPositions = [];
+    if (!processedData.length) return;
+    refreshStrokeFieldMode();
+
+    const hasProcessorPos = processedData.length > 0 && processedData.every(d =>
+        d.position && typeof d.position.px === 'number'
+    );
+    if (hasProcessorPos) {
+        let prevStroke = strokeNumAt(processedData[0]);
+        for (let i = 0; i < processedData.length; i++) {
+            const d = processedData[i];
+            const sc = strokeNumAt(d);
+            if (sc > prevStroke) prevStroke = sc;
+            const p = d.position;
+            rawIntegratedPositions.push(new THREE.Vector3(
+                (p.px || 0) * positionScale,
+                (p.py || 0) * positionScale,
+                (p.pz || 0) * positionScale
+            ));
+        }
+        return;
+    }
+
+    let vx = 0, vy = 0, vz = 0, px = 0, py = 0, pz = 0;
+    let prevStroke = strokeNumAt(processedData[0]);
+    for (let i = 0; i < processedData.length; i++) {
+        const d = processedData[i];
+        const sc = strokeNumAt(d);
+        if (sc > prevStroke) {
+            vx = vy = vz = 0;
+            px = py = pz = 0;
+            prevStroke = sc;
+        }
+        let dt = 0.02;
+        if (i > 0 && d.timestamp != null && processedData[i - 1].timestamp != null) {
+            dt = Math.max(0.001, Math.min(0.1, (d.timestamp - processedData[i - 1].timestamp) / 1000));
+        }
+        let ax = 0, ay = 0, az = 0;
+        if (d.lia) { ax = d.lia.x || 0; ay = d.lia.y || 0; az = d.lia.z || 0; }
+        else if (d.acceleration) { ax = d.acceleration.ax || 0; ay = d.acceleration.ay || 0; az = d.acceleration.az || 0; }
+        const wA = new THREE.Vector3(ax, ay, az).applyQuaternion(nq(d.quaternion));
+        vx += wA.x * dt; vy += wA.y * dt; vz += wA.z * dt;
+        vx *= 0.97; vy *= 0.97; vz *= 0.97;
+        px += vx * dt; py += vy * dt; pz += vz * dt;
+        rawIntegratedPositions.push(new THREE.Vector3(px * positionScale, py * positionScale, pz * positionScale));
+    }
+}
+
+/** Per-stroke: canonical full stroke arc + small LIA residual + entry-angle nudge. */
+function applyStrokeAnchoredDisplay() {
+    integratedPositions = [];
+    if (!rawIntegratedPositions.length || rawIntegratedPositions.length !== processedData.length) return;
+    refreshStrokeFieldMode();
+    for (let i = 0; i < processedData.length; i++) {
+        const segStart = getSegStart(i);
+        const r0 = rawIntegratedPositions[segStart];
+        const ri = rawIntegratedPositions[i];
+        const strokeN = Math.max(1, strokeNumAt(processedData[segStart]) || 1);
+        const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
+        const u = strokeProgressU(i);
+        const canon = sampleStrokeCanonical(u);
+        const delta = new THREE.Vector3().subVectors(ri, r0);
+        const ea = entryAngleForSample(i);
+        const nudge = entryAnglePathNudge(u, ea);
+        const pos = canon.clone()
+            .multiplyScalar(VIZ_CANONICAL_BLEND)
+            .add(delta.multiplyScalar(1.0 - VIZ_CANONICAL_BLEND))
+            .add(new THREE.Vector3(spread, 0, 0))
+            .add(nudge);
+        integratedPositions.push(pos);
+    }
+}
+
+function integratePositions() {
+    integratedPositions = [];
+    rawIntegratedPositions = [];
+    if (!processedData.length) return;
+    buildRawIntegratedPositions();
+    applyStrokeAnchoredDisplay();
 }
 function getSegStart(upToIndex) {
     if (!processedData.length || upToIndex < 0) return 0;
-    const sc = processedData[upToIndex]?.stroke_count ?? 0;
+    refreshStrokeFieldMode();
+    const sc = strokeNumAt(processedData[upToIndex] || {});
     for (let i = upToIndex; i >= 0; i--) {
-        if ((processedData[i]?.stroke_count ?? 0) < sc) return i + 1;
+        if (strokeNumAt(processedData[i] || {}) < sc) return i + 1;
     }
     return 0;
 }
@@ -954,9 +1184,10 @@ function smoothTrailPoints(points, windowSize) {
 
 function buildPlaybackStrokeSegments() {
     playbackStrokeSegments = [];
+    refreshStrokeFieldMode();
     let last = 0, start = 0;
     for (let i = 0; i < processedData.length; i++) {
-        const c = processedData[i].stroke_count ?? 0;
+        const c = strokeNumAt(processedData[i]);
         if (c > last) {
             if (last > 0 && start < i) playbackStrokeSegments.push({ startIdx: start, endIdx: i - 1, strokeNum: last });
             start = i;
@@ -967,115 +1198,219 @@ function buildPlaybackStrokeSegments() {
         playbackStrokeSegments.push({ startIdx: start, endIdx: processedData.length - 1, strokeNum: last });
 }
 
-// 3D hand model (palm + fingers + thumb + wrist), scaled for stroke path
+let waterPlane = null;
+let splashGroup = null;
+let velocityArrow = null;
+/** Orbit target softly follows the hand so translation stays in frame during playback. */
+let followHandInView = true;
+
 function createHandModel() {
     if (typeof THREE === 'undefined') return null;
     const group = new THREE.Group();
-    const mat = new THREE.MeshPhongMaterial({
-        color: 0xe8b88b,
-        emissive: 0x1a1008,
-        specular: 0x442211,
-        shininess: 20,
-        flatShading: false
-    });
-    const cyl = (rTop, rBot, h, seg = 10) =>
-        new THREE.CylinderGeometry(rTop, rBot, h, seg);
+    handMaterials = [];
+    const skinMat = (hex) => {
+        const c = hex != null ? hex : SKIN_COLOR;
+        let m;
+        if (THREE.MeshPhysicalMaterial) {
+            m = new THREE.MeshPhysicalMaterial({
+                color: c,
+                roughness: 0.42,
+                metalness: 0,
+                emissive: 0x060403,
+                clearcoat: 0.08,
+                clearcoatRoughness: 0.45
+            });
+        } else {
+            m = new THREE.MeshStandardMaterial({
+                color: c,
+                roughness: 0.42,
+                metalness: 0.06,
+                emissive: 0x060403
+            });
+        }
+        m.userData.baseColor = c;
+        handMaterials.push(m);
+        return m;
+    };
 
-    const palmGeo = new THREE.BoxGeometry(0.09, 0.06, 0.035);
-    const palm = new THREE.Mesh(palmGeo, mat.clone());
-    palm.position.set(0, 0, 0);
+    // Palm: main pad + thenar bulge (reads as a hand, not a disk)
+    const palmGeo = new THREE.SphereGeometry(0.046, 32, 24);
+    palmGeo.scale(1.85, 0.32, 2.05);
+    const palm = new THREE.Mesh(palmGeo, skinMat(SKIN_COLOR));
+    palm.position.set(0, 0, 0.01);
     group.add(palm);
 
-    const fingerSegs = [
-        [0.032, 0.028, 0.022], [0.035, 0.031, 0.024], [0.033, 0.029, 0.022], [0.025, 0.022, 0.018]
-    ];
-    const fingerBaseY = [-0.022, -0.008, 0.008, 0.022];
-    for (let f = 0; f < 4; f++) {
-        const segs = fingerSegs[f];
-        let z = 0.0175, r = 0.012;
-        for (let s = 0; s < 3; s++) {
-            const seg = new THREE.Mesh(cyl(r, r * 1.08, segs[s], 8), mat.clone());
-            seg.position.set(fingerBaseY[f], 0, z + segs[s] / 2);
-            seg.rotation.x = Math.PI / 2;
-            group.add(seg);
-            z += segs[s];
-            r *= 0.85;
-        }
-    }
+    const thenar = new THREE.Mesh(new THREE.SphereGeometry(0.024, 20, 14), skinMat(SKIN_COLOR_SHADOW));
+    thenar.position.set(0.028, -0.014, 0.055);
+    thenar.scale.set(1.1, 0.65, 1.15);
+    group.add(thenar);
 
-    const thumbGrp = new THREE.Group();
-    thumbGrp.position.set(-0.055, -0.028, -0.01);
-    thumbGrp.rotation.z = 0.5;
-    thumbGrp.rotation.x = -0.3;
-    const t1 = new THREE.Mesh(cyl(0.011, 0.012, 0.028, 8), mat.clone());
-    t1.position.set(0, 0, 0.014); t1.rotation.x = Math.PI / 2;
-    thumbGrp.add(t1);
-    const t2 = new THREE.Mesh(cyl(0.009, 0.011, 0.022, 8), mat.clone());
-    t2.position.set(0, 0, 0.039); t2.rotation.x = Math.PI / 2;
-    thumbGrp.add(t2);
-    group.add(thumbGrp);
-
-    const wrist = new THREE.Mesh(cyl(0.035, 0.04, 0.03, 10), mat.clone());
-    wrist.position.set(0, 0, -0.04);
+    // Wrist / forearm stub (tapered)
+    const wristGeo = new THREE.CylinderGeometry(0.028, 0.036, 0.055, 14);
+    const wrist = new THREE.Mesh(wristGeo, skinMat(SKIN_COLOR));
+    wrist.position.set(0, 0, -0.078);
     wrist.rotation.x = Math.PI / 2;
     group.add(wrist);
 
-    group.scale.setScalar(1.4);
+    const addFinger = (fx, lengths, r0) => {
+        let z = 0.052;
+        let r = r0;
+        for (let k = 0; k < lengths.length; k++) {
+            const len = lengths[k];
+            const geo = new THREE.CylinderGeometry(r * 0.88, r, len, 12, 2);
+            const seg = new THREE.Mesh(geo, skinMat(SKIN_COLOR));
+            seg.position.set(fx, 0, z + len / 2);
+            seg.rotation.x = Math.PI / 2;
+            group.add(seg);
+            const kn = new THREE.Mesh(new THREE.SphereGeometry(r * 0.92, 10, 8), skinMat(SKIN_COLOR_SHADOW));
+            kn.position.set(fx, 0, z);
+            group.add(kn);
+            z += len;
+            r *= 0.84;
+        }
+        const tip = new THREE.Mesh(new THREE.SphereGeometry(r * 1.05, 10, 8), skinMat(SKIN_COLOR));
+        tip.position.set(fx, 0, z);
+        group.add(tip);
+    };
+
+    addFinger(-0.024, [0.034, 0.024, 0.018], 0.0078);
+    addFinger(-0.008, [0.040, 0.028, 0.021], 0.0082);
+    addFinger(0.008, [0.037, 0.026, 0.019], 0.008);
+    addFinger(0.024, [0.030, 0.021, 0.016], 0.0068);
+
+    const thumbGrp = new THREE.Group();
+    thumbGrp.position.set(-0.05, -0.008, -0.012);
+    thumbGrp.rotation.set(-0.35, -0.12, 0.62);
+    const tSegs = [
+        { rt: 0.011, rb: 0.012, len: 0.028 },
+        { rt: 0.008, rb: 0.011, len: 0.026 }
+    ];
+    let tz = 0;
+    for (const ts of tSegs) {
+        const seg = new THREE.Mesh(
+            new THREE.CylinderGeometry(ts.rt, ts.rb, ts.len, 12, 2),
+            skinMat(SKIN_COLOR_SHADOW)
+        );
+        seg.position.set(0, 0, tz + ts.len / 2);
+        seg.rotation.x = Math.PI / 2;
+        thumbGrp.add(seg);
+        tz += ts.len;
+    }
+    const tTip = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), skinMat(SKIN_COLOR));
+    tTip.position.set(0, 0, tz);
+    thumbGrp.add(tTip);
+    group.add(thumbGrp);
+
+    group.scale.setScalar(2.75);
     return group;
+}
+
+function createWaterSurface() {
+    if (typeof THREE === 'undefined') return null;
+    const waterGeo = new THREE.PlaneGeometry(24, 24, 48, 48);
+    const waterMat = new THREE.MeshStandardMaterial({
+        color: 0x0a4a72,
+        emissive: 0x001a2a,
+        roughness: 0.15,
+        metalness: 0.2,
+        transparent: true, opacity: 0.42,
+        side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(waterGeo, waterMat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.y = 0;
+    mesh.receiveShadow = false;
+    return mesh;
+}
+
+function createSplash(position) {
+    if (!splashGroup || typeof THREE === 'undefined') return;
+    const count = 6 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < count; i++) {
+        const geo = new THREE.SphereGeometry(0.02 + Math.random() * 0.03, 4, 3);
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0x66ccff, transparent: true, opacity: 0.7
+        });
+        const drop = new THREE.Mesh(geo, mat);
+        drop.position.copy(position);
+        drop.position.y = 0.05;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 0.02 + Math.random() * 0.04;
+        drop.userData = {
+            vx: Math.cos(angle) * speed,
+            vy: 0.03 + Math.random() * 0.05,
+            vz: Math.sin(angle) * speed,
+            life: 1.0
+        };
+        splashGroup.add(drop);
+    }
 }
 
 function init3D() {
     const canvas = document.getElementById('canvas3d');
     if (!canvas || !window.THREE) return;
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x111111);
+    scene.background = new THREE.Color(0x06060e);
+    scene.fog = new THREE.FogExp2(0x06060e, 0.028);
 
     const w = Math.max(canvas.clientWidth || 800, 400);
     const h = Math.max(canvas.clientHeight || 450, 400);
-    camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 1000);
-    camera.position.set(3, 3, 3);
+    camera = new THREE.PerspectiveCamera(55, w / h, 0.05, 200);
+    camera.position.set(1.85, 2.2, 2.85);
     camera.lookAt(0, 0, 0);
 
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
 
-    scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x1a1a1a));
-    scene.add(new THREE.AxesHelper(2));
+    scene.add(new THREE.GridHelper(14, 28, 0x1a1a26, 0x0e0e16));
 
-    const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-    imuCube = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xff4444 }));
-    imuCube.castShadow = true;
-    scene.add(imuCube);
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+    trailGeo.setAttribute('color', new THREE.Float32BufferAttribute([], 3));
+    trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
+        vertexColors: true, transparent: true, opacity: 0.9, linewidth: 2
+    }));
+    scene.add(trailLine);
 
-    const plGeo = new THREE.BufferGeometry();
-    plGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
-    positionLine = new THREE.Line(plGeo, new THREE.LineBasicMaterial({ color: 0x00ff00, opacity: 0.6, transparent: true }));
-    scene.add(positionLine);
+    strokeMarkerGroup = new THREE.Group();
+    scene.add(strokeMarkerGroup);
 
-    const ltGeo = new THREE.BufferGeometry();
-    ltGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-    liveTrailLine = new THREE.Line(ltGeo, new THREE.LineBasicMaterial({ vertexColors: true, opacity: 0.95, transparent: true, linewidth: 2 }));
-    scene.add(liveTrailLine);
+    handGroup = createHandModel();
+    if (handGroup) scene.add(handGroup);
 
-    handMesh = createHandModel();
-    if (handMesh) {
-        handMesh.visible = true;
-        scene.add(handMesh);
-    }
+    waterPlane = createWaterSurface();
+    if (waterPlane) scene.add(waterPlane);
 
-    scene.add(new THREE.AmbientLight(0x404040, 0.6));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
-    dl.position.set(5, 5, 5);
+    splashGroup = new THREE.Group();
+    scene.add(splashGroup);
+
+    velocityArrow = new THREE.ArrowHelper(
+        new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 0.22,
+        0xff8844, 0.07, 0.045
+    );
+    velocityArrow.visible = false;
+    scene.add(velocityArrow);
+
+    scene.add(new THREE.AmbientLight(0x6688aa, 0.45));
+    const dl = new THREE.DirectionalLight(0xfff5e6, 1.05);
+    dl.position.set(4, 7, 3.5);
     scene.add(dl);
+    const dl2 = new THREE.DirectionalLight(0xaabbff, 0.35);
+    dl2.position.set(-3.5, 3, -4);
+    scene.add(dl2);
+    const rim = new THREE.DirectionalLight(0x4488cc, 0.25);
+    rim.position.set(0, -2, 6);
+    scene.add(rim);
 
-    if (window.THREE.OrbitControls) {
+    if (window.THREE && THREE.OrbitControls) {
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
         controls.target.set(0, 0, 0);
         controls.minDistance = 0.5;
-        controls.maxDistance = 15;
+        controls.maxDistance = 20;
     }
 
     animate();
@@ -1083,104 +1418,185 @@ function init3D() {
 
 function animate() {
     requestAnimationFrame(animate);
+    if (strokeMarkerGroup) {
+        for (let i = strokeMarkerGroup.children.length - 1; i >= 0; i--) {
+            const m = strokeMarkerGroup.children[i];
+            if (m.userData.ripple) {
+                m.userData.age = (m.userData.age || 0) + 0.032;
+                const g = 1 + m.userData.age * 1.15;
+                m.scale.set(g, g, 1);
+                m.material.opacity = Math.max(0, 0.9 - m.userData.age * 0.48);
+                if (m.material.opacity <= 0.02) {
+                    strokeMarkerGroup.remove(m);
+                    m.geometry.dispose();
+                    m.material.dispose();
+                }
+            } else {
+                m.material.opacity -= 0.015;
+                m.scale.multiplyScalar(1.02);
+                if (m.material.opacity <= 0) {
+                    strokeMarkerGroup.remove(m);
+                    m.geometry.dispose();
+                    m.material.dispose();
+                }
+            }
+        }
+    }
+    // Animate splash particles
+    if (splashGroup) {
+        for (let i = splashGroup.children.length - 1; i >= 0; i--) {
+            const drop = splashGroup.children[i];
+            const u = drop.userData;
+            u.vy -= 0.002; // gravity
+            drop.position.x += u.vx;
+            drop.position.y += u.vy;
+            drop.position.z += u.vz;
+            u.life -= 0.025;
+            drop.material.opacity = Math.max(0, u.life * 0.7);
+            if (u.life <= 0) {
+                splashGroup.remove(drop);
+                drop.geometry.dispose();
+                drop.material.dispose();
+            }
+        }
+    }
+    if (handGroup && hapticFlashUntil > 0 && Date.now() > hapticFlashUntil) {
+        handMaterials.forEach(m => {
+            m.color.setHex(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
+            m.emissive.setHex(0x060403);
+        });
+        hapticFlashUntil = 0;
+    }
     if (controls) controls.update();
     if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
-// ── RENDER FRAME (integrated session viewer style) ──
+// ── RENDER FRAME ──
 function renderFrame(idx) {
     if (!processedData.length || idx >= processedData.length) return;
     const d = processedData[idx];
-    const segStart = getSegStart(idx);
-    const refQ = processedData[segStart]?.quaternion;
-    const pathScale = positionScale;
 
-    // Cube at origin, rotates with quaternion (integrated viewer style); green when tracking
-    if (imuCube) {
-        imuCube.position.set(0, 0, 0);
-        imuCube.setRotationFromQuaternion(nq(d.quaternion));
-        if (imuCube.material) imuCube.material.color.setHex(d.tracking_active ? 0x44ff44 : 0xff4444);
-        // Cube stays at origin; position line and trail show the path
-    }
+    if (integratedPositions.length !== processedData.length) integratePositions();
+    const pos = integratedPositions[idx] || new THREE.Vector3();
 
-    // Green position line: origin to current tip (displacement from stroke start)
-    let tipVec = new THREE.Vector3(0, 0, 0);
-    if (positionLine && refQ) {
-        tipVec = trailPtDisplacement(d.quaternion, refQ, pathScale);
-        const pa = positionLine.geometry.attributes.position.array;
-        pa[3] = tipVec.x; pa[4] = tipVec.y; pa[5] = tipVec.z;
-        positionLine.geometry.attributes.position.needsUpdate = true;
-    }
-
-    // 3D hand at path tip, oriented with quaternion
-    if (handMesh) {
-        handMesh.position.copy(tipVec);
-        handMesh.setRotationFromQuaternion(nq(d.quaternion));
-        const showHand = document.getElementById('show-hand') ? document.getElementById('show-hand').checked : true;
-        handMesh.visible = showHand;
-    }
-
-    // Live trail: arc from stroke start to current frame, colored by phase
-    if (liveTrailLine && refQ) {
-        const points = [];
-        const colors = [];
-        const PHASE_COLORS = {
-            catch:    [0.13, 0.77, 0.37],   // green
-            pull:     [0.92, 0.70, 0.03],    // gold
-            recovery: [0.66, 0.33, 0.97],    // purple
-            glide:    [0.23, 0.51, 0.96],    // blue
-            idle:     [0.6, 0.6, 0.6]        // gray
-        };
-        for (let i = segStart; i <= idx; i++) {
-            const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, pathScale);
-            points.push(pt.clone());
-            const ph = processedData[i]?.stroke_phase || 'idle';
-            const c = PHASE_COLORS[ph] || PHASE_COLORS.idle;
-            colors.push(c[0], c[1], c[2]);
+    if (handGroup) {
+        const showHand = document.getElementById('show-hand');
+        handGroup.visible = showHand ? showHand.checked : true;
+        const uStroke = strokeProgressU(idx);
+        const qBase = nq(d.quaternion);
+        const qDisplay = qBase.clone();
+        const eaLive = entryAngleForSample(idx);
+        if (uStroke >= 0.70 && uStroke <= 0.99 && eaLive > 0.5) {
+            const rad = (eaLive - 30) * (Math.PI / 180) * 0.6;
+            const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rad);
+            qDisplay.multiply(qPitch);
         }
-        const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
+        handGroup.setRotationFromQuaternion(qDisplay);
+        handGroup.position.copy(pos);
+        const phase = d.stroke_phase || d.phase || 'idle';
+        const phaseHex = PHASE_COLOR_HEX[phase] || PHASE_COLOR_HEX.idle;
+        if (hapticFlashUntil <= Date.now()) {
+            handMaterials.forEach(m => {
+                const base = new THREE.Color(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
+                const tint = new THREE.Color(phaseHex);
+                m.color.copy(base.lerp(tint, 0.25));
+                m.emissive.setHex(0x060403);
+            });
+        }
+    }
+
+    if (d.haptic_fired && hapticFlashUntil <= Date.now()) {
+        hapticFlashUntil = Date.now() + 300;
+        handMaterials.forEach(m => {
+            m.color.setHex(0xff4444);
+            m.emissive.setHex(0x880000);
+        });
+    }
+
+    if (velocityArrow && idx > 0) {
+        const p0 = integratedPositions[idx - 1];
+        const p1 = pos;
+        if (p0 && p1) {
+            const delta = new THREE.Vector3().subVectors(p1, p0);
+            const len = delta.length();
+            if (len > 0.00012) {
+                velocityArrow.visible = true;
+                const dir = delta.multiplyScalar(1 / len);
+                velocityArrow.setDirection(dir);
+                const L = Math.min(0.7, len * 85);
+                velocityArrow.setLength(L, Math.min(0.12, L * 0.2), Math.min(0.08, L * 0.12));
+                velocityArrow.position.copy(p0);
+            } else {
+                velocityArrow.visible = false;
+            }
+        }
+    } else if (velocityArrow) {
+        velocityArrow.visible = false;
+    }
+
+    if (controls && followHandInView) {
+        controls.target.lerp(pos, 0.14);
+    }
+
+    // Splash when hand crosses water surface (y=0 going down)
+    if (idx > 0 && integratedPositions[idx - 1]) {
+        const prevY = integratedPositions[idx - 1].y;
+        if (prevY > 0 && pos.y <= 0 && strokeNumAt(d) > 0) {
+            createSplash(pos);
+        }
+    }
+
+    // Tint hand blue when below water
+    if (handGroup && hapticFlashUntil <= Date.now() && pos.y < 0) {
+        handMaterials.forEach(m => {
+            const base = new THREE.Color(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
+            const water = new THREE.Color(0x4488aa);
+            const depth = Math.min(1, Math.abs(pos.y) * 2);
+            m.color.copy(base.lerp(water, depth * 0.4));
+        });
+    }
+
+    const sc = strokeNumAt(d);
+    if (sc > lastRenderedStrokeCount && strokeMarkerGroup) {
+        lastRenderedStrokeCount = sc;
+        const rippleGeo = new THREE.RingGeometry(0.05, 0.095, 48);
+        const rippleMat = new THREE.MeshBasicMaterial({
+            color: 0x7dd3fc, transparent: true, opacity: 0.9, side: THREE.DoubleSide
+        });
+        const ripple = new THREE.Mesh(rippleGeo, rippleMat);
+        ripple.rotation.x = -Math.PI / 2;
+        ripple.position.set(pos.x, 0.016, pos.z);
+        ripple.userData = { ripple: true, age: 0 };
+        strokeMarkerGroup.add(ripple);
+    }
+
+    if (trailLine) {
+        const seg0 = getSegStart(idx);
+        const trailStart = Math.max(seg0, idx - TRAIL_MAX_POINTS);
+        const rawPts = [];
+        const colors = [];
+        for (let i = trailStart; i <= idx; i++) {
+            const p = integratedPositions[i];
+            rawPts.push(p ? p.clone() : new THREE.Vector3());
+            const ph = processedData[i]?.stroke_phase || processedData[i]?.phase || 'idle';
+            const c = PHASE_COLOR_RGB[ph] || PHASE_COLOR_RGB.idle;
+            const age = (idx - i) / Math.max(1, idx - trailStart);
+            const fade = 0.3 + 0.7 * (1 - age);
+            colors.push(c[0] * fade, c[1] * fade, c[2] * fade);
+        }
+        const smoothed = smoothTrailPoints(rawPts, TRAIL_SMOOTH_WINDOW);
         if (smoothed.length >= 2) {
             const flat = [];
-            smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
-            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
-            liveTrailLine.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors.slice(0, smoothed.length * 3), 3));
-            liveTrailLine.geometry.attributes.position.needsUpdate = true;
-            liveTrailLine.geometry.attributes.color.needsUpdate = true;
+            smoothed.forEach(p => flat.push(p.x, p.y, p.z));
+            trailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+            trailLine.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors.slice(0, smoothed.length * 3), 3));
+            trailLine.geometry.attributes.position.needsUpdate = true;
+            trailLine.geometry.attributes.color.needsUpdate = true;
         } else {
-            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+            trailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
         }
     }
 
-    // Past stroke overlays (colored arcs, up to MAX_STROKES_DISPLAYED)
-    if (scene) {
-        strokeTrails.forEach(t => { scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
-        strokeTrails = [];
-        let shown = 0;
-        for (const seg of playbackStrokeSegments) {
-            if (seg.endIdx > idx || shown >= MAX_STROKES_DISPLAYED) break;
-            const endBound = Math.min(seg.endIdx, idx);
-            const ref = processedData[seg.startIdx]?.quaternion;
-            const points = [];
-            for (let i = seg.startIdx; i <= endBound; i++) {
-                const pt = trailPtDisplacement(processedData[i]?.quaternion, ref, pathScale);
-                points.push(pt.clone());
-            }
-            const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
-            if (smoothed.length >= 2) {
-                const flat = [];
-                smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
-                const color = STROKE_COLORS[(seg.strokeNum - 1) % STROKE_COLORS.length];
-                const geo = new THREE.BufferGeometry();
-                geo.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
-                const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, opacity: 0.85, transparent: true }));
-                scene.add(line);
-                strokeTrails.push(line);
-                shown++;
-            }
-        }
-    }
-
-    // ── PLAYBACK UI ──
     const pct = processedData.length > 1 ? idx / (processedData.length - 1) * 100 : 0;
     const fillEl = document.getElementById('progress-fill');
     if (fillEl) fillEl.style.width = pct + '%';
@@ -1188,18 +1604,25 @@ function renderFrame(idx) {
     const total = processedData.length > 1 ? (processedData[processedData.length - 1].timestamp - processedData[0].timestamp) / 1000 : 0;
     setText('play-time', formatTime(t) + ' / ' + formatTime(total));
 
-    setText('live-strokes', d.stroke_count || 0);
-    const phase = d.stroke_phase || 'idle';
+    setText('live-strokes', strokeNumAt(d));
+    const phase = d.stroke_phase || d.phase || 'idle';
     const phaseEl = document.getElementById('live-phase');
     if (phaseEl) {
         phaseEl.textContent = phase;
         phaseEl.className = 'phase-label phase-label-' + phase;
     }
-    setText('live-angle', (d.entry_angle || 0).toFixed(1) + '°');
+    // Show latest non-zero entry angle and deviation (they persist per-stroke)
+    let liveAngle = 0, liveDeviation = 0;
+    for (let i = idx; i >= Math.max(0, idx - 200); i--) {
+        const p = processedData[i];
+        if (liveAngle === 0 && (p.entry_angle || 0) > 0) liveAngle = p.entry_angle;
+        if (liveDeviation === 0 && (p.deviation_score || 0) > 0) liveDeviation = p.deviation_score;
+        if (liveAngle > 0 && liveDeviation > 0) break;
+    }
+    setText('live-angle', liveAngle.toFixed(1) + '°');
     const gx = d.angular_velocity?.gx || 0, gy = d.angular_velocity?.gy || 0, gz = d.angular_velocity?.gz || 0;
-    const gyroMag = Math.sqrt(gx*gx + gy*gy + gz*gz);
-    setText('live-gyro', gyroMag.toFixed(1));
-    setText('live-deviation', (d.deviation_score || 0).toFixed(3));
+    setText('live-gyro', Math.sqrt(gx * gx + gy * gy + gz * gz).toFixed(1));
+    setText('live-deviation', liveDeviation.toFixed(3));
     updateCalibrationDisplay(d);
     if (idx % 3 === 0) updateCharts(idx);
 }
@@ -1208,27 +1631,55 @@ function clearViz() {
     processedData = [];
     sessionMetrics = null;
     currentIndex = 0;
+    integratedPositions = [];
+    rawIntegratedPositions = [];
+    lastRenderedStrokeCount = 0;
+    hapticFlashUntil = 0;
+    refreshStrokeFieldMode();
     playbackStrokeSegments = [];
-    strokeTrails.forEach(t => { if (scene) scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
-    strokeTrails = [];
-    if (positionLine && positionLine.geometry && positionLine.geometry.attributes.position) {
-        const pa = positionLine.geometry.attributes.position.array;
-        if (pa.length >= 6) { pa[3] = 0; pa[4] = 0; pa[5] = 0; positionLine.geometry.attributes.position.needsUpdate = true; }
+    if (trailLine && trailLine.geometry) {
+        trailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+        trailLine.geometry.setAttribute('color', new THREE.Float32BufferAttribute([], 3));
     }
-    if (liveTrailLine && liveTrailLine.geometry) {
-        liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+    if (strokeMarkerGroup) {
+        while (strokeMarkerGroup.children.length) {
+            const c = strokeMarkerGroup.children[0];
+            strokeMarkerGroup.remove(c);
+            c.geometry?.dispose();
+            c.material?.dispose();
+        }
     }
-    if (imuCube) {
-        imuCube.position.set(0, 0, 0);
-        imuCube.quaternion.identity();
-        if (imuCube.material) imuCube.material.color.setHex(0xff4444);
+    if (handGroup) {
+        handGroup.position.set(0, 0, 0);
+        handGroup.quaternion.identity();
+        handMaterials.forEach(m => {
+            m.color.setHex(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
+            m.emissive.setHex(0x060403);
+        });
     }
-    if (handMesh) handMesh.visible = false;
+    if (splashGroup) {
+        while (splashGroup.children.length) {
+            const c = splashGroup.children[0];
+            splashGroup.remove(c);
+            c.geometry?.dispose();
+            c.material?.dispose();
+        }
+    }
 }
 function resetView() {
-    if (camera) { camera.position.set(3, 3, 3); camera.lookAt(0, 0, 0); if (controls) controls.target.set(0, 0, 0); }
+    followHandInView = false;
+    if (camera) {
+        camera.position.set(1.85, 2.2, 2.85);
+        camera.lookAt(0, 0, 0);
+        if (controls) { controls.target.set(0, 0, 0); controls.update(); }
+    }
 }
-function updateScale(v) { positionScale = parseFloat(v) || 3; setText('scale-val', positionScale.toFixed(1) + 'x'); }
+function updateScale(v) {
+    positionScale = parseFloat(v) || 3;
+    setText('scale-val', positionScale.toFixed(1) + 'x');
+    integratedPositions = [];
+    rawIntegratedPositions = [];
+}
 
 
 
@@ -1270,6 +1721,7 @@ function bindNavigationButtons() {
 window.addEventListener('DOMContentLoaded', () => {
     bindNavigationButtons();
     loadUserProfile();
+    loadDevices();
     loadSavedSessions();
     loadIdealStroke();
     init3D();

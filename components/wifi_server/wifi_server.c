@@ -232,9 +232,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 
 // Initialize WiFi Access Point
 static char s_ap_ssid[33] = {0};
+/* esp_netif_create_default_wifi_ap() must run only once per process; repeated
+ * calls after stop/start AP leak netifs and the next esp_wifi_init can misbehave
+ * on the first sync attempt after a cold boot or after recording. */
+static esp_netif_t *s_ap_netif = NULL;
 
 static esp_err_t wifi_init_softap(void) {
-  esp_netif_create_default_wifi_ap();
+  if (s_ap_netif == NULL) {
+    s_ap_netif = esp_netif_create_default_wifi_ap();
+    if (s_ap_netif == NULL) {
+      ESP_LOGE(TAG, "Failed to create default WiFi AP netif");
+      return ESP_FAIL;
+    }
+  }
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -1275,6 +1285,8 @@ esp_err_t wifi_server_stop_ap(void) {
 wifi_server_state_t wifi_server_get_state(void) { return current_state; }
 
 bool wifi_server_has_clients(void) { return connected_clients > 0; }
+
+bool wifi_server_is_ap_active(void) { return current_state == WIFI_SERVER_STATE_RUNNING; }
 
 esp_err_t wifi_server_start_sync(void) {
   if (is_syncing) {

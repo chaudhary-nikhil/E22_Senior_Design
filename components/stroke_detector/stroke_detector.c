@@ -85,6 +85,9 @@ typedef struct {
   float ideal_entry_angle;
   bool ideal_loaded;
 
+  // Latched entry angle from stroke detection moment (carried to integration completion)
+  float latched_entry_angle;
+
   // Comparison results
   float last_deviation;
 
@@ -296,9 +299,10 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
       pitch_sin = -1.0f;
     float entry_angle_deg = asinf(pitch_sin) * (180.0f / (float)M_PI);
     event.entry_angle = fabsf(entry_angle_deg);
+    s_state.latched_entry_angle = event.entry_angle;
 
     event.stroke_detected = true;
-    ESP_LOGD(TAG,
+    ESP_LOGI(TAG,
              "Stroke #%u detected (accel=%.1f, world_az=%.1f, gyro=%.1f, "
              "entry=%.1f°)",
              (unsigned)s_state.stroke_count, accel_mag, world_az, gyro_mag,
@@ -332,13 +336,14 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
               s_state.current_stroke_lia, s_state.current_stroke_count,
               s_state.ideal_lia, num_ideal);
           event.deviation_score = s_state.last_deviation;
+          event.entry_angle = s_state.latched_entry_angle;
 
           bool technique_bad = (event.deviation_score > s_state.haptic_threshold);
-          bool entry_bad = (s_state.ideal_entry_angle > 5.0f) && 
-                           (fabsf(event.entry_angle - s_state.ideal_entry_angle) > 15.0f);
+          float entry_diff = fabsf(s_state.latched_entry_angle - s_state.ideal_entry_angle);
+          bool entry_bad = (s_state.ideal_entry_angle > 5.0f) && (entry_diff > 15.0f);
 
           ESP_LOGI(TAG, "Stroke deviation: %.3f (entry: %.1f, target: %.1f, thresh: %.3f)",
-                   event.deviation_score, event.entry_angle, s_state.ideal_entry_angle, s_state.haptic_threshold);
+                   event.deviation_score, s_state.latched_entry_angle, s_state.ideal_entry_angle, s_state.haptic_threshold);
 
           if (s_state.haptic_enabled && haptic_is_available() && (technique_bad || entry_bad)) {
             if (event.deviation_score > (s_state.haptic_threshold + 0.3f) || entry_bad) {
@@ -359,7 +364,7 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 
           if (event.haptic_fired) {
             ESP_LOGI(TAG, "Haptic fired! (dev=%.3f, entry_diff=%.1f)", 
-                     event.deviation_score, fabsf(event.entry_angle - s_state.ideal_entry_angle));
+                     event.deviation_score, entry_diff);
           } else {
             ESP_LOGI(TAG, "Stroke #%u: Score=%.3f (No haptic)",
                      (unsigned)s_state.stroke_count, event.deviation_score);

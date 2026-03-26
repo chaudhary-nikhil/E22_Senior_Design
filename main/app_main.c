@@ -74,6 +74,9 @@ static volatile bool button_hold_triggered = false;
 // Session stats
 static uint32_t session_sample_count = 0;
 static uint32_t session_start_time = 0;
+static bool ap_lingering = false;
+static uint32_t ap_linger_start_ms = 0;
+#define AP_LINGER_TIMEOUT_MS (10 * 60 * 1000)
 
 // Subsystem status
 static bool bno055_available = false;
@@ -251,10 +254,15 @@ static void transition_to_logging(void) {
   ESP_LOGI(TAG, ">>> STATE: LOGGING");
   ESP_LOGI(TAG, "Recording IMU data to SD card...");
 
+  if (ap_lingering && wifi_available) {
+    ESP_LOGI(TAG, "Shutting down WiFi AP before recording...");
+    wifi_server_stop_ap();
+    ap_lingering = false;
+  }
+
   session_sample_count = 0;
   session_start_time = esp_timer_get_time() / 1000;
 
-  // Reset stroke detector state for the new session (preserves ideal stroke)
   stroke_detector_reset_session();
 
   led_blink_stop_and_wait();
@@ -291,7 +299,6 @@ static void transition_to_syncing(void) {
     return;
   }
 
-  // If currently logging, stop the session first
   if (current_state == STATE_LOGGING && storage_available) {
     uint32_t dur = (uint32_t)(esp_timer_get_time() / 1000) - session_start_time;
     ESP_LOGI(TAG, "Auto-stopping session (%" PRIu32 " ms, %" PRIu32 " samples)",
@@ -301,27 +308,34 @@ static void transition_to_syncing(void) {
     led_set(false);
   }
 
-  // Start WiFi AP (makes SSID visible only now)
-  esp_err_t err = wifi_server_start_ap();
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(err));
-    error_led_set(true);
-    ESP_LOGI(TAG, "========================================");
-    return;
-  }
-
-  // Check if there's actually data to sync
-  err = wifi_server_start_sync();
-  if (err == ESP_ERR_NOT_FOUND) {
-    ESP_LOGW(TAG, "No sessions on SD card - record a session first");
-    ESP_LOGI(TAG, "[LED] Quick blink -> no data, staying IDLE");
-    for (int i = 0; i < 3; i++) {
-      gpio_set_level(STATUS_LED_GPIO, 1);
-      vTaskDelay(pdMS_TO_TICKS(100));
-      gpio_set_level(STATUS_LED_GPIO, 0);
-      vTaskDelay(pdMS_TO_TICKS(100));
+  if (!wifi_server_is_ap_active()) {
+    esp_err_t err = wifi_server_start_ap();
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(err));
+      error_led_set(true);
+      ESP_LOGI(TAG, "========================================");
+      return;
     }
-    wifi_server_stop_ap();
+  } else {
+    ESP_LOGI(TAG, "WiFi AP already active, reusing connection");
+  }
+  ap_lingering = false;
+
+  /* Let the AP and TCP stack finish coming up before sync (avoids first-hold
+   * ESP_ERR_INVALID_STATE / flaky first transfer right after esp_wifi_start). */
+  vTaskDelay(pdMS_TO_TICKS(150));
+
+  esp_err_t err = wifi_server_start_sync();
+  if (err == ESP_ERR_INVALID_STATE) {
+    vTaskDelay(pdMS_TO_TICKS(200));
+    err = wifi_server_start_sync();
+  }
+  if (err == ESP_ERR_NOT_FOUND) {
+    ESP_LOGW(TAG, "No sessions on SD card to sync");
+    ESP_LOGI(TAG, "AP stays alive for config/ideal push from app");
+    ap_lingering = true;
+    ap_linger_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    current_state = STATE_IDLE;
     ESP_LOGI(TAG, "========================================");
     return;
   }
@@ -347,7 +361,6 @@ static void transition_to_idle(bool after_sync) {
   ESP_LOGI(TAG, "========================================");
   ESP_LOGI(TAG, ">>> STATE: IDLE");
 
-  // Stop recording if still active
   if (current_state == STATE_LOGGING && storage_available) {
     storage_stop_session();
   }
@@ -357,10 +370,17 @@ static void transition_to_idle(bool after_sync) {
 
   if (current_state == STATE_SYNCING && wifi_available) {
     wifi_server_stop_sync();
-    wifi_server_stop_ap();
+    if (after_sync) {
+      ap_lingering = true;
+      ap_linger_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      ESP_LOGI(TAG, "WiFi AP stays alive — push ideal/config from app");
+      ESP_LOGI(TAG, "AP auto-closes when you start recording or after 10 min");
+    } else {
+      wifi_server_stop_ap();
+      ap_lingering = false;
+    }
   }
 
-  // After a successful sync, clear the SD card for fresh sessions
   if (after_sync && storage_available) {
     ESP_LOGI(TAG, "Clearing synced data from SD card...");
     storage_delete_all_files();
@@ -387,7 +407,7 @@ static void handle_button_press(void) {
     transition_to_idle(false);
     break;
   case STATE_SYNCING:
-    transition_to_idle(false);
+    transition_to_idle(true);
     break;
   }
 }
@@ -690,11 +710,11 @@ void app_main(void) {
       handle_button_press();
     }
 
-    // Auto-return to idle when sync transfer completes
+    // Auto-return to IDLE when sync transfer completes (AP stays alive)
     if (current_state == STATE_SYNCING && wifi_available &&
         wifi_server_is_transfer_complete()) {
-      ESP_LOGI(TAG, "Transfer complete - auto-returning to IDLE");
-      vTaskDelay(pdMS_TO_TICKS(2000));
+      ESP_LOGI(TAG, "Transfer complete — returning to IDLE (AP stays alive)");
+      vTaskDelay(pdMS_TO_TICKS(1000));
       transition_to_idle(true);
     }
 
@@ -712,6 +732,16 @@ void app_main(void) {
         }
       } else {
         sync_timeout_counter = 0;
+      }
+    }
+
+    // AP linger timeout: shut down AP if idle for 10 minutes
+    if (ap_lingering && wifi_available && current_state == STATE_IDLE) {
+      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      if ((now_ms - ap_linger_start_ms) > AP_LINGER_TIMEOUT_MS) {
+        ESP_LOGI(TAG, "AP linger timeout (10 min) — shutting down WiFi");
+        wifi_server_stop_ap();
+        ap_lingering = false;
       }
     }
 
