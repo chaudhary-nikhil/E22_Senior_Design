@@ -21,7 +21,7 @@ static inline float min3(float a, float b, float c) {
 float process_dtw_buffer(const float *current, int cur_count,
                          const float *ideal, int ideal_count) {
   if (cur_count == 0 || ideal_count == 0)
-    return 0.0f;
+    return 1.0f;
   if (cur_count > MAX_DTW_LEN)
     cur_count = MAX_DTW_LEN;
   if (ideal_count > MAX_DTW_LEN)
@@ -37,7 +37,7 @@ float process_dtw_buffer(const float *current, int cur_count,
       free(prev_row);
     if (curr_row)
       free(curr_row);
-    return 0.0f;
+    return 1.0f;
   }
 
   // Initialize the boundaries

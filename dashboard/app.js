@@ -30,7 +30,7 @@ function switchTab(tab) {
 }
 
 // ── API HELPERS ──
-async function apiGet(path) { try { const r = await fetch(API + path); return r.json(); } catch (e) { return null; } }
+async function apiGet(path) { try { const r = await fetch(API + path); if (!r.ok) return null; return r.json(); } catch (e) { return null; } }
 async function apiPost(path, body) {
     try {
         const r = await fetch(API + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -51,11 +51,12 @@ function showToast(msg, type = 'info') {
 // ── USER PROFILE ──
 async function loadUserProfile() {
     userProfile = await apiGet('/api/user');
+    const modal = document.getElementById('reg-modal');
     if (userProfile && userProfile.name) {
         updateProfileUI();
-        document.getElementById('reg-modal').classList.remove('show');
+        if (modal) modal.classList.remove('show');
     } else {
-        document.getElementById('reg-modal').classList.add('show');
+        if (modal) modal.classList.add('show');
     }
 }
 function updateProfileUI() {
@@ -72,7 +73,8 @@ async function registerUser(e) {
     if (e) e.preventDefault();
     
     // Determine which form triggered this (modal vs settings page)
-    const isModal = document.getElementById('reg-modal').classList.contains('show');
+    const regModal = document.getElementById('reg-modal');
+    const isModal = regModal ? regModal.classList.contains('show') : false;
     const prefix = isModal ? 'reg-' : 'settings-';
     
     const nameInput = document.getElementById(prefix + 'name')?.value.trim();
@@ -89,7 +91,8 @@ async function registerUser(e) {
     if (res && res.status === 'ok') {
         userProfile = res.profile;
         updateProfileUI();
-        document.getElementById('reg-modal').classList.remove('show');
+        const rm = document.getElementById('reg-modal');
+        if (rm) rm.classList.remove('show');
         showToast('Profile saved!', 'success');
         pushUserConfigToDevice(true); // Auto-sync to device
     }
@@ -103,15 +106,20 @@ async function loadDevices() {
     const devices = (res && res.devices) || [];
     if (!devices.length) { list.innerHTML = '<p style="color:var(--text3);font-size:0.85em;">No devices registered yet.</p>'; return; }
     const roleIcons = { wrist_right: '🤚', wrist_left: '✋', head: '🧠', ankle_right: '🦶', ankle_left: '🦶', waist: '🫁' };
-    list.innerHTML = devices.map(d => `<div class="session-item"><div><strong>${roleIcons[d.role] || '📱'} ${d.name || 'Device ' + d.device_hw_id}</strong><div class="meta">${d.role} · HW ID: ${d.device_hw_id}</div></div><span class="badge badge-gold">${d.role}</span></div>`).join('');
+    list.innerHTML = devices.map(d => `<div class="session-item"><div><strong>${roleIcons[d.role] || '📱'} ${d.name || 'Device ' + d.device_hw_id}</strong><div class="meta">${d.role} · HW ID: ${d.device_hw_id}</div></div><button class="btn btn-sm btn-outline" onclick="deleteDevice(${d.id})" title="Remove device">✕</button></div>`).join('');
+}
+async function deleteDevice(id) {
+    const res = await apiPost('/api/devices/delete', { device_id: id });
+    if (res && res.status === 'ok') { showToast('Device removed', 'success'); loadDevices(); }
+    else showToast('Failed to remove device', 'error');
 }
 async function registerDevice(e) {
     if (e) e.preventDefault();
     const body = {
         user_id: userProfile ? userProfile.id : 1,
-        device_hw_id: parseInt(document.getElementById('dev-hw-id').value) || 0,
-        role: document.getElementById('dev-role').value,
-        name: document.getElementById('dev-name').value || ''
+        device_hw_id: parseInt(document.getElementById('dev-hw-id')?.value) || 0,
+        role: document.getElementById('dev-role')?.value || 'wrist',
+        name: document.getElementById('dev-name')?.value || ''
     };
     const res = await apiPost('/api/devices/register', body);
     if (res && res.status === 'ok') showToast('Device registered!', 'success');
@@ -172,41 +180,63 @@ async function pollDevice() {
     }
 }
 
+let syncDeviceCount = 0;
+let lastSyncedDeviceInfo = null;
 async function syncFromDevice() {
     const statusEl = document.getElementById('sync-status');
     const btn = document.getElementById('sync-btn');
-    statusEl.style.display = 'block';
-    statusEl.textContent = 'Connecting to device...';
-    statusEl.className = 'badge badge-amber';
-    btn.disabled = true;
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Connecting to device...'; statusEl.className = 'badge badge-amber'; }
+    if (btn) btn.disabled = true;
     setConnStatus('syncing');
+
+    const devInfo = await apiGet('/api/device_info');
+    if (devInfo && devInfo.device_id !== undefined) {
+        lastSyncedDeviceInfo = devInfo;
+        if (statusEl) statusEl.textContent = `Connected to ${devInfo.ssid || 'GoldenForm'} (${devInfo.device_role || 'wrist'})...`;
+        if (userProfile && userProfile.id) {
+            await apiPost('/api/devices/register', {
+                user_id: userProfile.id,
+                device_hw_id: devInfo.device_id,
+                role: devInfo.device_role || 'wrist_right',
+                name: devInfo.ssid || 'GoldenForm'
+            });
+        }
+    }
 
     try {
         const res = await apiGet('/process');
         if (!res || res.error) {
-            statusEl.textContent = res ? res.error : 'No response';
-            statusEl.className = 'badge badge-red';
+            if (statusEl) { statusEl.textContent = res ? res.error : 'No response'; statusEl.className = 'badge badge-red'; }
             setConnStatus('offline');
             showToast('Failed to connect to device', 'error');
             return;
         }
         const sessions = res.sessions || [];
-        statusEl.textContent = `✅ Synced ${sessions.length} session(s)`;
-        statusEl.className = 'badge badge-green';
+        syncDeviceCount++;
+        if (statusEl) { statusEl.textContent = `Synced ${sessions.length} session(s) from device #${syncDeviceCount}`; statusEl.className = 'badge badge-green'; }
         setConnStatus('connected');
-        showToast(`Synced ${sessions.length} session(s) from device`, 'success');
+        showToast(`Synced ${sessions.length} session(s) from device #${syncDeviceCount}`, 'success');
 
         for (const s of sessions) {
-            addSession({ name: s.name, processed_data: s.processed_data, metrics: s.metrics, duration: s.duration, syncedAt: s.syncedAt });
+            addSession({
+                name: s.name,
+                processed_data: s.processed_data,
+                raw_data: s.raw_data,
+                metrics: s.metrics,
+                duration: s.duration,
+                syncedAt: s.syncedAt
+            });
         }
         if (sessions.length > 0) selectSession(savedSessions.length - 1);
-        
-        // Auto-push settings when we know we have an active connection
+
         pushUserConfigToDevice(true);
         pushIdealToDevice(true);
+
+        if (syncDeviceCount > 1) {
+            showToast(`${syncDeviceCount} devices synced. Use "Merge Devices" to combine.`, 'info');
+        }
     } catch (e) {
-        statusEl.textContent = 'Device unreachable. Using cached data...';
-        statusEl.className = 'badge badge-amber';
+        if (statusEl) { statusEl.textContent = 'Device unreachable. Using cached data...'; statusEl.className = 'badge badge-amber'; }
         setConnStatus('offline');
         try {
             const cached = await apiGet('/cached');
@@ -221,16 +251,29 @@ async function syncFromDevice() {
                     syncedAt: s.syncedAt
                 });
                 if (cached.sessions.length > 0) selectSession(savedSessions.length - 1);
-                statusEl.textContent = 'Loaded from cache';
+                if (statusEl) statusEl.textContent = 'Loaded from cache';
                 showToast('Loaded cached session data', 'info');
             }
-        } catch { statusEl.textContent = 'No data available'; statusEl.className = 'badge badge-red'; }
-    } finally { btn.disabled = false; }
+        } catch { if (statusEl) { statusEl.textContent = 'No data available'; statusEl.className = 'badge badge-red'; } }
+    } finally { if (btn) btn.disabled = false; }
 }
 
 const LS_KEY = 'goldenform_sessions';
-function loadSavedSessions() {
+async function loadSavedSessions() {
     try { savedSessions = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { savedSessions = []; }
+    try {
+        const dbSessions = await apiGet('/api/sessions');
+        if (dbSessions && dbSessions.sessions) {
+            const localIds = new Set(savedSessions.filter(s => s.id).map(s => s.id));
+            for (const s of dbSessions.sessions) {
+                if (!localIds.has(s.id)) {
+                    savedSessions.push({ id: s.id, name: s.name || `Session ${s.id}`, processed_data: s.processed_data || [], metrics: s.metrics || {}, duration: s.duration || 0, syncedAt: s.synced_at });
+                }
+            }
+            while (savedSessions.length > 8) savedSessions.shift();
+            persistSessions();
+        }
+    } catch { }
     renderSessionList();
 }
 function persistSessions() {
@@ -244,7 +287,8 @@ function addSession(obj) {
     persistSessions();
     renderSessionList();
     if (!obj.id) {
-        apiPost('/api/sessions/save', { raw_data: obj.raw_data, processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: [] }).then(res => {
+        const devIds = [...new Set((obj.processed_data || []).map(d => d.device_id).filter(Boolean))];
+        apiPost('/api/sessions/save', { raw_data: obj.raw_data, processed_data: obj.processed_data, metrics: obj.metrics, duration: obj.duration, device_ids: devIds }).then(res => {
             if (res && res.session_id) {
                 obj.id = res.session_id;
                 persistSessions();
@@ -299,9 +343,20 @@ function renderSessionList() {
     const c = document.getElementById('session-cards');
     const badge = document.getElementById('session-count-badge');
     if (badge) badge.textContent = savedSessions.length + ' saved';
+
+    const gettingStarted = document.getElementById('getting-started');
+    const quickActions = document.getElementById('quick-actions');
+    if (savedSessions.length === 0) {
+        if (gettingStarted) gettingStarted.style.display = '';
+        if (quickActions) quickActions.style.display = 'none';
+    } else {
+        if (gettingStarted) gettingStarted.style.display = 'none';
+        if (quickActions) quickActions.style.display = '';
+    }
+
     if (!c) return;
-    if (!savedSessions.length) { c.innerHTML = '<p style="color:var(--text3);font-size:0.85em;padding:16px;">No sessions yet. Sync from device.</p>'; return; }
-    c.innerHTML = savedSessions.map((s, i) => `<div class="session-item ${i === activeSessionIdx ? 'active' : ''}" onclick="selectSession(${i})"><div><strong>${s.name || 'Session ' + (i + 1)}</strong><div class="meta">${s.metrics ? s.metrics.stroke_count + ' strokes · ' + formatTime(s.duration) : ''}</div></div><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();deleteSession(${i})">✕</button></div>`).join('');
+    if (!savedSessions.length) { c.innerHTML = '<p style="color:var(--text3);font-size:0.85em;padding:16px;">No sessions yet. Sync from device to get started.</p>'; return; }
+    c.innerHTML = savedSessions.map((s, i) => `<div class="session-item ${i === activeSessionIdx ? 'active' : ''}" onclick="selectSession(${i})"><div><strong>${s.name || 'Session ' + (i + 1)}</strong><div class="meta">${s.metrics ? (s.metrics.stroke_count || 0) + ' strokes · ' + formatTime(s.duration) : ''}</div></div><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();deleteSession(${i})">✕</button></div>`).join('');
 }
 function deleteSession(i) {
     savedSessions.splice(i, 1);
@@ -310,11 +365,22 @@ function deleteSession(i) {
     else if (activeSessionIdx > i) activeSessionIdx--;
     renderSessionList();
 }
-function selectSession(i) {
+async function selectSession(i) {
     if (i < 0 || i >= savedSessions.length) return;
     activeSessionIdx = i;
     const s = savedSessions[i];
-    processedData = s.processed_data || s.processedData || [];
+    let pd = s.processed_data || s.processedData || [];
+    if ((!pd || !pd.length) && s.id) {
+        const detail = await apiGet('/api/sessions/' + s.id);
+        if (detail && detail.session) {
+            pd = detail.session.processed_data || [];
+            s.processed_data = pd;
+            s.metrics = detail.session.metrics || s.metrics;
+            s.raw_data = detail.session.raw_data;
+            persistSessions();
+        }
+    }
+    processedData = pd;
     sessionMetrics = s.metrics || {};
     currentIndex = 0;
     isPlaying = false;
@@ -400,14 +466,14 @@ function togglePlayback() {
     isPlaying = !isPlaying;
     const btn = document.getElementById('play-btn');
     if (isPlaying) {
-        btn.textContent = '⏸';
+        if (btn) btn.textContent = '⏸';
         playbackInterval = setInterval(() => {
             if (currentIndex < processedData.length - 1) { currentIndex++; renderFrame(currentIndex); }
-            else { isPlaying = false; btn.textContent = '▶'; clearInterval(playbackInterval); }
+            else { isPlaying = false; if (btn) btn.textContent = '▶'; clearInterval(playbackInterval); }
         }, 20);
-    } else { btn.textContent = '▶'; clearInterval(playbackInterval); }
+    } else { if (btn) btn.textContent = '▶'; clearInterval(playbackInterval); }
 }
-function resetPlayback() { currentIndex = 0; isPlaying = false; if (playbackInterval) clearInterval(playbackInterval); document.getElementById('play-btn').textContent = '▶'; renderFrame(0); }
+function resetPlayback() { currentIndex = 0; isPlaying = false; if (playbackInterval) clearInterval(playbackInterval); const btn = document.getElementById('play-btn'); if (btn) btn.textContent = '▶'; renderFrame(0); }
 function skipForward() { currentIndex = Math.min(currentIndex + 50, processedData.length - 1); renderFrame(currentIndex); }
 function skipBackward() { currentIndex = Math.max(currentIndex - 50, 0); renderFrame(currentIndex); }
 function seekPlayback(e) {
@@ -444,12 +510,13 @@ function setText(id, val) { const el = document.getElementById(id); if (el) el.t
 
 // ── CALIBRATION DISPLAY (TIDR 6-1-4) ──
 function updateCalibrationDisplay(d) {
-    if (!d || !d.cal) return;
+    const cal = d?.cal || d?.calibration;
+    if (!cal) return;
     const fields = [
-        { id: 'cal-sys', val: d.cal.sys },
-        { id: 'cal-gyro', val: d.cal.gyro },
-        { id: 'cal-accel', val: d.cal.accel },
-        { id: 'cal-mag', val: d.cal.mag }
+        { id: 'cal-sys', val: cal.sys },
+        { id: 'cal-gyro', val: cal.gyro },
+        { id: 'cal-accel', val: cal.accel },
+        { id: 'cal-mag', val: cal.mag }
     ];
     fields.forEach(f => {
         const el = document.getElementById(f.id);
@@ -458,13 +525,20 @@ function updateCalibrationDisplay(d) {
         el.textContent = v + '/3';
         el.className = 'cal-badge ' + (v >= 3 ? 'cal-good' : v >= 1 ? 'cal-warn' : 'cal-bad');
     });
-    // Overall quality - in IMU mode, Mag is 0 and can be ignored for "perfect" score
-    const sys = d.cal.sys || 0;
-    const gyro = d.cal.gyro || 0;
-    const accel = d.cal.accel || 0;
+    const sys = cal.sys || 0;
+    const gyro = cal.gyro || 0;
+    const accel = cal.accel || 0;
     const total = sys + gyro + accel;
     const quality = Math.round(total / 9 * 100);
     setText('cal-quality', quality + '%');
+
+    const hintEl = document.getElementById('cal-hint');
+    if (hintEl) {
+        if (gyro < 2) hintEl.textContent = 'Place device still for gyro calibration';
+        else if (accel < 2) hintEl.textContent = 'Rotate device in 6 positions for accel';
+        else if (quality >= 66) hintEl.textContent = 'Calibration sufficient for accurate tracking';
+        else hintEl.textContent = 'Move sensor gently to improve calibration';
+    }
 }
 
 // ── ANALYSIS ──
@@ -475,14 +549,16 @@ function updateAnalysis() {
     setText('aoa-value', (m.avg_entry_angle || 0).toFixed(1) + '°');
     setText('aoa-ideal', (m.ideal_entry_angle || 30) + '°');
 
-    const pcts = m.phase_pcts || { glide: 0, pull: 0, recovery: 0 };
-    const total = pcts.glide + pcts.pull + pcts.recovery || 1;
-    setWidth('phase-glide', pcts.glide / total * 100);
-    setWidth('phase-pull', pcts.pull / total * 100);
-    setWidth('phase-recovery', pcts.recovery / total * 100);
-    setText('phase-glide-pct', pcts.glide.toFixed(0) + '%');
-    setText('phase-pull-pct', pcts.pull.toFixed(0) + '%');
-    setText('phase-recovery-pct', pcts.recovery.toFixed(0) + '%');
+    const pcts = m.phase_pcts || { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    const total = (pcts.glide || 0) + (pcts.catch || 0) + (pcts.pull || 0) + (pcts.recovery || 0) || 1;
+    setWidth('phase-glide', (pcts.glide || 0) / total * 100);
+    setWidth('phase-catch', (pcts.catch || 0) / total * 100);
+    setWidth('phase-pull', (pcts.pull || 0) / total * 100);
+    setWidth('phase-recovery', (pcts.recovery || 0) / total * 100);
+    setText('phase-glide-pct', (pcts.glide || 0).toFixed(0) + '%');
+    setText('phase-catch-pct', (pcts.catch || 0).toFixed(0) + '%');
+    setText('phase-pull-pct', (pcts.pull || 0).toFixed(0) + '%');
+    setText('phase-recovery-pct', (pcts.recovery || 0).toFixed(0) + '%');
 
     setText('haptic-count', m.haptic_count || 0);
     setText('avg-deviation', m.avg_deviation ? m.avg_deviation.toFixed(3) : '0.000');
@@ -492,11 +568,26 @@ function updateAnalysis() {
     const scoreEl = document.getElementById('form-score');
     if (scoreEl) scoreEl.style.color = score >= 7 ? 'var(--green)' : score >= 5 ? 'var(--amber)' : 'var(--red)';
 
+    const br = m.breathing || {};
+    const breathCard = document.getElementById('breathing-card');
+    if (breathCard) {
+        if (br.breath_count > 0) {
+            breathCard.style.display = '';
+            setText('breath-count', br.breath_count);
+            setText('breath-rate', br.breaths_per_minute || 0);
+            setText('breath-left', (br.left_pct || 0) + '%');
+            setText('breath-right', (br.right_pct || 0) + '%');
+            setText('breath-roll', (br.avg_roll || 0) + '°');
+        } else {
+            breathCard.style.display = 'none';
+        }
+    }
+
     buildStrokeTable();
     buildIdealComparison();
 }
 
-function setWidth(id, pct) { const el = document.getElementById(id); if (el) el.style.width = Math.max(2, pct) + '%'; }
+function setWidth(id, pct) { const el = document.getElementById(id); if (el) el.style.width = Math.max(1, pct) + '%'; }
 
 function computeFormScore(m) {
     let s = 5;
@@ -563,7 +654,7 @@ function buildStrokeTable() {
         }
     }
     tbody.innerHTML = rows.map(r =>
-        `<tr class="${r.haptic ? 'row-haptic' : ''}"><td>${r.num}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${r.haptic ? '<span class="haptic-marker">⚡</span>' : '✓'}</td><td class="${r.deviation > 0.7 ? 'text-red' : r.deviation > 0.3 ? 'text-amber' : 'text-green'}">${r.deviation.toFixed(3)}</td></tr>`
+        `<tr class="${r.haptic ? 'row-haptic' : ''}" style="cursor:pointer;" onclick="jumpToStroke(${r.num})"><td>${r.num}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${r.haptic ? '<span class="haptic-marker">⚡</span>' : '✓'}</td><td class="${r.deviation > 0.7 ? 'text-red' : r.deviation > 0.3 ? 'text-amber' : 'text-green'}">${r.deviation.toFixed(3)}</td></tr>`
     ).join('');
 }
 
@@ -571,7 +662,8 @@ function buildStrokeTable() {
 async function buildIdealComparison() {
     if (!idealStrokeData || !idealStrokeData.length || !processedData.length) {
         const el = document.getElementById('ideal-comparison-content');
-        if (el) el.innerHTML = '<p style="color:var(--text3);text-align:center;padding:12px;">No ideal stroke saved. Set one in Settings.</p>';
+        if (el) el.innerHTML = '<p style="color:var(--text3);text-align:center;padding:12px;">No ideal stroke saved. Set one in Settings.</p><div style="height:180px;margin-top:8px;"><canvas id="ideal-compare-chart"></canvas></div>';
+        if (window._idealChart) { window._idealChart.destroy(); window._idealChart = null; }
         return;
     }
     const el = document.getElementById('ideal-comparison-content');
@@ -639,6 +731,7 @@ async function loadProgress() {
     const res = await apiGet('/api/progress');
     const data = ((res && res.progress) || []).reverse();
     if (!data.length) { setText('insights-empty', 'Complete a session to see your progress over time.'); return; }
+    setText('insights-empty', '');
     const ctx = document.getElementById('progress-chart');
     if (!ctx || !window.Chart) return;
     if (window._progressChart) window._progressChart.destroy();
@@ -656,7 +749,7 @@ async function loadProgress() {
             scales: {
                 x: { ticks: { color: '#666' }, grid: { color: '#1a1a25' } },
                 y: { ticks: { color: '#666' }, grid: { color: '#1a1a25' }, min: 0, max: 10, title: { display: true, text: 'Score', color: '#666' } },
-                y1: { position: 'right', ticks: { color: '#666' }, grid: { display: false }, min: 0, title: { display: true, text: 'Rate (s/min)', color: '#666' } }
+                y1: { position: 'right', ticks: { color: '#666' }, grid: { display: false }, min: 0, title: { display: true, text: 'Strokes/min', color: '#666' } }
             }
         }
     });
@@ -962,7 +1055,7 @@ function init3D() {
 
     const ltGeo = new THREE.BufferGeometry();
     ltGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-    liveTrailLine = new THREE.Line(ltGeo, new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.95, transparent: true }));
+    liveTrailLine = new THREE.Line(ltGeo, new THREE.LineBasicMaterial({ vertexColors: true, opacity: 0.95, transparent: true, linewidth: 2 }));
     scene.add(liveTrailLine);
 
     handMesh = createHandModel();
@@ -1027,19 +1120,32 @@ function renderFrame(idx) {
         handMesh.visible = showHand;
     }
 
-    // Live trail: arc from stroke start to current frame (smoothed)
+    // Live trail: arc from stroke start to current frame, colored by phase
     if (liveTrailLine && refQ) {
         const points = [];
+        const colors = [];
+        const PHASE_COLORS = {
+            catch:    [0.13, 0.77, 0.37],   // green
+            pull:     [0.92, 0.70, 0.03],    // gold
+            recovery: [0.66, 0.33, 0.97],    // purple
+            glide:    [0.23, 0.51, 0.96],    // blue
+            idle:     [0.6, 0.6, 0.6]        // gray
+        };
         for (let i = segStart; i <= idx; i++) {
             const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, pathScale);
             points.push(pt.clone());
+            const ph = processedData[i]?.stroke_phase || 'idle';
+            const c = PHASE_COLORS[ph] || PHASE_COLORS.idle;
+            colors.push(c[0], c[1], c[2]);
         }
         const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
         if (smoothed.length >= 2) {
             const flat = [];
             smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
             liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
+            liveTrailLine.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors.slice(0, smoothed.length * 3), 3));
             liveTrailLine.geometry.attributes.position.needsUpdate = true;
+            liveTrailLine.geometry.attributes.color.needsUpdate = true;
         } else {
             liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
         }
@@ -1083,8 +1189,17 @@ function renderFrame(idx) {
     setText('play-time', formatTime(t) + ' / ' + formatTime(total));
 
     setText('live-strokes', d.stroke_count || 0);
-    setText('live-phase', d.stroke_phase || 'idle');
+    const phase = d.stroke_phase || 'idle';
+    const phaseEl = document.getElementById('live-phase');
+    if (phaseEl) {
+        phaseEl.textContent = phase;
+        phaseEl.className = 'phase-label phase-label-' + phase;
+    }
     setText('live-angle', (d.entry_angle || 0).toFixed(1) + '°');
+    const gx = d.angular_velocity?.gx || 0, gy = d.angular_velocity?.gy || 0, gz = d.angular_velocity?.gz || 0;
+    const gyroMag = Math.sqrt(gx*gx + gy*gy + gz*gz);
+    setText('live-gyro', gyroMag.toFixed(1));
+    setText('live-deviation', (d.deviation_score || 0).toFixed(3));
     updateCalibrationDisplay(d);
     if (idx % 3 === 0) updateCharts(idx);
 }

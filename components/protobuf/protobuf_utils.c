@@ -51,9 +51,10 @@ static void sample_to_proto(const bno055_sample_t *sample,
   msg->device_role = sample->device_role;
   msg->stroke_count = sample->stroke_count;
   msg->turn_count = sample->turn_count;
+  msg->breath_count = sample->breath_count;
+  msg->entry_angle = sample->entry_angle;
 }
 
-// Helper to copy goldenform_ImuSample to bno055_sample_t
 static void proto_to_sample(const goldenform_ImuSample *msg,
                             bno055_sample_t *sample) {
   sample->t_ms = msg->t_ms;
@@ -87,6 +88,8 @@ static void proto_to_sample(const goldenform_ImuSample *msg,
   sample->device_role = msg->device_role;
   sample->stroke_count = msg->stroke_count;
   sample->turn_count = msg->turn_count;
+  sample->breath_count = msg->breath_count;
+  sample->entry_angle = msg->entry_angle;
 }
 
 esp_err_t protobuf_encode_sample(const bno055_sample_t *sample, uint8_t *buffer,

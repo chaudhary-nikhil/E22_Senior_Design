@@ -204,13 +204,26 @@ class StrokeProcessor:
         self.entry_angles = []  # All entry angles this session
         self.ideal_entry_angle = 30.0  # degrees, configurable per user
         
-        # STROKE PHASE TRACKING
-        # Phases: glide, pull (catch+pull), recovery (arm out of water)
-        # Detected from acceleration state and integration window
-        self.current_phase = 'idle'  # idle, glide, pull, recovery
+        # STROKE PHASE TRACKING (Research: IEEE Swimming Phase Segmentation,
+        # Frontiers fbioe.2021.793302 — gyroscope angular velocity is the primary
+        # discriminator between underwater (catch/pull) and aerial (recovery) phases)
+        #
+        # Phases: catch, pull, recovery, glide
+        #   catch: hand entering water — high gyro + downward accel (short ~0.1s)
+        #   pull: hand pulling through water — moderate gyro, high LIA, integration active
+        #   recovery: arm swinging above water — high gyro, low accel (no water resistance)
+        #   glide: low accel + low gyro, streamline position
+        #
+        # Key insight: during recovery the hand moves fast but through air, so accel
+        # magnitude is LOW despite HIGH gyro. During pull, water resistance creates
+        # HIGH accel with moderate gyro. This gyro/accel ratio distinguishes phases.
+        self.current_phase = 'idle'
         self.phase_start_time = 0
-        self.phase_durations = {'glide': [], 'pull': [], 'recovery': []}
-        self.last_phase_pcts = {'glide': 0, 'pull': 0, 'recovery': 0}
+        self.phase_durations = {'glide': [], 'catch': [], 'pull': [], 'recovery': []}
+        self.last_phase_pcts = {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0}
+        self.CATCH_DURATION_MS = 150  # catch phase lasts ~100-200ms after stroke detection
+        self.RECOVERY_GYRO_THRESHOLD = 1.5  # rad/s — arm swinging above water
+        self.RECOVERY_ACCEL_CEILING = 3.0   # m/s² — low accel during aerial recovery
         
         # DEBUG: Track stroke detection state for troubleshooting
         self.debug_world_az = 0.0
@@ -254,17 +267,14 @@ class StrokeProcessor:
 
             gyro_y = data_dict['gy'] 
             
-            # Get calibration status
-            calibration = data_dict['cal']
-            cal_sys = calibration['sys']
+            calibration = data_dict.get('cal') or data_dict.get('calibration', {})
+            cal_sys = calibration.get('sys', 0)
             cal_accel = calibration.get('accel', 0)
             cal_gyro = calibration.get('gyro', 0)
             cal_mag = calibration.get('mag', 0)
 
         except KeyError as e:
-            # This will fire if you haven't updated your C code!
-            print(f"ERROR: Missing key {e}. Did you update your C code to send LIA data?")
-            time.sleep(1)
+            print(f"ERROR: Missing key {e}. Check sensor data format.")
             return None
 
         # 3. --- Check Calibration BEFORE doing any logic ---
@@ -460,38 +470,6 @@ class StrokeProcessor:
             self.debug_is_impact_by_jerk = is_impact_by_jerk
             self.debug_in_turn_lockout = in_turn_lockout
             
-            # --- STROKE PHASE TRACKING ---
-            # Before stroke detection: determine current phase from accel state
-            prev_phase = self.current_phase
-            if self.is_gliding:
-                new_phase = 'glide'
-            elif self.stroke_integrating:
-                new_phase = 'pull'
-            elif self.stroke_count > 0 and not self.stroke_integrating and not self.is_gliding:
-                new_phase = 'recovery'
-            else:
-                new_phase = 'idle'
-            
-            if new_phase != prev_phase and prev_phase in ('glide', 'pull', 'recovery'):
-                phase_dur = (t_ms - self.phase_start_time) / 1000.0
-                if phase_dur > 0.05:  # ignore sub-50ms transitions
-                    self.phase_durations[prev_phase].append(phase_dur)
-                self.phase_start_time = t_ms
-            elif new_phase != prev_phase:
-                self.phase_start_time = t_ms
-            self.current_phase = new_phase
-            
-            # Compute phase percentages from recent cycle (last 3 of each)
-            recent_n = 3
-            total_dur = 0
-            for ph in ('glide', 'pull', 'recovery'):
-                durs = self.phase_durations[ph][-recent_n:]
-                total_dur += sum(durs)
-            if total_dur > 0:
-                for ph in ('glide', 'pull', 'recovery'):
-                    durs = self.phase_durations[ph][-recent_n:]
-                    self.last_phase_pcts[ph] = round(sum(durs) / total_dur * 100, 1)
-
             if stroke_detected:
                 self.stroke_count += 1
                 self.last_stroke_time_ms = t_ms
@@ -514,11 +492,62 @@ class StrokeProcessor:
                 self.last_entry_angle = abs(math.degrees(pitch_rad))
                 self.entry_angles.append(self.last_entry_angle)
             
+            # --- STROKE PHASE TRACKING (gyroscope-enhanced, runs AFTER stroke
+            # detection so stroke_integrating/stroke_start_time are up-to-date) ---
+            # Research: IEEE Swimming Phase Segmentation (2020), Frontiers
+            # fbioe.2021.793302 — gyroscope angular velocity is the primary
+            # discriminator between underwater and aerial phases.
+            prev_phase = self.current_phase
+            time_since_stroke_ms = (t_ms - self.stroke_start_time) if self.stroke_start_time > 0 else 999999
+            RECOVERY_MAX_MS = 600  # recovery lasts at most ~0.6s after pull ends
+
+            if self.is_gliding and not self.stroke_integrating:
+                new_phase = 'glide'
+            elif self.stroke_integrating and time_since_stroke_ms < self.CATCH_DURATION_MS:
+                new_phase = 'catch'
+            elif self.stroke_integrating:
+                new_phase = 'pull'
+            elif (self.stroke_count > 0
+                  and not self.stroke_integrating
+                  and not self.is_gliding
+                  and gyro_mag > self.RECOVERY_GYRO_THRESHOLD
+                  and time_since_stroke_ms < (self.STROKE_INTEGRATION_TIMEOUT * 1000 + RECOVERY_MAX_MS)):
+                new_phase = 'recovery'
+            elif (self.stroke_count > 0
+                  and not self.stroke_integrating
+                  and not self.is_gliding
+                  and time_since_stroke_ms < (self.STROKE_INTEGRATION_TIMEOUT * 1000 + RECOVERY_MAX_MS)
+                  and accel_mag < self.RECOVERY_ACCEL_CEILING):
+                new_phase = 'recovery'
+            elif self.stroke_count > 0 and not self.stroke_integrating:
+                new_phase = 'glide'
+            else:
+                new_phase = 'idle'
+
+            if new_phase != prev_phase and prev_phase in ('glide', 'catch', 'pull', 'recovery'):
+                phase_dur = (t_ms - self.phase_start_time) / 1000.0
+                if phase_dur > 0.05:
+                    self.phase_durations[prev_phase].append(phase_dur)
+                self.phase_start_time = t_ms
+            elif new_phase != prev_phase:
+                self.phase_start_time = t_ms
+            self.current_phase = new_phase
+
+            recent_n = 5
+            total_dur = 0
+            for ph in ('glide', 'catch', 'pull', 'recovery'):
+                durs = self.phase_durations[ph][-recent_n:]
+                total_dur += sum(durs)
+            if total_dur > 0:
+                for ph in ('glide', 'catch', 'pull', 'recovery'):
+                    durs = self.phase_durations[ph][-recent_n:]
+                    self.last_phase_pcts[ph] = round(sum(durs) / total_dur * 100, 1)
+
             # =================================================================
             # INTEGRATION WINDOW MANAGEMENT
             # Only integrate during the active pull-through phase of a stroke.
             # Starts at stroke detection (impact). Ends when acceleration
-            # settles for N consecutive samples, or hard timeout (0.8s).
+            # settles for N consecutive samples, or hard timeout (0.6s).
             # Gyro is NOT used for ending (recovery rotation ≠ position motion).
             # =================================================================
             if self.stroke_integrating:
@@ -612,9 +641,8 @@ class StrokeProcessor:
             "stroke_phase": self.current_phase,
             "phase_pcts": dict(self.last_phase_pcts),
             
-            # Haptic/deviation (from device data if present)
-            "haptic_fired": data_dict.get('haptic', False),
-            "deviation_score": data_dict.get('deviation', 0.0),
+            "haptic_fired": data_dict.get('haptic_fired', data_dict.get('haptic', False)),
+            "deviation_score": data_dict.get('deviation_score', data_dict.get('deviation', 0.0)),
             
             # Module/Device ID 
             "device_id": data_dict.get('dev_id', 0),

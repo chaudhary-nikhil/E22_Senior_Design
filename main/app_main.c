@@ -301,35 +301,44 @@ static void transition_to_syncing(void) {
     led_set(false);
   }
 
-  // Check if there's actually data to sync BEFORE entering sync state
-  esp_err_t err = wifi_server_start_sync();
+  // Start WiFi AP (makes SSID visible only now)
+  esp_err_t err = wifi_server_start_ap();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(err));
+    error_led_set(true);
+    ESP_LOGI(TAG, "========================================");
+    return;
+  }
+
+  // Check if there's actually data to sync
+  err = wifi_server_start_sync();
   if (err == ESP_ERR_NOT_FOUND) {
     ESP_LOGW(TAG, "No sessions on SD card - record a session first");
     ESP_LOGI(TAG, "[LED] Quick blink -> no data, staying IDLE");
-    // Brief error indication: blink status LED 3 times quickly
     for (int i = 0; i < 3; i++) {
       gpio_set_level(STATUS_LED_GPIO, 1);
       vTaskDelay(pdMS_TO_TICKS(100));
       gpio_set_level(STATUS_LED_GPIO, 0);
       vTaskDelay(pdMS_TO_TICKS(100));
     }
+    wifi_server_stop_ap();
     ESP_LOGI(TAG, "========================================");
     return;
   }
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Failed to start sync: %s", esp_err_to_name(err));
     error_led_set(true);
+    wifi_server_stop_ap();
     ESP_LOGI(TAG, "========================================");
     return;
   }
 
-  // Data exists - now enter sync state
   current_state = STATE_SYNCING;
   status_led_blink_start();
   led_blink_start();
   ESP_LOGI(TAG, ">>> STATE: SYNCING");
   ESP_LOGI(TAG, "[LED] Status=BLINK Power=BLINK -> Wireless sync active");
-  ESP_LOGI(TAG, "Connect to WiFi: %s (pw: %s)", WIFI_AP_SSID, WIFI_AP_PASSWORD);
+  ESP_LOGI(TAG, "Connect to WiFi: %s (pw: %s)", WIFI_AP_SSID_BASE, WIFI_AP_PASSWORD);
   ESP_LOGI(TAG, "Blink stops automatically after data transfer.");
   ESP_LOGI(TAG, "========================================");
 }
@@ -348,6 +357,7 @@ static void transition_to_idle(bool after_sync) {
 
   if (current_state == STATE_SYNCING && wifi_available) {
     wifi_server_stop_sync();
+    wifi_server_stop_ap();
   }
 
   // After a successful sync, clear the SD card for fresh sessions
@@ -566,11 +576,11 @@ void app_main(void) {
     error_led_set(true);
   }
 
-  // Initialize WiFi server
+  // Prepare WiFi subsystem (AP not started yet — starts on sync hold)
   err = wifi_server_init();
   if (err == ESP_OK) {
     wifi_available = true;
-    ESP_LOGI(TAG, "WiFi AP initialized: %s", WIFI_AP_SSID);
+    ESP_LOGI(TAG, "WiFi subsystem ready (AP starts on sync hold)");
   } else {
     ESP_LOGW(TAG, "WiFi init failed - continuing without WiFi");
     error_led_set(true);
@@ -689,27 +699,23 @@ void app_main(void) {
     }
 
     // Sync timeout: auto-return to IDLE after 5 minutes with no transfer
-    if (current_state == STATE_SYNCING && wifi_available &&
-        !wifi_server_is_transfer_complete()) {
+    {
       static uint32_t sync_timeout_counter = 0;
-      sync_timeout_counter++;
-      // 5 minutes = 300 seconds * SAMPLE_HZ ticks
-      if (sync_timeout_counter >=
-          (uint32_t)(300 * CONFIG_GOLDENFORM_SAMPLE_HZ)) {
-        ESP_LOGW(TAG, "Sync timeout (5 min) - auto-returning to IDLE");
+      if (current_state == STATE_SYNCING && wifi_available &&
+          !wifi_server_is_transfer_complete()) {
+        sync_timeout_counter++;
+        if (sync_timeout_counter >=
+            (uint32_t)(300 * CONFIG_GOLDENFORM_SAMPLE_HZ)) {
+          ESP_LOGW(TAG, "Sync timeout (5 min) - auto-returning to IDLE");
+          sync_timeout_counter = 0;
+          transition_to_idle(false);
+        }
+      } else {
         sync_timeout_counter = 0;
-        transition_to_idle(false);
-      }
-    } else {
-      // Reset timeout counter when not syncing or transfer completed
-      static uint32_t *sync_timeout_ptr = NULL;
-      if (!sync_timeout_ptr) {
-        // Just using the static above; reset in the else
       }
     }
 
-    // Read IMU whenever sensor is available (for UART live stream + optional SD
-    // logging)
+    // Read IMU whenever sensor is available
     if (bno055_available) {
       bno055_sample_t sample;
       err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
@@ -761,29 +767,6 @@ void app_main(void) {
               fully_calibrated_announced = false;
             }
           }
-        }
-
-        // Stream JSON to UART for live visualizer (every 2 samples ~50 Hz at
-        // 100 Hz rate)
-        static uint32_t uart_stream_count = 0;
-        uart_stream_count++;
-        if (uart_stream_count >= 2) {
-          uart_stream_count = 0;
-          char json_data[512];
-          snprintf(json_data, sizeof(json_data),
-                   "{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,"
-                   "\"gy\":%.3f,\"gz\":%.3f,\"mx\":%.1f,\"my\":%.1f,\"mz\":%."
-                   "1f,\"roll\":%.1f,\"pitch\":%.1f,\"yaw\":%.1f,\"qw\":%.4f,"
-                   "\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,\"lia_x\":%.3f,\"lia_"
-                   "y\":%.3f,\"lia_z\":%.3f,\"temp\":%.1f,\"cal\":{\"sys\":%d,"
-                   "\"gyro\":%d,\"accel\":%d,\"mag\":%d}}",
-                   (unsigned)sample.t_ms, sample.ax, sample.ay, sample.az,
-                   sample.gx, sample.gy, sample.gz, sample.mx, sample.my,
-                   sample.mz, sample.roll, sample.pitch, sample.yaw, sample.qw,
-                   sample.qx, sample.qy, sample.qz, sample.lia_x, sample.lia_y,
-                   sample.lia_z, sample.temp, sample.sys_cal, sample.gyro_cal,
-                   sample.accel_cal, sample.mag_cal);
-          // printf("%s\n", json_data);
         }
 
         // --- Stroke Detection & Haptic Feedback ---

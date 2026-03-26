@@ -307,11 +307,22 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 
   // --- INTEGRATION WINDOW (accumulate LIA for comparison) ---
   if (s_state.stroke_integrating) {
+    // Accumulate LIA during integration window for DTW comparison
+    if (s_state.current_stroke_count < MAX_CURRENT_SAMPLES) {
+      float scale = 1.0f;
+      if (s_state.wingspan_cm > 50.0f && s_state.wingspan_cm < 250.0f) {
+        scale = 180.0f / s_state.wingspan_cm;
+      }
+
+      int i = s_state.current_stroke_count * 3;
+      s_state.current_stroke_lia[i + 0] = lia_x * scale;
+      s_state.current_stroke_lia[i + 1] = lia_y * scale;
+      s_state.current_stroke_lia[i + 2] = lia_z * scale;
+      s_state.current_stroke_count++;
+    }
+
     uint32_t time_in_stroke = t_ms - s_state.stroke_integration_start_ms;
     if (time_in_stroke > STROKE_INTEGRATION_TIMEOUT_MS) {
-      // Window closed — run comparison if ideal data loaded
-      // Ensure we have an ideal stoke loaded and some current samples
-      // (minimum 5 samples = 250ms guard against too-short strokes)
       s_state.stroke_integrating = false;
 
       if (s_state.ideal_loaded) {
@@ -331,16 +342,16 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 
           if (s_state.haptic_enabled && haptic_is_available() && (technique_bad || entry_bad)) {
             if (event.deviation_score > (s_state.haptic_threshold + 0.3f) || entry_bad) {
-              haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE); // Critical/Severe
+              haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE);
               event.haptic_fired = true;
             } else if (event.deviation_score > (s_state.haptic_threshold + 0.15f)) {
-              haptic_play_pattern(HAPTIC_PATTERN_DOUBLE_PULSE); // High
+              haptic_play_pattern(HAPTIC_PATTERN_DOUBLE_PULSE);
               event.haptic_fired = true;
             } else if (technique_bad) {
               if (s_state.skill_level == HAPTIC_SKILL_BEGINNER) {
-                haptic_play_pattern(HAPTIC_PATTERN_DEVIATION_MILD); // Mild
+                haptic_play_pattern(HAPTIC_PATTERN_DEVIATION_MILD);
               } else {
-                haptic_play_pattern(HAPTIC_PATTERN_SINGLE_LONG); // Moderate
+                haptic_play_pattern(HAPTIC_PATTERN_SINGLE_LONG);
               }
               event.haptic_fired = true;
             }
@@ -354,26 +365,13 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
                      (unsigned)s_state.stroke_count, event.deviation_score);
           }
         } else {
-          ESP_LOGW(TAG, "Stroke #%u too short for DTW scoring", (unsigned)s_state.stroke_count);
+          ESP_LOGW(TAG, "Stroke #%u too short for DTW scoring (%d samples)",
+                   (unsigned)s_state.stroke_count, s_state.current_stroke_count);
         }
       } else {
-        ESP_LOGW(TAG, "Stroke #%u detected but no ideal stroke loaded - skipping deviation scoring", (unsigned)s_state.stroke_count);
+        ESP_LOGW(TAG, "Stroke #%u detected but no ideal stroke loaded",
+                 (unsigned)s_state.stroke_count);
       }
-    }
-  } else {
-    // Accumulate LIA sample
-    if (s_state.current_stroke_count < MAX_CURRENT_SAMPLES) {
-      // Normalize LIA magnitude by wingspan (reference = 180cm)
-      float scale = 1.0f;
-      if (s_state.wingspan_cm > 50.0f && s_state.wingspan_cm < 250.0f) {
-        scale = 180.0f / s_state.wingspan_cm;
-      }
-
-      int i = s_state.current_stroke_count * 3;
-      s_state.current_stroke_lia[i + 0] = lia_x * scale;
-      s_state.current_stroke_lia[i + 1] = lia_y * scale;
-      s_state.current_stroke_lia[i + 2] = lia_z * scale;
-      s_state.current_stroke_count++;
     }
   }
 

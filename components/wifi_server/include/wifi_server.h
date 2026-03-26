@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 // WiFi Access Point Configuration
-#define WIFI_AP_SSID              "GoldenForm"
+#define WIFI_AP_SSID_BASE         "GoldenForm"
 #define WIFI_AP_PASSWORD          "goldenform123"
 #define WIFI_AP_CHANNEL           1
 #define WIFI_AP_MAX_CONNECTIONS   4
@@ -25,10 +25,25 @@ typedef enum {
 } wifi_server_state_t;
 
 /**
- * @brief Initialize WiFi Access Point and HTTP server
+ * @brief Prepare WiFi subsystem (NVS, TCP/IP, event loop) without starting the AP.
+ *        Call once at boot.
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t wifi_server_init(void);
+
+/**
+ * @brief Start the WiFi AP and HTTP server (makes the SSID visible).
+ *        Call when entering sync mode.
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t wifi_server_start_ap(void);
+
+/**
+ * @brief Stop the WiFi AP and HTTP server (SSID disappears).
+ *        Call when leaving sync mode.
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t wifi_server_stop_ap(void);
 
 /**
  * @brief Get WiFi server state

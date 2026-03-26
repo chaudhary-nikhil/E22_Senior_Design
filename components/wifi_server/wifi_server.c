@@ -231,6 +231,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 // Initialize WiFi Access Point
+static char s_ap_ssid[33] = {0};
+
 static esp_err_t wifi_init_softap(void) {
   esp_netif_create_default_wifi_ap();
 
@@ -240,14 +242,22 @@ static esp_err_t wifi_init_softap(void) {
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
 
+  int dev_id = CONFIG_GOLDENFORM_DEVICE_ID;
+  if (dev_id > 0) {
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%s%d",
+             WIFI_AP_SSID_BASE, CONFIG_GOLDENFORM_DEVICE_NAME, dev_id);
+  } else {
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s", WIFI_AP_SSID_BASE);
+  }
+
   wifi_config_t wifi_config = {
-      .ap = {.ssid = WIFI_AP_SSID,
-             .ssid_len = strlen(WIFI_AP_SSID),
-             .channel = WIFI_AP_CHANNEL,
+      .ap = {.channel = WIFI_AP_CHANNEL,
              .password = WIFI_AP_PASSWORD,
              .max_connection = WIFI_AP_MAX_CONNECTIONS,
              .authmode = WIFI_AUTH_WPA_WPA2_PSK},
   };
+  memcpy(wifi_config.ap.ssid, s_ap_ssid, strlen(s_ap_ssid));
+  wifi_config.ap.ssid_len = strlen(s_ap_ssid);
 
   if (strlen(WIFI_AP_PASSWORD) == 0) {
     wifi_config.ap.authmode = WIFI_AUTH_OPEN;
@@ -257,7 +267,7 @@ static esp_err_t wifi_init_softap(void) {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
 
-  ESP_LOGI(TAG, "WiFi AP started: SSID=%s, password=%s", WIFI_AP_SSID,
+  ESP_LOGI(TAG, "WiFi AP started: SSID=%s, password=%s", s_ap_ssid,
            WIFI_AP_PASSWORD);
   return ESP_OK;
 }
@@ -422,7 +432,7 @@ static esp_err_t data_handler(httpd_req_t *req) {
              "Data request rejected: No client connected to GoldenForm WiFi");
     httpd_resp_send_custom_err(
         req, "503 Service Unavailable",
-        "Not connected to GoldenForm WiFi. Please connect to SSID: GoldenForm");
+        "Not connected to GoldenForm WiFi. Please connect to the GoldenForm AP");
     return ESP_FAIL;
   }
 
@@ -824,23 +834,25 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
 
         for (size_t i = 0; i < decoded; i++) {
           bno055_sample_t *s = &stream_chunk_buffer[i];
-          char sb[320];
+          char sb[384];
           snprintf(
               sb, sizeof(sb),
-                            "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+              "%s{\"t\":%u,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
               "\"lia_x\":%.3f,\"lia_y\":%.3f,\"lia_z\":%.3f,"
               "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
               "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,"
               "\"cal\":{\"sys\":%u,\"gyro\":%u,\"accel\":%u,\"mag\":%u},"
               "\"haptic\":%u,\"deviation\":%.3f,\"strokes\":%u,\"turns\":%u,"
-              "\"dev_id\":%u,\"dev_role\":%u}",
+              "\"dev_id\":%u,\"dev_role\":%u,"
+              "\"entry_angle\":%.2f,\"breath_count\":%u}",
               (sess_sent > 0) ? "," : "", (unsigned)s->t_ms, s->ax, s->ay,
               s->az, s->lia_x, s->lia_y, s->lia_z, s->gx, s->gy, s->gz, s->qw,
               s->qx, s->qy, s->qz, (unsigned)s->sys_cal, (unsigned)s->gyro_cal,
               (unsigned)s->accel_cal, (unsigned)s->mag_cal,
               (unsigned)s->haptic_fired, s->deviation_score,
               (unsigned)s->stroke_count, (unsigned)s->turn_count,
-              (unsigned)s->device_id, (unsigned)s->device_role);
+              (unsigned)s->device_id, (unsigned)s->device_role,
+              s->entry_angle, (unsigned)s->breath_count);
 
           esp_err_t err = httpd_resp_send_chunk(req, sb, strlen(sb));
           if (err != ESP_OK) {
@@ -1023,7 +1035,6 @@ static esp_err_t ideal_stroke_get_handler(httpd_req_t *req) {
   cJSON_AddNumberToObject(root, "ideal_entry_angle", stroke_detector_get_ideal_entry_angle());
   free(ideal_data);
 
-  cJSON_AddItemToObject(root, "samples", samples_arr);
   char *json_str = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
 
@@ -1117,14 +1128,21 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
 
 static esp_err_t test_buzz_handler(httpd_req_t *req) {
   extern esp_err_t haptic_play_pattern(haptic_pattern_t pattern);
-  // Using a strong, long double-pulse so it's unmistakably visible on an LED
-  haptic_play_pattern(HAPTIC_PATTERN_DEVIATION_STRONG);
-  
-  const char *resp = "{\"status\":\"ok\"}";
+  extern bool haptic_is_available(void);
+
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  if (!haptic_is_available()) {
+    const char *resp = "{\"status\":\"error\",\"message\":\"Haptic not initialized\"}";
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_OK;
+  }
+
+  haptic_play_pattern(HAPTIC_PATTERN_DEVIATION_STRONG);
+  const char *resp = "{\"status\":\"ok\"}";
   httpd_resp_send(req, resp, strlen(resp));
-  ESP_LOGI(TAG, "Test haptic buzz triggered");
+  ESP_LOGI(TAG, "Test haptic buzz triggered via API");
   return ESP_OK;
 }
 
@@ -1144,20 +1162,28 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
            "\"haptic_available\":%s,\"ideal_loaded\":%s,"
            "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d},"
            "\"firmware\":\"GoldenForm v1.0\",\"mcu\":\"ESP32-S3-WROOM-1\","
+           "\"ssid\":\"%s\","
            "\"sample_hz\":%d,\"multi_device\":%s}",
            CONFIG_GOLDENFORM_DEVICE_ID,
 #if defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST)
-           "wrist",
+           "wrist_right",
+#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST_LEFT)
+           "wrist_left",
+#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_HEAD)
+           "head",
 #elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_ANKLE)
-           "ankle",
+           "ankle_right",
+#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_ANKLE_LEFT)
+           "ankle_left",
 #elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WAIST)
            "waist",
 #else
-           "wrist",
+           "wrist_right",
 #endif
            haptic_is_available() ? "true" : "false",
            stroke_detector_has_ideal() ? "true" : "false",
            sys, gyro, accel, mag,
+           s_ap_ssid,
            CONFIG_GOLDENFORM_SAMPLE_HZ,
 #if defined(CONFIG_GOLDENFORM_MULTI_DEVICE_ENABLE)
            "true"
@@ -1172,11 +1198,13 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// Track whether one-time init has been done
+static bool s_wifi_prepared = false;
+
 // Public API
 esp_err_t wifi_server_init(void) {
-  ESP_LOGI(TAG, "Initializing WiFi server...");
+  ESP_LOGI(TAG, "Preparing WiFi subsystem (AP not started yet)...");
 
-  // Initialize NVS
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1185,26 +1213,62 @@ esp_err_t wifi_server_init(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-  // Initialize TCP/IP
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-  // Initialize WiFi AP
-  ret = wifi_init_softap();
+  s_wifi_prepared = true;
+  current_state = WIFI_SERVER_STATE_IDLE;
+  ESP_LOGI(TAG, "WiFi subsystem prepared (hold sync button to start AP)");
+  return ESP_OK;
+}
+
+esp_err_t wifi_server_start_ap(void) {
+  if (!s_wifi_prepared) {
+    ESP_LOGE(TAG, "wifi_server_init() must be called first");
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (current_state == WIFI_SERVER_STATE_RUNNING) {
+    ESP_LOGW(TAG, "WiFi AP already running");
+    return ESP_OK;
+  }
+
+  current_state = WIFI_SERVER_STATE_STARTING;
+
+  esp_err_t ret = wifi_init_softap();
   if (ret != ESP_OK) {
     current_state = WIFI_SERVER_STATE_ERROR;
     return ret;
   }
 
-  // Start HTTP server
   ret = start_http_server();
   if (ret != ESP_OK) {
+    esp_wifi_stop();
+    esp_wifi_deinit();
     current_state = WIFI_SERVER_STATE_ERROR;
     return ret;
   }
 
   current_state = WIFI_SERVER_STATE_RUNNING;
-  ESP_LOGI(TAG, "WiFi server ready: http://192.168.4.1");
+  ESP_LOGI(TAG, "WiFi AP + HTTP server started: http://192.168.4.1");
+  return ESP_OK;
+}
+
+esp_err_t wifi_server_stop_ap(void) {
+  if (current_state != WIFI_SERVER_STATE_RUNNING) {
+    return ESP_OK;
+  }
+
+  if (server) {
+    httpd_stop(server);
+    server = NULL;
+  }
+
+  esp_wifi_stop();
+  esp_wifi_deinit();
+
+  connected_clients = 0;
+  current_state = WIFI_SERVER_STATE_IDLE;
+  ESP_LOGI(TAG, "WiFi AP stopped (SSID no longer visible)");
   return ESP_OK;
 }
 
@@ -1405,16 +1469,8 @@ bool wifi_server_is_transfer_complete(void) {
 
 esp_err_t wifi_server_deinit(void) {
   wifi_server_stop_sync();
+  wifi_server_stop_ap();
 
-  if (server) {
-    httpd_stop(server);
-    server = NULL;
-  }
-
-  esp_wifi_stop();
-  esp_wifi_deinit();
-
-  // Cleanup streaming resources
   cleanup_streaming_state();
   if (stream_chunk_buffer) {
     free(stream_chunk_buffer);
@@ -1425,7 +1481,8 @@ esp_err_t wifi_server_deinit(void) {
     stream_state.mutex = NULL;
   }
 
+  s_wifi_prepared = false;
   current_state = WIFI_SERVER_STATE_IDLE;
-  ESP_LOGI(TAG, "WiFi server stopped");
+  ESP_LOGI(TAG, "WiFi server deinitialized");
   return ESP_OK;
 }

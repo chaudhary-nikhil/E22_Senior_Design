@@ -31,14 +31,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/' or self.path == '/integrated_session_viewer.html':
             self._serve_html()
-        elif self.path == '/integrated_session_viewer_position.html':
-            self._serve_doc('integrated_session_viewer_position.html', 'text/html')
         elif self.path == '/app.css':
             self._serve_static('app.css', 'text/css')
         elif self.path == '/app.js':
             self._serve_static('app.js', 'application/javascript')
-        elif self.path == '/app_position_trail.js':
-            self._serve_static('app_position_trail.js', 'application/javascript')
         elif self.path == '/process':
             self._process_wifi_session()
         elif self.path == '/cached':
@@ -53,25 +49,19 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._get_device_info()
         elif self.path == '/api/devices':
             self._get_devices()
-        elif self.path.startswith('/api/sessions'):
+        elif self.path == '/api/sessions':
             self._get_sessions()
+        elif self.path.startswith('/api/sessions/'):
+            parts = self.path.split('/')
+            if len(parts) >= 4 and parts[3].isdigit():
+                self._get_session_detail(int(parts[3]))
+            else:
+                self._get_sessions()
         elif self.path.startswith('/api/progress'):
             self._get_progress()
         else:
             self.send_response(404)
             self.end_headers()
-
-    def _serve_doc(self, rel_path, content_type):
-        path = os.path.join(os.path.dirname(__file__), rel_path)
-        if not os.path.exists(path):
-            self.send_response(404)
-            self.end_headers()
-            return
-        self.send_response(200)
-        self.send_header('Content-type', content_type)
-        self.end_headers()
-        with open(path, 'rb') as f:
-            self.wfile.write(f.read())
 
     def do_POST(self):
         if self.path == '/reprocess':
@@ -90,6 +80,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._test_buzz()
         elif self.path == '/api/devices/register':
             self._register_device()
+        elif self.path.startswith('/api/devices/delete'):
+            self._delete_device()
         elif self.path == '/api/sessions/save':
             self._save_session()
         elif self.path == '/api/sessions/merge':
@@ -130,6 +122,18 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 name=body.get('name', '')
             )
             self._send_json({'status': 'ok', 'device_id': did})
+        except Exception as e:
+            self._send_json({'error': str(e)}, 500)
+
+    def _delete_device(self):
+        try:
+            body = self._read_body()
+            did = body.get('device_id')
+            if not did:
+                self._send_json({'error': 'Missing device_id'}, 400)
+                return
+            db.delete_device(did)
+            self._send_json({'status': 'ok'})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
 
@@ -271,7 +275,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
     def _get_device_info(self):
         try:
-            resp = urllib.request.urlopen(f'{ESP32_URL}/status', timeout=3)
+            resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=3)
             data = json.loads(resp.read().decode())
             self._send_json(data)
         except Exception:
@@ -319,6 +323,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         sessions = db.get_sessions(uid, limit)
         self._send_json({'sessions': sessions})
 
+    def _get_session_detail(self, session_id):
+        s = db.get_session(session_id)
+        if not s:
+            self._send_json({'error': 'Session not found'}, 404)
+            return
+        self._send_json({'session': s})
+
     def _get_progress(self):
         user = db.get_user()
         if not user:
@@ -363,7 +374,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             for sess in aligned_sessions:
                 processor = StrokeProcessor(batch_mode=True)
                 p_data = []
-                for sample in sess.get('aligned_data', []):
+                for sample in sess.get('data', []):
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
                     lia_y = sample.get('lia_y', sample.get('ay', 0))
                     lia_z = sample.get('lia_z', sample.get('az', 0))
@@ -534,7 +545,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 sessions_raw = [{'id': 1, 'name': 'Session 1', 'data': result['data']}]
 
             if not sessions_raw:
-                self._send_json({"error": "No sessions in ESP32 response"})
+                self._send_json({"error": "No sessions in ESP32 response"}, status=404)
                 return
 
             processed_sessions = []
@@ -548,7 +559,9 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
                 actual_total += len(data)
                 processor = StrokeProcessor(batch_mode=True)
+                breath_detector = BreathingDetector()
                 processed_data = []
+                breath_events = []
 
                 for sample in data:
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
@@ -564,8 +577,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'qx': sample.get('qx', 0),
                         'qy': sample.get('qy', 0),
                         'qz': sample.get('qz', 0),
-                        'haptic': sample.get('haptic', False),
-                        'deviation': sample.get('deviation', 0.0),
+                        'haptic_fired': sample.get('haptic', sample.get('haptic_fired', False)),
+                        'deviation_score': sample.get('deviation', sample.get('deviation_score', 0.0)),
                         'dev_id': sample.get('dev_id', 0),
                         'dev_role': sample.get('dev_role', 0),
                         'cal': sample.get('cal', {
@@ -578,9 +591,22 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
                     processed_json = processor.process_data(data_dict)
                     if processed_json:
-                        processed_data.append(json.loads(processed_json))
+                        p = json.loads(processed_json)
+                        q = p.get('quaternion', {})
+                        be = breath_detector.feed(
+                            data_dict['t'],
+                            q.get('qw', 1), q.get('qx', 0),
+                            q.get('qy', 0), q.get('qz', 0)
+                        )
+                        if be:
+                            breath_events.append(be)
+                            p['breath_event'] = be
+                        p['breath_count'] = breath_detector.breath_count
+                        processed_data.append(p)
 
                 metrics = self._calculate_stroke_metrics(processed_data, processor)
+                breath_stats = breath_detector.get_stats()
+                metrics['breathing'] = breath_stats
 
                 duration = 0
                 if len(processed_data) >= 2:
@@ -641,10 +667,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def _calculate_stroke_metrics(self, processed_data, processor):
         if len(processed_data) == 0:
             return {
-                'stroke_count': 0, 'duration': 0, 'stroke_rate': 0,
+                'stroke_count': 0, 'turn_count': 0, 'duration': 0, 'stroke_rate': 0,
                 'avg_stroke_time': 0, 'consistency': 0, 'peak_accel_avg': 0,
-                'avg_entry_angle': 0, 'phase_pcts': {'glide': 0, 'pull': 0, 'recovery': 0},
-                'haptic_count': 0, 'avg_deviation': 0
+                'avg_entry_angle': 0, 'ideal_entry_angle': 30.0,
+                'phase_pcts': {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0},
+                'haptic_count': 0, 'avg_deviation': 0,
+                'cal_quality': {'accel_pct': 0, 'gyro_pct': 0},
+                'stroke_breakdown': []
             }
 
         stroke_times = []
@@ -693,8 +722,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         if hasattr(processor, 'entry_angles') and processor.entry_angles:
             avg_entry_angle = sum(processor.entry_angles) / len(processor.entry_angles)
 
-        # Get phase percentages
-        phase_pcts = {'glide': 0, 'pull': 0, 'recovery': 0}
+        phase_pcts = {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0}
         if hasattr(processor, 'last_phase_pcts'):
             phase_pcts = dict(processor.last_phase_pcts)
 
