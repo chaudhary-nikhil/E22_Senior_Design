@@ -45,6 +45,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._get_user_profile()
         elif self.path == '/api/ideal_stroke':
             self._get_ideal_stroke()
+        elif self.path == '/api/ideal_stroke/set_from_stroke':
+            self._set_from_stroke_api()
         elif self.path == '/api/device_info':
             self._get_device_info()
         elif self.path == '/api/devices':
@@ -70,6 +72,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._register_user()
         elif self.path == '/api/ideal_stroke':
             self._upload_ideal_stroke()
+        elif self.path == '/api/ideal_stroke/set_from_stroke':
+            self._set_ideal_from_stroke()
         elif self.path == '/api/ideal_stroke/delete':
             self._delete_ideal_stroke()
         elif self.path == '/api/ideal_stroke/push':
@@ -163,6 +167,64 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
             print(f"Ideal stroke saved: {len(samples)} samples")
             self._send_json({'status': 'ok', 'samples': len(samples)})
+        except Exception as e:
+            self._send_json({'error': str(e)}, 500)
+    def _set_from_stroke_api(self):
+        try:
+            # For GET request with query params?
+            # session_id, stroke_num
+            # or use POST
+            self.send_response(405) # Allow only POST
+            self.end_headers()
+        except: pass
+
+    # In WiFiSessionHandler do_POST
+    def _set_ideal_from_stroke(self):
+        try:
+            body = self._read_body()
+            session_id = body.get('session_id')
+            stroke_num = body.get('stroke_num')
+            
+            user = db.get_user()
+            uid = user['id'] if user else None
+            
+            session = db.get_session(session_id)
+            if not session:
+                self._send_json({'error': 'Session not found'}, 404)
+                return
+            
+            pd = session.get('processed_data', [])
+            # Filter for this stroke
+            # Note: in app.js we use strokeNumAt(d)
+            # In simple_imu_visualizer.py result it's 'stroke_count' or 'strokes'
+            stroke_samples = [d for d in pd if (d.get('strokes', 0) or d.get('stroke_count', 0)) == stroke_num]
+            
+            if not stroke_samples:
+                self._send_json({'error': f'Stroke {stroke_num} not found in session'}, 404)
+                return
+            
+            # Map back to lia format expected by database
+            lia_data = []
+            for d in stroke_samples:
+                lia_data.append({
+                    'lia_x': d.get('acceleration', {}).get('ax', 0),
+                    'lia_y': d.get('acceleration', {}).get('ay', 0),
+                    'lia_z': d.get('acceleration', {}).get('az', 0),
+                    'qw': d.get('quaternion', {}).get('qw', 1),
+                    'qx': d.get('quaternion', {}).get('qx', 0),
+                    'qy': d.get('quaternion', {}).get('qy', 0),
+                    'qz': d.get('quaternion', {}).get('qz', 0)
+                })
+            
+            if uid:
+                db.save_ideal_stroke(uid, f'Stroke {stroke_num} from Session {session_id}', lia_data, len(lia_data))
+            
+            # Save file cache for stability
+            ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
+            with open(ideal_path, 'w') as f:
+                json.dump({'samples': lia_data, 'name': f'Stroke {stroke_num}'}, f)
+            
+            self._send_json({'status': 'ok', 'samples': len(lia_data)})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
 

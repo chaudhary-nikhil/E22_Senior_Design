@@ -31,6 +31,7 @@ def init_db():
             height_cm REAL DEFAULT 0,
             wingspan_cm REAL DEFAULT 0,
             skill_level TEXT DEFAULT 'beginner',
+            pool_length REAL DEFAULT 25.0,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -87,22 +88,38 @@ def init_db():
 
 # ── User CRUD ──
 
-def upsert_user(name, height_cm=0, wingspan_cm=0, skill_level='beginner'):
+def upsert_user(name, height_cm=0, wingspan_cm=0, skill_level='beginner', pool_length=25.0):
     conn = _connect()
     cur = conn.execute("SELECT id FROM users LIMIT 1")
     row = cur.fetchone()
     if row:
-        conn.execute(
-            "UPDATE users SET name=?, height_cm=?, wingspan_cm=?, skill_level=? WHERE id=?",
-            (name, height_cm, wingspan_cm, skill_level, row['id'])
-        )
+        try:
+            conn.execute(
+                "UPDATE users SET name=?, height_cm=?, wingspan_cm=?, skill_level=?, pool_length=? WHERE id=?",
+                (name, height_cm, wingspan_cm, skill_level, pool_length, row['id'])
+            )
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE users ADD COLUMN pool_length REAL DEFAULT 25.0")
+            conn.execute(
+                "UPDATE users SET name=?, height_cm=?, wingspan_cm=?, skill_level=?, pool_length=? WHERE id=?",
+                (name, height_cm, wingspan_cm, skill_level, pool_length, row['id'])
+            )
         uid = row['id']
     else:
-        cur = conn.execute(
-            "INSERT INTO users (name, height_cm, wingspan_cm, skill_level) VALUES (?,?,?,?)",
-            (name, height_cm, wingspan_cm, skill_level)
-        )
-        uid = cur.lastrowid
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (name, height_cm, wingspan_cm, skill_level, pool_length) VALUES (?,?,?,?,?)",
+                (name, height_cm, wingspan_cm, skill_level, pool_length)
+            )
+            uid = cur.lastrowid
+        except sqlite3.OperationalError:
+            # Table might not have pool_length, attempt to migrate
+            conn.execute("ALTER TABLE users ADD COLUMN pool_length REAL DEFAULT 25.0")
+            cur = conn.execute(
+                "INSERT INTO users (name, height_cm, wingspan_cm, skill_level, pool_length) VALUES (?,?,?,?,?)",
+                (name, height_cm, wingspan_cm, skill_level, pool_length)
+            )
+            uid = cur.lastrowid
     conn.commit()
     conn.close()
     return uid

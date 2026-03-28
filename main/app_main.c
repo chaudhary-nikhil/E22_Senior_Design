@@ -809,6 +809,8 @@ void app_main(void) {
         
         sample.haptic_fired = stroke_event.haptic_fired ? 1 : 0;
         sample.deviation_score = stroke_event.deviation_score;
+        sample.haptic_reason = stroke_event.haptic_reason;
+        sample.pull_duration_ms = stroke_event.pull_duration_ms;
         sample.stroke_count = stroke_event.stroke_count;
         sample.turn_count = stroke_event.turn_count;
 

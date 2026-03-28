@@ -617,6 +617,20 @@ class StrokeProcessor:
             else:
                 self.velocity = [0.0, 0.0, 0.0]
 
+        stroke_vel_ms = math.sqrt(self.velocity[0]**2 + self.velocity[1]**2 + self.velocity[2]**2)
+        
+        # Calculate phase progress
+        phase_progress = 0.0
+        if self.current_phase != 'idle':
+            current_duration = (t_ms - self.phase_start_time) / 1000.0
+            history = self.phase_durations[self.current_phase][-5:]
+            if history:
+                avg_dur = sum(history) / len(history)
+                phase_progress = min(1.0, current_duration / avg_dur)
+            else:
+                fallbacks = {'catch': 0.15, 'pull': 0.4, 'recovery': 0.5, 'glide': 1.0}
+                phase_progress = min(1.0, current_duration / fallbacks.get(self.current_phase, 1.0))
+
         # 6. Create the final JSON for the visualizer
         avg_entry = sum(self.entry_angles) / len(self.entry_angles) if self.entry_angles else 0
         fw_entry = float(data_dict.get('entry_angle', 0) or 0)
@@ -641,12 +655,16 @@ class StrokeProcessor:
             "avg_entry_angle": round(avg_entry, 1),
             "ideal_entry_angle": self.ideal_entry_angle,
             
-            # Stroke phase
+            # Stroke phase & Signal processing
             "stroke_phase": self.current_phase,
             "phase_pcts": dict(self.last_phase_pcts),
+            "phase_progress": round(phase_progress, 3),
+            "stroke_velocity_ms": round(stroke_vel_ms, 3),
             
             "haptic_fired": data_dict.get('haptic_fired', data_dict.get('haptic', False)),
             "deviation_score": data_dict.get('deviation_score', data_dict.get('deviation', 0.0)),
+            "haptic_reason": data_dict.get('haptic_reason', 0),
+            "pull_duration_ms": data_dict.get('pull_duration_ms', 0.0),
             
             # Module/Device ID 
             "device_id": data_dict.get('dev_id', 0),

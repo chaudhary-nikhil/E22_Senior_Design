@@ -47,6 +47,8 @@ static void sample_to_proto(const bno055_sample_t *sample,
   msg->mag_cal = sample->mag_cal;
   msg->haptic_fired = sample->haptic_fired;
   msg->deviation_score = sample->deviation_score;
+  msg->haptic_reason = sample->haptic_reason;
+  msg->pull_duration_ms = sample->pull_duration_ms;
   msg->device_id = sample->device_id;
   msg->device_role = sample->device_role;
   msg->stroke_count = sample->stroke_count;
@@ -84,6 +86,8 @@ static void proto_to_sample(const goldenform_ImuSample *msg,
   sample->mag_cal = msg->mag_cal;
   sample->haptic_fired = msg->haptic_fired;
   sample->deviation_score = msg->deviation_score;
+  sample->haptic_reason = msg->haptic_reason;
+  sample->pull_duration_ms = msg->pull_duration_ms;
   sample->device_id = msg->device_id;
   sample->device_role = msg->device_role;
   sample->stroke_count = msg->stroke_count;

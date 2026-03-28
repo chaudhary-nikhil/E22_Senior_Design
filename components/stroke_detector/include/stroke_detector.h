@@ -23,14 +23,22 @@ extern "C" {
  */
 
 // Result flags from processing a single sample
+// Haptic reason bitfield — tells the app exactly WHY the motor fired
+#define HAPTIC_REASON_NONE       0x00
+#define HAPTIC_REASON_DTW_HIGH   0x01  // Overall stroke shape deviation exceeded threshold
+#define HAPTIC_REASON_ENTRY_BAD  0x02  // Entry angle outside ideal ± 15°
+#define HAPTIC_REASON_PULL_SHORT 0x04  // Pull phase shorter than expected
+
 typedef struct {
-  bool stroke_detected;  // True on the sample where a new stroke was detected
-  bool turn_detected;    // True when a wall/turn impact is detected
-  bool haptic_fired;     // True if haptic was triggered this sample
-  float deviation_score; // 0.0 = perfect match, 1.0+ = poor match
-  float entry_angle;     // Water entry angle (degrees) from quaternion pitch
-  uint32_t stroke_count; // Running total of strokes detected
-  uint32_t turn_count;   // Running total of turns detected
+  bool stroke_detected;      // True on the sample where a new stroke was detected
+  bool turn_detected;        // True when a wall/turn impact is detected
+  bool haptic_fired;         // True if haptic was triggered this sample
+  float deviation_score;     // 0.0 = perfect match, 1.0+ = poor match
+  float entry_angle;         // Water entry angle (degrees) from quaternion pitch
+  uint32_t stroke_count;     // Running total of strokes detected
+  uint32_t turn_count;       // Running total of turns detected
+  uint8_t haptic_reason;     // Bitfield: HAPTIC_REASON_DTW_HIGH | REASON_ENTRY_BAD | ...
+  float pull_duration_ms;    // Duration of pull/integration phase for this stroke (ms)
 } stroke_event_t;
 
 // Skill levels for haptic thresholding

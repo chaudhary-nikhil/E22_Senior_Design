@@ -2,26 +2,28 @@
 /* Addresses: mobile responsive, micro-animations, production polish */
 
 :root {
-  --bg1: #0a0a15;
-  --bg2: #0f0f1e;
-  --bg3: #151528;
-  --bg4: #1e1e35;
+  --bg1: #06060e;
+  --bg2: rgba(15, 15, 30, 0.6);
+  --bg3: rgba(21, 21, 40, 0.7);
+  --bg4: rgba(30, 30, 53, 0.8);
   --bg5: #282845;
-  --text1: #f0f0f5;
-  --text2: #a0a0b5;
-  --text3: #65657a;
+  --text1: #f8f8fc;
+  --text2: #b0b0cc;
+  --text3: #757590;
   --gold: #C5A55A;
+  --gold-grad: linear-gradient(135deg, #f1d592 0%, #c5a55a 50%, #8a7540 100%);
   --gold-dim: #8a7540;
   --blue: #3b82f6;
-  --green: #22c55e;
-  --red: #ef4444;
-  --amber: #eab308;
-  --purple: #a855f7;
+  --green: #10b981;
+  --red: #f43f5e;
+  --amber: #f59e0b;
+  --purple: #8b5cf6;
   --cyan: #06b6d4;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-  --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --radius: 16px;
+  --radius-sm: 10px;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --glass-border: 1px solid rgba(255, 255, 255, 0.08);
+  --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * {
@@ -107,28 +109,28 @@ body {
 
 /* ── NAV ── */
 .app-nav {
-  background: var(--bg2);
-  border-bottom: 1px solid var(--bg4);
+  background: rgba(10, 10, 21, 0.8);
+  border-bottom: var(--glass-border);
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  height: 56px;
+  padding: 0 24px;
+  height: 64px;
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .nav-brand {
-  font-weight: 800;
-  font-size: 1.15em;
-  background: linear-gradient(135deg, var(--gold) 0%, #e8d5a0 100%);
+  font-weight: 900;
+  font-size: 1.25em;
+  background: var(--gold-grad);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  letter-spacing: -0.5px;
-  margin-right: 24px;
+  letter-spacing: -1px;
+  margin-right: 32px;
   white-space: nowrap;
 }
 
@@ -246,15 +248,18 @@ body {
 /* ── CARDS ── */
 .card {
   background: var(--bg2);
-  border: 1px solid var(--bg4);
+  border: var(--glass-border);
   border-radius: var(--radius);
-  padding: 18px;
-  transition: transform var(--transition), box-shadow var(--transition);
+  padding: 20px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
 }
 
 .card:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
+  transform: translateY(-4px);
+  background: rgba(25, 25, 50, 0.5);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 
 .stat-card {
@@ -746,6 +751,7 @@ label {
 
 input[type="range"] {
   -webkit-appearance: none;
+  appearance: none;
   height: 4px;
   background: var(--bg4);
   border-radius: 2px;
@@ -755,6 +761,7 @@ input[type="range"] {
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 16px;
   height: 16px;
   border-radius: 50%;

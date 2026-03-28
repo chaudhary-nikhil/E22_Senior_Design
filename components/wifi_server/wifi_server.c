@@ -852,14 +852,15 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
               "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
               "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,"
               "\"cal\":{\"sys\":%u,\"gyro\":%u,\"accel\":%u,\"mag\":%u},"
-              "\"haptic\":%u,\"deviation\":%.3f,\"strokes\":%u,\"turns\":%u,"
+              "\"haptic\":%u,\"deviation\":%.3f,\"haptic_reason\":%u,\"pull_duration_ms\":%.1f,"
+              "\"strokes\":%u,\"turns\":%u,"
               "\"dev_id\":%u,\"dev_role\":%u,"
               "\"entry_angle\":%.2f,\"breath_count\":%u}",
               (sess_sent > 0) ? "," : "", (unsigned)s->t_ms, s->ax, s->ay,
               s->az, s->lia_x, s->lia_y, s->lia_z, s->gx, s->gy, s->gz, s->qw,
               s->qx, s->qy, s->qz, (unsigned)s->sys_cal, (unsigned)s->gyro_cal,
               (unsigned)s->accel_cal, (unsigned)s->mag_cal,
-              (unsigned)s->haptic_fired, s->deviation_score,
+              (unsigned)s->haptic_fired, s->deviation_score, (unsigned)s->haptic_reason, s->pull_duration_ms,
               (unsigned)s->stroke_count, (unsigned)s->turn_count,
               (unsigned)s->device_id, (unsigned)s->device_role,
               s->entry_angle, (unsigned)s->breath_count);

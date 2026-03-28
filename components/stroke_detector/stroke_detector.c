@@ -173,6 +173,7 @@ void stroke_detector_reset_session(void) {
 
 stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
   stroke_event_t event = {0};
+  event.haptic_reason = HAPTIC_REASON_NONE;
 
   uint32_t t_ms = sample->t_ms;
 
@@ -329,6 +330,9 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
     if (time_in_stroke > STROKE_INTEGRATION_TIMEOUT_MS) {
       s_state.stroke_integrating = false;
 
+      // Record pull duration for coaching insights
+      event.pull_duration_ms = (float)time_in_stroke;
+
       if (s_state.ideal_loaded) {
         if (s_state.current_stroke_count > 5) {
           int num_ideal = s_state.ideal_sample_count;
@@ -341,9 +345,17 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
           bool technique_bad = (event.deviation_score > s_state.haptic_threshold);
           float entry_diff = fabsf(s_state.latched_entry_angle - s_state.ideal_entry_angle);
           bool entry_bad = (s_state.ideal_entry_angle > 5.0f) && (entry_diff > 15.0f);
+          bool pull_short = (time_in_stroke < 250);  // Pull under 250ms is too short
 
-          ESP_LOGI(TAG, "Stroke deviation: %.3f (entry: %.1f, target: %.1f, thresh: %.3f)",
-                   event.deviation_score, s_state.latched_entry_angle, s_state.ideal_entry_angle, s_state.haptic_threshold);
+          // Set reason codes so app can explain WHY haptic fired
+          event.haptic_reason = HAPTIC_REASON_NONE;
+          if (technique_bad) event.haptic_reason |= HAPTIC_REASON_DTW_HIGH;
+          if (entry_bad) event.haptic_reason |= HAPTIC_REASON_ENTRY_BAD;
+          if (pull_short) event.haptic_reason |= HAPTIC_REASON_PULL_SHORT;
+
+          ESP_LOGI(TAG, "Stroke deviation: %.3f (entry: %.1f, target: %.1f, thresh: %.3f, pull: %ums, reason: 0x%02x)",
+                   event.deviation_score, s_state.latched_entry_angle, s_state.ideal_entry_angle, 
+                   s_state.haptic_threshold, (unsigned)time_in_stroke, event.haptic_reason);
 
           if (s_state.haptic_enabled && haptic_is_available() && (technique_bad || entry_bad)) {
             if (event.deviation_score > (s_state.haptic_threshold + 0.3f) || entry_bad) {
@@ -363,8 +375,8 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
           }
 
           if (event.haptic_fired) {
-            ESP_LOGI(TAG, "Haptic fired! (dev=%.3f, entry_diff=%.1f)", 
-                     event.deviation_score, entry_diff);
+            ESP_LOGI(TAG, "Haptic fired! (dev=%.3f, entry_diff=%.1f, reason=0x%02x)", 
+                     event.deviation_score, entry_diff, event.haptic_reason);
           } else {
             ESP_LOGI(TAG, "Stroke #%u: Score=%.3f (No haptic)",
                      (unsigned)s_state.stroke_count, event.deviation_score);

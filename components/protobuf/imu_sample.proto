@@ -66,6 +66,10 @@ message ImuSample {
 
   // Angle of attack at water entry
   float entry_angle = 33;       // Hand pitch angle at stroke start (degrees)
+
+  // Haptic feedback detailed reason (added for coaching)
+  uint32 haptic_reason = 34;    // Bitfield why haptic fired
+  float pull_duration_ms = 35;  // Pull duration inside stroke (ms)
 }
 
 // Container for multiple samples (for batch writes)

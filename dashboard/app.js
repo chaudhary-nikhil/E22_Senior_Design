@@ -16,19 +16,49 @@ let positionScale = 3.0;
 let idealStrokeData = null;
 /** True if user registered a head-mounted device in Settings (SQLite). */
 let registeredHeadDevice = false;
+let activeWristDeviceRole = 'wrist_right';
 
 // ── TAB NAVIGATION ──
+// ── TAB NAVIGATION ──
 function switchTab(tab) {
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    if (tab === currentTab) return;
+    
+    document.querySelectorAll('.page').forEach(p => {
+        p.classList.remove('active');
+        p.style.display = 'none';
+        p.style.opacity = '0';
+    });
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    
     const page = document.getElementById('page-' + tab);
     const btn = document.getElementById('tab-' + tab);
-    if (page) { page.classList.add('active'); page.style.animation = 'fadeIn 0.3s ease'; }
+    
+    if (page) {
+        page.style.display = 'block';
+        requestAnimationFrame(() => {
+            page.classList.add('active');
+            page.style.opacity = '1';
+            page.style.animation = 'slideUp 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards';
+        });
+    }
     if (btn) btn.classList.add('active');
+    
     currentTab = tab;
+    
+    // Performance: Only load data when entering the tab
     if (tab === 'insights') loadProgress();
     if (tab === 'settings') loadDevices();
     if (tab === 'analysis' && sessionMetrics) updateAnalysis();
+    if (tab === 'session') {
+        const c = document.getElementById('canvas3d');
+        if (c && renderer) {
+            const w = Math.max(c.clientWidth || 800, 400);
+            const h = Math.max(c.clientHeight || 450, 400);
+            renderer.setSize(w, h);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+        }
+    }
 }
 
 // ── API HELPERS ──
@@ -70,6 +100,7 @@ function updateProfileUI() {
     ['settings-height', 'reg-height'].forEach(id => { const el = document.getElementById(id); if (el) el.value = userProfile.height_cm || ''; });
     ['settings-wingspan', 'reg-wingspan'].forEach(id => { const el = document.getElementById(id); if (el) el.value = userProfile.wingspan_cm || ''; });
     ['settings-skill', 'reg-skill'].forEach(id => { const el = document.getElementById(id); if (el) el.value = userProfile.skill_level || 'beginner'; });
+    ['settings-pool-length', 'reg-pool-length'].forEach(id => { const el = document.getElementById(id); if (el) el.value = userProfile.pool_length || '25'; });
 }
 async function registerUser(e) {
     if (e) e.preventDefault();
@@ -86,7 +117,8 @@ async function registerUser(e) {
         name: nameInput,
         height_cm: parseFloat(document.getElementById(prefix + 'height')?.value) || 0,
         wingspan_cm: parseFloat(document.getElementById(prefix + 'wingspan')?.value) || 0,
-        skill_level: document.getElementById(prefix + 'skill')?.value || 'beginner'
+        skill_level: document.getElementById(prefix + 'skill')?.value || 'beginner',
+        pool_length: parseFloat(document.getElementById(prefix + 'pool-length')?.value) || 25
     };
     
     const res = await apiPost('/api/register', body);
@@ -106,6 +138,15 @@ async function loadDevices() {
     const list = document.getElementById('device-list');
     const devices = (res && res.devices) || [];
     registeredHeadDevice = devices.some(d => String(d.role || '').toLowerCase() === 'head');
+    const wristDevice = devices.find(d => String(d.role || '').toLowerCase().startsWith('wrist'));
+    if (wristDevice) {
+        activeWristDeviceRole = wristDevice.role.toLowerCase();
+        if (typeof handGroup !== 'undefined' && handGroup) {
+            const flip = activeWristDeviceRole === 'wrist_left' ? -2.75 : 2.75;
+            handGroup.scale.set(flip, 2.75, 2.75);
+            if (ghostArmGroup) ghostArmGroup.scale.set(flip, 2.75, 2.75);
+        }
+    }
     if (!list) return;
     if (!devices.length) { list.innerHTML = '<p style="color:var(--text3);font-size:0.85em;">No devices registered yet.</p>'; return; }
     const roleIcons = { wrist_right: '🤚', wrist_left: '✋', head: '🧠', ankle_right: '🦶', ankle_left: '🦶', waist: '🫁' };
@@ -401,6 +442,7 @@ async function selectSession(i) {
     renderSessionList();
     updateSessionSummary();
     updateAnalysis();
+    updateCoachingInsights();
     // Switch to Session tab first so chart and 3D canvases have real dimensions (not 0x0)
     switchTab('session');
     // Scroll Session tab into view so the 3D canvas and charts are visible
@@ -515,15 +557,27 @@ function formatTime(s) {
 function updateSessionSummary() {
     if (!sessionMetrics) return;
     const m = sessionMetrics;
+    const poolLen = userProfile ? (userProfile.pool_length || 25) : 25;
+    const distance = (m.turn_count || 0) * poolLen; // Note: if turn_count=1, it means they finished 1 length of 25m? Or completed 1 turn (2 lengths)?
+    // Standard swimming: turn_count = 1 means 1 turn at the wall, so 2 lengths completed.
+    // Let's assume turn_count is "number of hits at the wall". 
+    const totalDist = (m.turn_count || 0) > 0 ? (m.turn_count + 1) * poolLen : (m.stroke_count > 0 ? poolLen : 0);
+    
+    const pace = totalDist > 0 ? (m.duration / (totalDist / 100)) : 0; // seconds per 100m
+
     setText('sum-strokes', m.stroke_count || 0);
     setText('sum-turns', m.turn_count || 0);
+    setText('sum-distance', totalDist + 'm');
+    setText('sum-pace', pace > 0 ? formatTime(pace) + '/100m' : '--:--');
     setText('sum-duration', formatTime(m.duration));
     setText('sum-rate', m.stroke_rate ? m.stroke_rate.toFixed(1) + '/min' : '--');
     setText('sum-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '--');
     setText('sum-samples', processedData.length);
+    
     setText('home-last-strokes', m.stroke_count || 0);
     setText('home-last-rate', m.stroke_rate ? m.stroke_rate.toFixed(1) : '--');
     setText('home-last-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '--');
+    setText('home-last-distance', totalDist + 'm');
 }
 function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
 
@@ -688,7 +742,7 @@ function buildStrokeTable() {
         }
     }
     tbody.innerHTML = rows.map(r =>
-        `<tr class="${r.haptic ? 'row-haptic' : ''}" style="cursor:pointer;" onclick="jumpToStroke(${r.num})"><td>${r.num}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${r.haptic ? '<span class="haptic-marker">⚡</span>' : '✓'}</td><td class="${r.deviation > 0.7 ? 'text-red' : r.deviation > 0.3 ? 'text-amber' : 'text-green'}">${r.deviation.toFixed(3)}</td></tr>`
+        `<tr class="${r.haptic ? 'row-haptic' : ''}" style="cursor:pointer;" onclick="jumpToStroke(${r.num})"><td>${r.num}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${r.haptic ? '<span class="haptic-marker">⚡</span>' : '✓'}</td><td class="${r.deviation > 0.7 ? 'text-red' : r.deviation > 0.3 ? 'text-amber' : 'text-green'}">${r.deviation.toFixed(3)}</td><td onclick="event.stopPropagation(); setSingleStrokeAsIdeal(${r.num})"><button class="btn btn-gold btn-sm" style="padding:2px 6px; font-size:0.7em;">Set Ideal</button></td></tr>`
     ).join('');
 }
 
@@ -789,6 +843,112 @@ async function loadProgress() {
     });
 }
 
+// ── COACHING INSIGHTS ──
+function updateCoachingInsights() {
+    if (!sessionMetrics || !processedData || processedData.length === 0) {
+        setText('coaching-priorities', 'Sync a session to see your coaching insights.');
+        setText('stroke-diagnosis-list', 'No issues detected yet.');
+        setText('consistency-heatmap', '');
+        return;
+    }
+
+    const priorityBox = document.getElementById('coaching-priorities');
+    const diagBox = document.getElementById('stroke-diagnosis-list');
+    const heatBox = document.getElementById('consistency-heatmap');
+
+    let htmlPriorities = '';
+    let htmlDiag = '';
+    let htmlHeat = '';
+
+    const strokes = [];
+    let currentStroke = { num: -1 };
+
+    processedData.forEach(d => {
+        const sNum = strokeNumAt(d);
+        if (sNum <= 0) return;
+        if (currentStroke.num !== sNum) {
+            if (currentStroke.num !== -1) strokes.push(currentStroke);
+            currentStroke = { num: sNum, events: [], maxDev: 0, duration: 0 };
+        }
+        if (d.haptic_fired) {
+            currentStroke.events.push({
+                reason: d.haptic_reason || 0,
+                dev: d.deviation_score || 0,
+                dur: d.pull_duration_ms || 0
+            });
+            if (d.deviation_score > currentStroke.maxDev) currentStroke.maxDev = d.deviation_score;
+        }
+    });
+    if (currentStroke.num !== -1) strokes.push(currentStroke);
+
+    // Heatmap
+    if (strokes.length > 0) {
+        strokes.forEach(s => {
+            let color = 'var(--green)';
+            if (s.events.length > 0) {
+                if (s.maxDev > 0.8) color = 'var(--red)';
+                else color = 'var(--amber)';
+            }
+            htmlHeat += `<div title="Stroke ${s.num}" style="width:14px;height:14px;border-radius:2px;background-color:${color};cursor:pointer;" onclick="switchTab('session'); setTimeout(()=>jumpToStroke(${s.num}), 50);"></div>`;
+        });
+    } else {
+        htmlHeat = '<p style="color:var(--text3); font-size:12px;">No strokes recorded.</p>';
+    }
+    if(heatBox) heatBox.innerHTML = htmlHeat;
+
+    // Diagnostics
+    let hapticCount = 0;
+    let reasonCounts = { 'Pull Too Fast': 0, 'Bad Entry Angle': 0, 'Path Deviation': 0, 'Unknown': 0 };
+
+    strokes.forEach(s => {
+        if (s.events.length > 0) {
+            hapticCount++;
+            const ev = s.events[0];
+            let msg = '';
+            
+            // haptic_reason bitfield: 0x01 = DEV_HIGH, 0x02 = ENTRY_BAD, 0x04 = PULL_FAST
+            const r = ev.reason;
+            if (r & 0x04) { msg = 'Pull phase too fast (' + ev.dur.toFixed(0) + 'ms)'; reasonCounts['Pull Too Fast']++; }
+            else if (r & 0x02) { msg = 'Hand entry too shallow/steep'; reasonCounts['Bad Entry Angle']++; }
+            else if (r & 0x01) { msg = 'Stroke path deviated highly'; reasonCounts['Path Deviation']++; }
+            else { msg = 'General form breakdown'; reasonCounts['Unknown']++; }
+
+            htmlDiag += `
+                <div style="background:var(--bg3); padding:8px 10px; border-radius:6px; margin-bottom:6px; font-size:0.85em;">
+                    <strong style="color:var(--text1);">Stroke ${s.num}</strong>: <span style="color:var(--amber);">${msg}</span>
+                    <button class="btn btn-outline btn-sm" style="float:right; padding:2px 8px; font-size:0.8em;" onclick="switchTab('session'); setTimeout(()=>jumpToStroke(${s.num}), 50)">View</button>
+                    <div style="clear:both;"></div>
+                </div>`;
+        }
+    });
+    if (!htmlDiag) htmlDiag = '<p style="color:var(--text3); font-size:0.9em;">Perfect! No issues detected in this session.</p>';
+    if(diagBox) diagBox.innerHTML = htmlDiag;
+
+    // Priorities
+    if (hapticCount === 0) {
+        htmlPriorities = `<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">Your form is looking solid. Keep focusing on consistency!</div>`;
+    } else {
+        const topIssue = Object.keys(reasonCounts).reduce((a, b) => reasonCounts[a] > reasonCounts[b] ? a : b);
+        let advice = '';
+        if (topIssue === 'Pull Too Fast') advice = 'Slow down your pull phase to engage more water. Rushing the pull drops your efficiency.';
+        else if (topIssue === 'Bad Entry Angle') advice = 'Focus on a clean, fingertips-first entry. Keep your elbow high as you pierce the water.';
+        else if (topIssue === 'Path Deviation') advice = 'Your hand is drifting from the ideal straight-line pull under your body. Keep it anchored.';
+        else advice = 'Focus on overall body alignment and rhythmic breathing.';
+
+        let numBadStrokes = strokes.filter(s => s.events.length > 0).length;
+        htmlPriorities = `
+            <div style="padding:10px; background:var(--bg3); border-left:3px solid var(--amber); border-radius:4px; margin-bottom:6px;">
+                <h4 style="margin:0 0 4px 0; color:var(--text1); font-size:1em;">1. ${topIssue}</h4>
+                <p style="margin:0; font-size:0.85em; color:var(--text2);">${advice}</p>
+            </div>
+            <div style="font-size:0.85em; color:var(--text3); margin-top:8px;">
+                Affected ${numBadStrokes} of ${strokes.length} strokes (${Math.round((numBadStrokes/strokes.length)*100)}%).
+            </div>
+        `;
+    }
+    if(priorityBox) priorityBox.innerHTML = htmlPriorities;
+}
+
 // ── IDEAL STROKE ──
 async function loadIdealStroke() {
     const res = await apiGet('/api/ideal_stroke');
@@ -797,6 +957,41 @@ async function loadIdealStroke() {
         setText('ideal-status', `Loaded: ${res.samples.length} samples`);
     } else { idealStrokeData = null; setText('ideal-status', 'No ideal stroke saved'); }
 }
+async function setSingleStrokeAsIdeal(strokeNum) {
+    if (!processedData || !processedData.length) return;
+    refreshStrokeFieldMode();
+    const currentSession = savedSessions[activeSessionIdx];
+    if (!currentSession || !currentSession.id) {
+        showToast('Save session first to set a persistent ideal stroke', 'warn');
+        // Fallback to temporary frontend-only if not saved yet
+        const strokeSamples = processedData.filter(d => strokeNumAt(d) === strokeNum);
+        idealStrokeData = strokeSamples.map(d => ({
+            ...d,
+            lia_x: d.acceleration?.ax || 0,
+            lia_y: d.acceleration?.ay || 0,
+            lia_z: d.acceleration?.az || 0
+        }));
+        buildIdealComparison();
+        return;
+    }
+
+    const res = await apiPost('/api/ideal_stroke/set_from_stroke', {
+        session_id: currentSession.id,
+        stroke_num: strokeNum
+    });
+
+    if (res && res.status === 'ok') {
+        showToast('Stroke ' + strokeNum + ' set as permanent Ideal baseline', 'success');
+        await loadIdealStroke(); // Reload into memory
+        buildIdealComparison();
+        
+        // Also push to device if online
+        if (isDeviceOnline) pushIdealToDevice(true);
+    } else {
+        showToast('Failed to save ideal stroke: ' + (res.error || 'unknown'), 'error');
+    }
+}
+
 async function setCurrentAsIdeal() {
     if (!processedData.length || !sessionMetrics || sessionMetrics.stroke_count < 1) { showToast('Record a session with strokes first', 'error'); return; }
     const samples = processedData.map(p => ({ lia_x: p.acceleration?.ax || 0, lia_y: p.acceleration?.ay || 0, lia_z: p.acceleration?.az || 0 }));
@@ -847,6 +1042,7 @@ async function pushUserConfigToDevice(silent = false) {
     const wingspan = document.getElementById('settings-wingspan') ? parseFloat(document.getElementById('settings-wingspan').value) : 180;
     const height = document.getElementById('settings-height') ? parseFloat(document.getElementById('settings-height').value) : 180;
     const skill = document.getElementById('settings-skill') ? document.getElementById('settings-skill').value : 'beginner';
+    const poolLength = document.getElementById('settings-pool-length') ? parseFloat(document.getElementById('settings-pool-length').value) : 25;
     
     if (!isDeviceOnline && !silent) {
         pendingConfigSync = true;
@@ -860,7 +1056,8 @@ async function pushUserConfigToDevice(silent = false) {
     const result = await apiPost('/api/user_config/push', {
         wingspan_cm: isNaN(wingspan) ? 180 : wingspan,
         height_cm: isNaN(height) ? 180 : height,
-        skill_level: skill
+        skill_level: skill,
+        pool_length: isNaN(poolLength) ? 25 : poolLength
     });
     
     if (!silent) {
@@ -1198,7 +1395,9 @@ function buildPlaybackStrokeSegments() {
         playbackStrokeSegments.push({ startIdx: start, endIdx: processedData.length - 1, strokeNum: last });
 }
 
-let waterPlane = null;
+let poolEnvironment = null;
+let swimmerBody = null;
+let ghostArmGroup = null;
 let splashGroup = null;
 let velocityArrow = null;
 /** Orbit target softly follows the hand so translation stays in frame during playback. */
@@ -1305,22 +1504,64 @@ function createHandModel() {
     return group;
 }
 
-function createWaterSurface() {
+function createPoolEnvironment() {
     if (typeof THREE === 'undefined') return null;
-    const waterGeo = new THREE.PlaneGeometry(24, 24, 48, 48);
+    const group = new THREE.Group();
+
+    const pLength = userProfile ? (userProfile.pool_length || 25) : 25;
+
+    // Water surface
+    const waterGeo = new THREE.PlaneGeometry(2.5, pLength, 12, 64);
     const waterMat = new THREE.MeshStandardMaterial({
-        color: 0x0a4a72,
-        emissive: 0x001a2a,
-        roughness: 0.15,
-        metalness: 0.2,
-        transparent: true, opacity: 0.42,
-        side: THREE.DoubleSide
+        color: 0x0a4a72, emissive: 0x001a2a,
+        roughness: 0.15, metalness: 0.2,
+        transparent: true, opacity: 0.42, side: THREE.DoubleSide
     });
-    const mesh = new THREE.Mesh(waterGeo, waterMat);
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.y = 0;
-    mesh.receiveShadow = false;
-    return mesh;
+    const water = new THREE.Mesh(waterGeo, waterMat);
+    water.rotation.x = -Math.PI / 2;
+    group.add(water);
+
+    // Pool floor (tiled)
+    const floorGeo = new THREE.PlaneGeometry(2.5, pLength);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x113344, roughness: 0.8 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -1.2; 
+    group.add(floor);
+    
+    // Lane ropes 
+    const ropeGeo = new THREE.CylinderGeometry(0.04, 0.04, pLength, 8);
+    const ropeMat = new THREE.MeshStandardMaterial({ color: 0xcc3333, roughness: 0.6 });
+    const rope1 = new THREE.Mesh(ropeGeo, ropeMat);
+    rope1.rotation.x = Math.PI / 2;
+    rope1.position.set(-1.25, 0, 0);
+    group.add(rope1);
+    
+    const rope2 = new THREE.Mesh(ropeGeo, ropeMat);
+    rope2.rotation.x = Math.PI / 2;
+    rope2.position.set(1.25, 0, 0);
+    group.add(rope2);
+
+    return group;
+}
+
+function createSwimmerBody() {
+    if (typeof THREE === 'undefined') return null;
+    const group = new THREE.Group();
+    const skinMat = new THREE.MeshStandardMaterial({color: 0xd2a18c, roughness: 0.4, metalness:0.05});
+    const capMat = new THREE.MeshStandardMaterial({color: 0x222222, roughness: 0.6});
+    
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 16), capMat);
+    head.position.set(0, 0.05, -0.2);
+    head.scale.set(1, 0.9, 1.15);
+    group.add(head);
+
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.45, 12, 16), skinMat);
+    torso.rotation.x = Math.PI / 2;
+    torso.position.set(0, -0.05, 0.15);
+    group.add(torso);
+
+    return group;
 }
 
 function createSplash(position) {
@@ -1380,8 +1621,22 @@ function init3D() {
     handGroup = createHandModel();
     if (handGroup) scene.add(handGroup);
 
-    waterPlane = createWaterSurface();
-    if (waterPlane) scene.add(waterPlane);
+    ghostArmGroup = createHandModel();
+    if (ghostArmGroup) {
+        ghostArmGroup.children.forEach(c => {
+            if (c.material) c.material = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.15, wireframe: true });
+            if (c.children) c.children.forEach(cc => {
+                if (cc.material) cc.material = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.15, wireframe: true });
+            });
+        });
+        scene.add(ghostArmGroup);
+    }
+
+    poolEnvironment = createPoolEnvironment();
+    if (poolEnvironment) scene.add(poolEnvironment);
+
+    swimmerBody = createSwimmerBody();
+    if (swimmerBody) scene.add(swimmerBody);
 
     splashGroup = new THREE.Group();
     scene.add(splashGroup);
@@ -1536,6 +1791,45 @@ function renderFrame(idx) {
 
     if (controls && followHandInView) {
         controls.target.lerp(pos, 0.14);
+    }
+
+    if (swimmerBody) {
+        const sc = strokeNumAt(d);
+        const strokeN = Math.max(1, sc || 1);
+        const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
+        
+        // Offset swimmer body so the correct shoulder meets the arm path
+        // Shoulder width is approx 0.18m in our model
+        const offset = activeWristDeviceRole === 'wrist_left' ? (0.17 * positionScale) : (-0.17 * positionScale);
+        swimmerBody.position.x = spread + offset;
+    }
+
+    if (ghostArmGroup) {
+        if (idealStrokeData && idealStrokeData.length > 0) {
+            ghostArmGroup.visible = true;
+            const uStroke = strokeProgressU(idx);
+            const idealIdx = Math.floor(uStroke * (idealStrokeData.length - 1));
+            const idealSample = idealStrokeData[idealIdx];
+            
+            const sc = strokeNumAt(d);
+            const strokeN = Math.max(1, sc || 1);
+            const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
+            
+            const canon = sampleStrokeCanonical(uStroke);
+            const idealEA = idealSample.entry_angle || 30;
+            const idealNudge = entryAnglePathNudge(uStroke, idealEA);
+            
+            let qIdeal = nq(idealSample.quaternion || {qw:1,qx:0,qy:0,qz:0}).clone();
+            if (uStroke >= 0.70 && uStroke <= 0.99 && idealEA > 0.5) {
+                const rad = (idealEA - 30) * (Math.PI / 180) * 0.6;
+                const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rad);
+                qIdeal.multiply(qPitch);
+            }
+            ghostArmGroup.setRotationFromQuaternion(qIdeal);
+            ghostArmGroup.position.copy(canon.clone().multiplyScalar(VIZ_CANONICAL_BLEND).add(new THREE.Vector3(spread, 0, 0)).add(idealNudge));
+        } else {
+            ghostArmGroup.visible = false;
+        }
     }
 
     // Splash when hand crosses water surface (y=0 going down)
@@ -1699,6 +1993,7 @@ Object.assign(window, {
     registerUser,
     registerDevice,
     setCurrentAsIdeal,
+    setSingleStrokeAsIdeal,
     pushIdealToDevice,
     deleteIdealStroke,
     pushUserConfigToDevice,

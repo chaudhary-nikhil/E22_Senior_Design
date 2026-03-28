@@ -12,544 +12,154 @@
 /* Struct definitions */
 /* IMU sample matching bno055_sample_t structure */
 typedef struct _goldenform_ImuSample {
-  uint32_t t_ms; /* Timestamp in milliseconds */
-  /* Accelerometer (m/s²) */
-  float ax;
-  float ay;
-  float az;
-  /* Gyroscope (deg/s) */
-  float gx;
-  float gy;
-  float gz;
-  /* Magnetometer (μT) */
-  float mx;
-  float my;
-  float mz;
-  /* Euler angles (degrees) */
-  float roll;
-  float pitch;
-  float yaw;
-  /* Quaternion */
-  float qw;
-  float qx;
-  float qy;
-  float qz;
-  /* Linear acceleration (m/s²) */
-  float lia_x;
-  float lia_y;
-  float lia_z;
-  /* Temperature (°C) */
-  float temp;
-  /* Calibration status (0-3) */
-  uint32_t sys_cal;
-  uint32_t gyro_cal;
-  uint32_t accel_cal;
-  uint32_t mag_cal;
-  /* Haptic feedback events */
-  bool haptic_fired;
-  float deviation_score;
-  /* Multi-device metadata */
-  uint32_t device_id;
-  uint32_t device_role;
-  /* Session running counts */
-  uint32_t stroke_count;
-  uint32_t turn_count;
-  /* Head device breathing (stretch goal) */
-  uint32_t breath_count;
-  /* Angle of attack at water entry */
-  float entry_angle;
+    uint32_t t_ms; /* Timestamp in milliseconds */
+    /* Accelerometer (m/s²) */
+    float ax;
+    float ay;
+    float az;
+    /* Gyroscope (deg/s) */
+    float gx;
+    float gy;
+    float gz;
+    /* Magnetometer (μT) */
+    float mx;
+    float my;
+    float mz;
+    /* Euler angles (degrees) */
+    float roll;
+    float pitch;
+    float yaw;
+    /* Quaternion */
+    float qw;
+    float qx;
+    float qy;
+    float qz;
+    /* Linear acceleration (m/s²) */
+    float lia_x;
+    float lia_y;
+    float lia_z;
+    /* Temperature (°C) */
+    float temp;
+    /* Calibration status (0-3) */
+    uint32_t sys_cal;
+    uint32_t gyro_cal;
+    uint32_t accel_cal;
+    uint32_t mag_cal;
+    /* Haptic feedback events (stretch goal) */
+    bool haptic_fired; /* True if haptic was triggered at this sample */
+    float deviation_score; /* Deviation from ideal stroke (0.0 = perfect) */
+    /* Multi-device metadata */
+    uint32_t device_id; /* Unique device identifier (from Kconfig) */
+    uint32_t device_role; /* 0=wrist, 1=ankle, 2=waist */
+    /* Session running counts */
+    uint32_t stroke_count; /* Running stroke count for this session */
+    uint32_t turn_count; /* Running turn count for this session */
+    /* Head device breathing (stretch goal) */
+    uint32_t breath_count; /* Running breath count (head device only) */
+    /* Angle of attack at water entry */
+    float entry_angle; /* Hand pitch angle at stroke start (degrees) */
+    /* Haptic feedback detailed reason (added for coaching) */
+    uint32_t haptic_reason; /* Bitfield why haptic fired */
+    float pull_duration_ms; /* Pull duration inside stroke (ms) */
 } goldenform_ImuSample;
 
 /* Container for multiple samples (for batch writes) */
 typedef struct _goldenform_ImuSampleBatch {
-  pb_size_t samples_count;
-  goldenform_ImuSample samples[256];
+    pb_size_t samples_count;
+    goldenform_ImuSample samples[256];
 } goldenform_ImuSampleBatch;
+
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Initializer values for message structs */
-#define goldenform_ImuSample_init_default                                      \
-  {                                                                            \
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0                                     \
-  }
-#define goldenform_ImuSampleBatch_init_default                                 \
-  {                                                                            \
-    0, {                                                                       \
-      goldenform_ImuSample_init_default, goldenform_ImuSample_init_default,    \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default,                                   \
-          goldenform_ImuSample_init_default, goldenform_ImuSample_init_default \
-    }                                                                          \
-  }
-#define goldenform_ImuSample_init_zero                                         \
-  {                                                                            \
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
-        0, 0, 0, 0, 0, 0, 0, 0                                                 \
-  }
-#define goldenform_ImuSampleBatch_init_zero                                    \
-  {                                                                            \
-    0, {                                                                       \
-      goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,          \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero,      \
-          goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero       \
-    }                                                                          \
-  }
+#define goldenform_ImuSample_init_default        {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define goldenform_ImuSampleBatch_init_default   {0, {goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default, goldenform_ImuSample_init_default}}
+#define goldenform_ImuSample_init_zero           {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+#define goldenform_ImuSampleBatch_init_zero      {0, {goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero, goldenform_ImuSample_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
-#define goldenform_ImuSample_t_ms_tag 1
-#define goldenform_ImuSample_ax_tag 2
-#define goldenform_ImuSample_ay_tag 3
-#define goldenform_ImuSample_az_tag 4
-#define goldenform_ImuSample_gx_tag 5
-#define goldenform_ImuSample_gy_tag 6
-#define goldenform_ImuSample_gz_tag 7
-#define goldenform_ImuSample_mx_tag 8
-#define goldenform_ImuSample_my_tag 9
-#define goldenform_ImuSample_mz_tag 10
-#define goldenform_ImuSample_roll_tag 11
-#define goldenform_ImuSample_pitch_tag 12
-#define goldenform_ImuSample_yaw_tag 13
-#define goldenform_ImuSample_qw_tag 14
-#define goldenform_ImuSample_qx_tag 15
-#define goldenform_ImuSample_qy_tag 16
-#define goldenform_ImuSample_qz_tag 17
-#define goldenform_ImuSample_lia_x_tag 18
-#define goldenform_ImuSample_lia_y_tag 19
-#define goldenform_ImuSample_lia_z_tag 20
-#define goldenform_ImuSample_temp_tag 21
-#define goldenform_ImuSample_sys_cal_tag 22
-#define goldenform_ImuSample_gyro_cal_tag 23
-#define goldenform_ImuSample_accel_cal_tag 24
-#define goldenform_ImuSample_mag_cal_tag 25
-#define goldenform_ImuSample_haptic_fired_tag 26
+#define goldenform_ImuSample_t_ms_tag            1
+#define goldenform_ImuSample_ax_tag              2
+#define goldenform_ImuSample_ay_tag              3
+#define goldenform_ImuSample_az_tag              4
+#define goldenform_ImuSample_gx_tag              5
+#define goldenform_ImuSample_gy_tag              6
+#define goldenform_ImuSample_gz_tag              7
+#define goldenform_ImuSample_mx_tag              8
+#define goldenform_ImuSample_my_tag              9
+#define goldenform_ImuSample_mz_tag              10
+#define goldenform_ImuSample_roll_tag            11
+#define goldenform_ImuSample_pitch_tag           12
+#define goldenform_ImuSample_yaw_tag             13
+#define goldenform_ImuSample_qw_tag              14
+#define goldenform_ImuSample_qx_tag              15
+#define goldenform_ImuSample_qy_tag              16
+#define goldenform_ImuSample_qz_tag              17
+#define goldenform_ImuSample_lia_x_tag           18
+#define goldenform_ImuSample_lia_y_tag           19
+#define goldenform_ImuSample_lia_z_tag           20
+#define goldenform_ImuSample_temp_tag            21
+#define goldenform_ImuSample_sys_cal_tag         22
+#define goldenform_ImuSample_gyro_cal_tag        23
+#define goldenform_ImuSample_accel_cal_tag       24
+#define goldenform_ImuSample_mag_cal_tag         25
+#define goldenform_ImuSample_haptic_fired_tag    26
 #define goldenform_ImuSample_deviation_score_tag 27
-#define goldenform_ImuSample_device_id_tag 28
-#define goldenform_ImuSample_device_role_tag 29
-#define goldenform_ImuSample_stroke_count_tag 30
-#define goldenform_ImuSample_turn_count_tag 31
-#define goldenform_ImuSample_breath_count_tag 32
-#define goldenform_ImuSample_entry_angle_tag 33
-#define goldenform_ImuSampleBatch_samples_tag 1
+#define goldenform_ImuSample_device_id_tag       28
+#define goldenform_ImuSample_device_role_tag     29
+#define goldenform_ImuSample_stroke_count_tag    30
+#define goldenform_ImuSample_turn_count_tag      31
+#define goldenform_ImuSample_breath_count_tag    32
+#define goldenform_ImuSample_entry_angle_tag     33
+#define goldenform_ImuSample_haptic_reason_tag   34
+#define goldenform_ImuSample_pull_duration_ms_tag 35
+#define goldenform_ImuSampleBatch_samples_tag    1
 
 /* Struct field encoding specification for nanopb */
-#define goldenform_ImuSample_FIELDLIST(X, a)                                   \
-  X(a, STATIC, SINGULAR, UINT32, t_ms, 1)                                      \
-  X(a, STATIC, SINGULAR, FLOAT, ax, 2)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, ay, 3)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, az, 4)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, gx, 5)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, gy, 6)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, gz, 7)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, mx, 8)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, my, 9)                                         \
-  X(a, STATIC, SINGULAR, FLOAT, mz, 10)                                        \
-  X(a, STATIC, SINGULAR, FLOAT, roll, 11)                                      \
-  X(a, STATIC, SINGULAR, FLOAT, pitch, 12)                                     \
-  X(a, STATIC, SINGULAR, FLOAT, yaw, 13)                                       \
-  X(a, STATIC, SINGULAR, FLOAT, qw, 14)                                        \
-  X(a, STATIC, SINGULAR, FLOAT, qx, 15)                                        \
-  X(a, STATIC, SINGULAR, FLOAT, qy, 16)                                        \
-  X(a, STATIC, SINGULAR, FLOAT, qz, 17)                                        \
-  X(a, STATIC, SINGULAR, FLOAT, lia_x, 18)                                     \
-  X(a, STATIC, SINGULAR, FLOAT, lia_y, 19)                                     \
-  X(a, STATIC, SINGULAR, FLOAT, lia_z, 20)                                     \
-  X(a, STATIC, SINGULAR, FLOAT, temp, 21)                                      \
-  X(a, STATIC, SINGULAR, UINT32, sys_cal, 22)                                  \
-  X(a, STATIC, SINGULAR, UINT32, gyro_cal, 23)                                 \
-  X(a, STATIC, SINGULAR, UINT32, accel_cal, 24)                                \
-  X(a, STATIC, SINGULAR, UINT32, mag_cal, 25)                                  \
-  X(a, STATIC, SINGULAR, BOOL, haptic_fired, 26)                               \
-  X(a, STATIC, SINGULAR, FLOAT, deviation_score, 27)                           \
-  X(a, STATIC, SINGULAR, UINT32, device_id, 28)                                \
-  X(a, STATIC, SINGULAR, UINT32, device_role, 29)                              \
-  X(a, STATIC, SINGULAR, UINT32, stroke_count, 30)                             \
-  X(a, STATIC, SINGULAR, UINT32, turn_count, 31)                               \
-  X(a, STATIC, SINGULAR, UINT32, breath_count, 32)                             \
-  X(a, STATIC, SINGULAR, FLOAT, entry_angle, 33)
+#define goldenform_ImuSample_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   t_ms,              1) \
+X(a, STATIC,   SINGULAR, FLOAT,    ax,                2) \
+X(a, STATIC,   SINGULAR, FLOAT,    ay,                3) \
+X(a, STATIC,   SINGULAR, FLOAT,    az,                4) \
+X(a, STATIC,   SINGULAR, FLOAT,    gx,                5) \
+X(a, STATIC,   SINGULAR, FLOAT,    gy,                6) \
+X(a, STATIC,   SINGULAR, FLOAT,    gz,                7) \
+X(a, STATIC,   SINGULAR, FLOAT,    mx,                8) \
+X(a, STATIC,   SINGULAR, FLOAT,    my,                9) \
+X(a, STATIC,   SINGULAR, FLOAT,    mz,               10) \
+X(a, STATIC,   SINGULAR, FLOAT,    roll,             11) \
+X(a, STATIC,   SINGULAR, FLOAT,    pitch,            12) \
+X(a, STATIC,   SINGULAR, FLOAT,    yaw,              13) \
+X(a, STATIC,   SINGULAR, FLOAT,    qw,               14) \
+X(a, STATIC,   SINGULAR, FLOAT,    qx,               15) \
+X(a, STATIC,   SINGULAR, FLOAT,    qy,               16) \
+X(a, STATIC,   SINGULAR, FLOAT,    qz,               17) \
+X(a, STATIC,   SINGULAR, FLOAT,    lia_x,            18) \
+X(a, STATIC,   SINGULAR, FLOAT,    lia_y,            19) \
+X(a, STATIC,   SINGULAR, FLOAT,    lia_z,            20) \
+X(a, STATIC,   SINGULAR, FLOAT,    temp,             21) \
+X(a, STATIC,   SINGULAR, UINT32,   sys_cal,          22) \
+X(a, STATIC,   SINGULAR, UINT32,   gyro_cal,         23) \
+X(a, STATIC,   SINGULAR, UINT32,   accel_cal,        24) \
+X(a, STATIC,   SINGULAR, UINT32,   mag_cal,          25) \
+X(a, STATIC,   SINGULAR, BOOL,     haptic_fired,     26) \
+X(a, STATIC,   SINGULAR, FLOAT,    deviation_score,  27) \
+X(a, STATIC,   SINGULAR, UINT32,   device_id,        28) \
+X(a, STATIC,   SINGULAR, UINT32,   device_role,      29) \
+X(a, STATIC,   SINGULAR, UINT32,   stroke_count,     30) \
+X(a, STATIC,   SINGULAR, UINT32,   turn_count,       31) \
+X(a, STATIC,   SINGULAR, UINT32,   breath_count,     32) \
+X(a, STATIC,   SINGULAR, FLOAT,    entry_angle,      33) \
+X(a, STATIC,   SINGULAR, UINT32,   haptic_reason,    34) \
+X(a, STATIC,   SINGULAR, FLOAT,    pull_duration_ms,  35)
 #define goldenform_ImuSample_CALLBACK NULL
 #define goldenform_ImuSample_DEFAULT NULL
 
-#define goldenform_ImuSampleBatch_FIELDLIST(X, a)                              \
-  X(a, STATIC, REPEATED, MESSAGE, samples, 1)
+#define goldenform_ImuSampleBatch_FIELDLIST(X, a) \
+X(a, STATIC,   REPEATED, MESSAGE,  samples,           1)
 #define goldenform_ImuSampleBatch_CALLBACK NULL
 #define goldenform_ImuSampleBatch_DEFAULT NULL
 #define goldenform_ImuSampleBatch_samples_MSGTYPE goldenform_ImuSample
@@ -562,9 +172,9 @@ extern const pb_msgdesc_t goldenform_ImuSampleBatch_msg;
 #define goldenform_ImuSampleBatch_fields &goldenform_ImuSampleBatch_msg
 
 /* Maximum encoded size of messages (where known) */
-#define GOLDENFORM_IMU_SAMPLE_PB_H_MAX_SIZE goldenform_ImuSampleBatch_size
-#define goldenform_ImuSampleBatch_size 38144
-#define goldenform_ImuSample_size 180
+#define GOLDENFORM_IMU_SAMPLE_PB_H_MAX_SIZE      goldenform_ImuSampleBatch_size
+#define goldenform_ImuSampleBatch_size           52736
+#define goldenform_ImuSample_size                203
 
 #ifdef __cplusplus
 } /* extern "C" */

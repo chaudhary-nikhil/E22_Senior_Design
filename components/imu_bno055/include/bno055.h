@@ -196,6 +196,8 @@ typedef struct {
   // Haptic feedback (populated by stroke detector)
   uint8_t haptic_fired;  // 1 if haptic was triggered this sample
   float deviation_score; // 0.0 = perfect match, higher = worse
+  uint8_t haptic_reason; // Bitfield: HAPTIC_REASON_DTW_HIGH | ENTRY_BAD | PULL_SHORT
+  float pull_duration_ms; // Duration of pull/integration window (ms)
 
   // Multi-device metadata (populated from Kconfig)
   uint8_t device_id;   // CONFIG_GOLDENFORM_DEVICE_ID

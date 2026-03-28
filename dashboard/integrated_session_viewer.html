@@ -48,6 +48,11 @@
                 <div class="card-title">Consistency</div>
                 <div class="card-value" id="home-last-consistency">--</div>
             </div>
+            <div class="card stat-card">
+                <div class="card-title">Last Distance</div>
+                <div class="card-value" id="home-last-distance">--</div>
+                <div class="card-sub">meters</div>
+            </div>
         </div>
         <div class="card" id="getting-started" style="margin-top:16px;display:none;">
             <div class="card-title">Getting Started</div>
@@ -131,6 +136,8 @@
                     <div class="summary-grid">
                         <span>Strokes: <strong id="sum-strokes">0</strong></span>
                         <span>Turns: <strong id="sum-turns">0</strong></span>
+                        <span>Distance: <strong id="sum-distance">0m</strong></span>
+                        <span>Pace: <strong id="sum-pace">--:--</strong></span>
                         <span>Duration: <strong id="sum-duration">0:00</strong></span>
                         <span>Rate: <strong id="sum-rate">--</strong></span>
                         <span>Consistency: <strong id="sum-consistency">--</strong></span>
@@ -250,6 +257,7 @@
                             <th>Entry Angle</th>
                             <th>Haptic</th>
                             <th>Deviation</th>
+                            <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="stroke-table-body"></tbody>
@@ -260,6 +268,28 @@
 
     <!-- ═══════ INSIGHTS ═══════ -->
     <div class="page" id="page-insights">
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-title">Top Coaching Priorities</div>
+            <div id="coaching-priorities" style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
+                <p style="color:var(--text3); font-size:0.9em;">Sync a session to see your coaching insights.</p>
+            </div>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:16px;">
+            <div class="card">
+                <div class="card-title">Per-Stroke Issues</div>
+                <div id="stroke-diagnosis-list" style="margin-top:12px; max-height: 400px; overflow-y: auto;">
+                    <p style="color:var(--text3); font-size:0.9em;">No issues detected yet.</p>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">Session Consistency</div>
+                <div id="consistency-heatmap" style="margin-top:12px; display:flex; flex-wrap:wrap; gap:4px;">
+                </div>
+                <p style="font-size:0.75em;color:var(--text3);margin-top:8px;">Each block is a stroke. Green=Good, Yellow=Minor deviation, Red=Major deviation.</p>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-title">Progress Over Time</div>
             <div style="height:300px;margin-top:12px;"><canvas id="progress-chart"></canvas></div>
@@ -286,6 +316,7 @@
                         <option value="advanced">Advanced</option>
                         <option value="competitive">Competitive</option>
                     </select>
+                    <label>Pool Length (m)</label><input type="number" id="settings-pool-length" placeholder="25" style="margin-bottom:12px;">
                     <button class="btn btn-gold" type="submit">Save Profile</button>
                 </form>
             </div>
@@ -352,14 +383,17 @@
                     <option value="advanced">Advanced — competitive training</option>
                     <option value="competitive">Competitive — race-level athlete</option>
                 </select>
+                <label>Pool Length (m)</label>
+                <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100" style="margin-bottom:16px;">
                 <button class="btn btn-gold" type="submit" style="width:100%;">Get Started</button>
             </form>
         </div>
     </div>
 
-    <script src="/viz/three.min.js"></script>
-    <script src="/viz/OrbitControls.js"></script>
-    <script src="/viz/chart.umd.min.js"></script>
+    <!-- CDNs (Accelerators) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.1/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script defer src="/app.js"></script>
 </body>
 
