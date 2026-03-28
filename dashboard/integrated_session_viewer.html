@@ -97,9 +97,19 @@
         <div class="grid-23">
             <!-- Main Viz Area -->
             <div>
-                <div class="card viz-card">
-                    <canvas id="canvas3d" width="800" height="450"></canvas>
+                <div class="card viz-card viz-side-card">
+                    <div class="card-title">Side view — LIA position &amp; device tilt</div>
+                    <p class="viz-side-lead">Sagittal plane: <strong>forward = pz</strong>, <strong>vertical = py</strong> (meters, origin at each stroke start). Green line = quaternion pitch; numbers compare gyro in the pull plane. Use playback <strong>Speed</strong> below for slow motion.</p>
+                    <div class="viz-side-canvas-wrap">
+                        <canvas id="canvas-side-view" width="880" height="340"></canvas>
+                    </div>
                 </div>
+                <details class="viz-3d-details" open>
+                    <summary class="viz-3d-summary">3D pool view (optional — drag to orbit) — collapse to focus on side view</summary>
+                    <div class="card viz-card viz-card--nested3d">
+                        <canvas id="canvas3d" width="800" height="450"></canvas>
+                    </div>
+                </details>
                 <!-- Playback Controls -->
                 <div class="playback-bar">
                     <button type="button" class="play-btn" id="play-btn" onclick="togglePlayback()" aria-label="Play/Pause">▶</button>
@@ -123,7 +133,7 @@
                     </div>
                 </div>
                 <div class="viz-analysis-bar" style="margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:8px;font-size:0.82em;color:var(--text2);display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;">
-                    <span style="color:var(--text3);width:100%;margin-bottom:2px;">3D view — drag to orbit · scroll zoom · right-drag pan · <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10)</span>
+                    <span style="color:var(--text3);width:100%;margin-bottom:2px;">Playback — <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10). Side view above shows LIA + tilt; open 3D for pool scene.</span>
                     <label style="display:flex;align-items:center;gap:6px;">Path
                         <select id="viz-stream-mode" onchange="onVizStreamModeChange()" style="max-width:200px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
                             <option value="kinematic">Coach blend (smooth, vs ideal)</option>
@@ -137,7 +147,7 @@
                     </label>
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-stroke" /> Loop stroke</label>
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-full" /> Loop full session</label>
-                    <label style="display:flex;align-items:center;gap:6px;" title="0.05× ≈ slow motion for haptic / hand analysis">Speed <input type="range" id="viz-playback-speed" min="0.05" max="4" step="0.05" value="1" style="width:120px;vertical-align:middle;" /><span id="viz-speed-label">1.00×</span></label>
+                    <label style="display:flex;align-items:center;gap:6px;" title="Default slower for side-view stroke analysis">Speed <input type="range" id="viz-playback-speed" min="0.05" max="4" step="0.05" value="0.35" style="width:120px;vertical-align:middle;" /><span id="viz-speed-label">0.35×</span></label>
                     <button type="button" class="btn btn-outline btn-sm" onclick="focusVizOnHand()">Focus on hand</button>
                     <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset camera</button>
                 </div>
@@ -213,6 +223,10 @@
                     <div style="text-align:center;margin-top:8px;font-size:0.85em;color:var(--text3);">Quality: <strong
                             id="cal-quality">0%</strong></div>
                     <p id="cal-hint" style="font-size:0.75em;color:var(--text3);margin-top:6px;text-align:center;"></p>
+                    <p id="cal-saved-strip" class="cal-saved-strip" style="font-size:0.78em;color:var(--text2);margin-top:10px;text-align:center;"></p>
+                    <div style="display:flex;justify-content:center;margin-top:8px;">
+                        <button type="button" class="btn btn-outline btn-sm" id="cal-save-btn" onclick="saveCalibrationSnapshotManual()">Save calibration snapshot</button>
+                    </div>
                 </div>
                 <div class="card">
                     <div class="card-title">Live Playback</div>

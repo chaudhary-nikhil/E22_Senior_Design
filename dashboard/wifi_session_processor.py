@@ -767,7 +767,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 'phase_pcts': {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0},
                 'haptic_count': 0, 'avg_deviation': 0,
                 'cal_quality': {'accel_pct': 0, 'gyro_pct': 0},
-                'stroke_breakdown': []
+                'stroke_breakdown': [],
+                'calibration_snapshot': {},
             }
 
         stroke_times = []
@@ -856,6 +857,20 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         avg_deviation = sum(deviation_scores) / len(deviation_scores) if deviation_scores else 0
 
         eff_strokes = len(stroke_breakdown) if stroke_breakdown else processor.stroke_count
+        cal_snap = {}
+        for p in reversed(processed_data):
+            c = p.get('calibration') or p.get('cal')
+            if isinstance(c, dict) and any(
+                c.get(k) is not None for k in ('sys', 'gyro', 'accel', 'mag')
+            ):
+                cal_snap = {
+                    'sys': int(c.get('sys', 0) or 0),
+                    'gyro': int(c.get('gyro', 0) or 0),
+                    'accel': int(c.get('accel', 0) or 0),
+                    'mag': int(c.get('mag', 0) or 0),
+                }
+                break
+
         metrics = {
             'stroke_count': eff_strokes,
             'turn_count': processor.turn_count,
@@ -873,7 +888,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 'accel_pct': round(accel_good / n * 100) if n > 0 else 0,
                 'gyro_pct': round(gyro_good / n * 100) if n > 0 else 0
             },
-            'stroke_breakdown': stroke_breakdown
+            'stroke_breakdown': stroke_breakdown,
+            'calibration_snapshot': cal_snap,
         }
 
         if len(stroke_times) >= 2:

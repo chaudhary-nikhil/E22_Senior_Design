@@ -665,6 +665,61 @@ body {
   min-height: 400px;
 }
 
+.viz-side-card {
+  padding: 14px 16px 12px;
+  min-height: auto;
+  overflow: visible;
+}
+
+.viz-side-lead {
+  font-size: 0.8em;
+  color: var(--text2);
+  line-height: 1.45;
+  margin: 0 0 10px;
+}
+
+.viz-side-canvas-wrap {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--bg4);
+  background: #0a0a12;
+}
+
+.viz-side-canvas-wrap canvas {
+  width: 100% !important;
+  height: auto !important;
+  min-height: 200px;
+  display: block;
+  background: #0a0a12;
+}
+
+.viz-3d-details {
+  margin-top: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--bg4);
+  background: var(--bg2);
+}
+
+.viz-3d-summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  font-size: 0.85em;
+  color: var(--text2);
+  list-style: none;
+}
+
+.viz-3d-summary::-webkit-details-marker {
+  display: none;
+}
+
+.viz-card--nested3d {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  min-height: 400px;
+}
+
 .viz-card canvas {
   width: 100%;
   min-width: 300px;
@@ -672,6 +727,10 @@ body {
   min-height: 400px;
   display: block;
   background: var(--bg1);
+}
+
+.cal-saved-strip {
+  line-height: 1.45;
 }
 
 .chart-card {
