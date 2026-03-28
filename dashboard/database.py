@@ -41,6 +41,7 @@ def init_db():
             device_hw_id INTEGER NOT NULL,
             role TEXT NOT NULL DEFAULT 'wrist_right',
             name TEXT DEFAULT '',
+            wifi_ssid TEXT DEFAULT '',
             registered_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
@@ -83,6 +84,18 @@ def init_db():
         );
     """)
     conn.commit()
+    conn.close()
+    _migrate_devices_wifi_ssid()
+
+
+def _migrate_devices_wifi_ssid():
+    """Add wifi_ssid to existing DBs created before this column existed."""
+    conn = _connect()
+    try:
+        conn.execute("ALTER TABLE devices ADD COLUMN wifi_ssid TEXT DEFAULT ''")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
     conn.close()
 
 
@@ -134,21 +147,21 @@ def get_user():
 
 # ── Device CRUD ──
 
-def register_device(user_id, device_hw_id, role, name=''):
+def register_device(user_id, device_hw_id, role, name='', wifi_ssid=''):
     conn = _connect()
     existing = conn.execute(
         "SELECT id FROM devices WHERE device_hw_id=?", (device_hw_id,)
     ).fetchone()
     if existing:
         conn.execute(
-            "UPDATE devices SET user_id=?, role=?, name=? WHERE id=?",
-            (user_id, role, name, existing['id'])
+            "UPDATE devices SET user_id=?, role=?, name=?, wifi_ssid=? WHERE id=?",
+            (user_id, role, name, wifi_ssid or '', existing['id'])
         )
         did = existing['id']
     else:
         cur = conn.execute(
-            "INSERT INTO devices (user_id, device_hw_id, role, name) VALUES (?,?,?,?)",
-            (user_id, device_hw_id, role, name)
+            "INSERT INTO devices (user_id, device_hw_id, role, name, wifi_ssid) VALUES (?,?,?,?,?)",
+            (user_id, device_hw_id, role, name, wifi_ssid or '')
         )
         did = cur.lastrowid
     conn.commit()

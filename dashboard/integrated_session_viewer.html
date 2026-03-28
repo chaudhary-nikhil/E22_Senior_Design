@@ -25,7 +25,10 @@
             <button type="button" class="nav-tab" id="tab-insights" data-tab-target="insights" onclick="switchTab('insights')">Insights</button>
             <button type="button" class="nav-tab" id="tab-settings" data-tab-target="settings" onclick="switchTab('settings')">Settings</button>
         </div>
-        <div class="nav-status"><span class="status-dot"></span><span id="conn-text">Offline</span></div>
+        <div class="nav-right-cluster">
+            <div class="nav-next-hint" id="nav-next-hint" title="Suggested next action"></div>
+            <div class="nav-status"><span class="status-dot"></span><span id="conn-text">Offline</span></div>
+        </div>
     </nav>
 
     <!-- ═══════ HOME ═══════ -->
@@ -33,6 +36,16 @@
         <div class="hero-section">
             <h1 class="hero-title">Welcome, <span id="home-user-name">Swimmer</span></h1>
             <p class="hero-sub">Skill Level: <span class="badge badge-gold" id="home-skill">Beginner</span></p>
+        </div>
+
+        <div class="card setup-journey-card" id="setup-journey-wrap">
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                <span>Your setup path</span>
+                <span class="badge badge-outline" id="setup-journey-phase" style="font-size:0.75em;">Loading…</span>
+            </div>
+            <p class="setup-journey-lead" id="setup-journey-lead">No screen on the wearable — follow the steps below; each button opens the right tab.</p>
+            <div class="setup-journey" id="setup-journey" aria-label="Setup steps"></div>
+            <div id="setup-journey-continue" class="setup-continue-wrap" aria-live="polite"></div>
         </div>
         <div class="grid-3">
             <div class="card stat-card">
@@ -54,25 +67,27 @@
                 <div class="card-sub">meters</div>
             </div>
         </div>
-        <div class="card" id="getting-started" style="margin-top:16px;display:none;">
-            <div class="card-title">Getting Started</div>
-            <div style="margin-top:10px;font-size:0.9em;color:var(--text2);line-height:1.6;">
-                <p><strong>1.</strong> Put on your GoldenForm device and press the button to start recording.</p>
-                <p><strong>2.</strong> Swim your session, then press the button again to stop.</p>
-                <p><strong>3.</strong> Hold the button to enter sync mode — the device creates a WiFi network.</p>
-                <p><strong>4.</strong> Connect your phone/laptop to the <strong>GoldenForm</strong> WiFi, then click <strong>Sync from Device</strong> below.</p>
-                <p><strong>5.</strong> For multi-device: repeat with your second device, then <strong>Merge</strong> to combine.</p>
+        <div class="card home-onboarding-card" id="getting-started" style="margin-top:16px;display:none;">
+            <div class="card-title">First-time path</div>
+            <div class="home-onboarding-steps">
+                <div class="home-onboarding-step"><span class="home-onboarding-num">1</span><span><strong>Settings</strong> — save profile, register each wearable (GoldenForm Wi‑Fi).</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">2</span><span><strong>Session</strong> — Sync Device once (0 sessions is OK).</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">3</span><span><strong>Swim</strong> — record on the device, then sync again.</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">4</span><span><strong>Analysis / Insights</strong> — after data loads.</span></div>
             </div>
-            <div style="display:flex;gap:10px;margin-top:12px;">
-                <button type="button" class="btn btn-gold" onclick="switchTab('session')">Start First Sync</button>
+            <p class="home-onboarding-stretch">More than one unit: sync each, then <strong>Merge</strong> on Session.</p>
+            <div class="home-onboarding-actions">
+                <button type="button" class="btn btn-gold" onclick="switchTab('settings')">Settings</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('session')">Session</button>
             </div>
         </div>
         <div class="card" id="quick-actions" style="margin-top:16px;display:none;">
-            <div class="card-title">Quick Actions</div>
+            <div class="card-title">Quick actions</div>
             <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;">
-                <button type="button" class="btn btn-gold" onclick="switchTab('session')">Go to Session</button>
-                <button type="button" class="btn btn-outline" onclick="switchTab('settings')">Manage Devices</button>
-                <button type="button" class="btn btn-outline" onclick="switchTab('insights')">View Progress</button>
+                <button type="button" class="btn btn-gold" onclick="switchTab('session')">Session</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('analysis')">Analysis</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('insights')">Insights</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('settings')">Settings</button>
             </div>
         </div>
     </div>
@@ -89,16 +104,42 @@
                 <div class="playback-bar">
                     <button type="button" class="play-btn" id="play-btn" onclick="togglePlayback()" aria-label="Play/Pause">▶</button>
                     <button type="button" class="pb-btn" onclick="resetPlayback()" title="Reset" aria-label="Reset to start">⏮</button>
-                    <button type="button" class="pb-btn" onclick="skipBackward()" title="Back 50" aria-label="Skip back 50 frames">⏪</button>
-                    <button type="button" class="pb-btn" onclick="skipForward()" title="Forward 50" aria-label="Skip forward 50 frames">⏩</button>
+                    <button type="button" class="pb-btn" onclick="stepFrame(-1)" title="Previous sample (arrow ←)" aria-label="Previous frame">◀</button>
+                    <button type="button" class="pb-btn" onclick="skipBackward()" title="Back 30 samples" aria-label="Skip back">⏪</button>
+                    <button type="button" class="pb-btn" onclick="skipForward()" title="Forward 30 samples" aria-label="Skip forward">⏩</button>
+                    <button type="button" class="pb-btn" onclick="stepFrame(1)" title="Next sample (arrow →)" aria-label="Next frame">▶</button>
                     <div class="progress-container">
-                        <div class="progress-track" onclick="seekPlayback(event)">
+                        <div class="progress-track progress-track--scrub" id="progress-scrubber" role="slider" tabindex="0" aria-label="Scrub session timeline" data-scrubber="1">
                             <div class="progress-fill" id="progress-fill"></div>
+                            <div class="progress-playhead" id="progress-playhead" aria-hidden="true"></div>
                         </div>
                         <!-- Haptic & Stroke Timeline (TIDR 2-1-2) -->
                         <div class="haptic-timeline" id="haptic-timeline"></div>
                     </div>
-                    <span class="time-label" id="play-time">0:00 / 0:00</span>
+                    <div class="playback-time-block">
+                        <span class="time-label" id="play-time">0:00 / 0:00</span>
+                        <span class="time-label time-fine" id="play-time-fine"></span>
+                        <span class="time-label time-frame" id="play-frame">—</span>
+                    </div>
+                </div>
+                <div class="viz-analysis-bar" style="margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:8px;font-size:0.82em;color:var(--text2);display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;">
+                    <span style="color:var(--text3);width:100%;margin-bottom:2px;">3D view — drag to orbit · scroll zoom · right-drag pan · <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10)</span>
+                    <label style="display:flex;align-items:center;gap:6px;">Path
+                        <select id="viz-stream-mode" onchange="onVizStreamModeChange()" style="max-width:200px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
+                            <option value="kinematic">Coach blend (smooth, vs ideal)</option>
+                            <option value="position">Position / LIA stream (analysis)</option>
+                        </select>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;">Range
+                        <select id="viz-stroke-playback" style="max-width:160px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
+                            <option value="0">All strokes</option>
+                        </select>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-stroke" /> Loop stroke</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-full" /> Loop full session</label>
+                    <label style="display:flex;align-items:center;gap:6px;" title="0.05× ≈ slow motion for haptic / hand analysis">Speed <input type="range" id="viz-playback-speed" min="0.05" max="4" step="0.05" value="1" style="width:120px;vertical-align:middle;" /><span id="viz-speed-label">1.00×</span></label>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="focusVizOnHand()">Focus on hand</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset camera</button>
                 </div>
                 <!-- Timeline Legend -->
                 <div class="timeline-legend">
@@ -119,6 +160,17 @@
             </div>
             <!-- Sidebar -->
             <div>
+                <div class="card sync-playbook-card" id="sync-playbook-wrap">
+                    <div class="card-title">Wi‑Fi sync (wearable has no dashboard)</div>
+                    <ol class="sync-playbook" id="sync-playbook">
+                        <li data-step="1"><strong>Hold sync</strong> on the wearable — it opens the <strong>GoldenForm</strong> Wi‑Fi network (same for first link or after a swim).</li>
+                        <li data-step="2"><strong>Join Wi‑Fi</strong> — connect this phone/laptop to that network (stay on it for sync).</li>
+                        <li data-step="3"><strong>Tap “Sync Device”</strong> below — sessions download; <strong>0 sessions</strong> is valid before your first swim (link + registry + profile still apply).</li>
+                        <li data-step="4"><strong>After swimming</strong> — stop recording on the device, enter sync again, repeat steps 1–3 to fetch new sessions.</li>
+                    </ol>
+                    <p class="sync-playbook-note sync-playbook-note--first" id="sync-playbook-first" style="display:none;"></p>
+                    <p class="sync-playbook-note" id="sync-playbook-multi"></p>
+                </div>
                 <div class="card">
                     <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
                             id="session-count-badge">0</span></div>
@@ -127,7 +179,7 @@
                         <button type="button" class="btn btn-blue" style="flex:1;min-width:120px;" id="merge-btn"
                             onclick="mergeLatestSessions()">Merge Devices</button>
                     </div>
-                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">For multi-device: sync each device sequentially, then merge.</p>
+                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">Multi‑wearable: repeat sync for each unit, then merge when ready.</p>
                     <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
                     <div class="session-list" id="session-cards"></div>
                 </div>
@@ -144,9 +196,10 @@
                         <span>Samples: <strong id="sum-samples">0</strong></span>
                     </div>
                 </div>
-                <!-- Calibration Status (TIDR 6-1-4) -->
+                <!-- Calibration Status (TIDR 6-1-4) — BNO055 fusion / register status -->
                 <div class="card">
-                    <div class="card-title">Calibration Status</div>
+                    <div class="card-title">IMU calibration (sensor fusion)</div>
+                    <p class="cal-explainer">Values are <strong>0–3</strong> per channel (system, gyro, accel, magnetometer). <strong>3/3</strong> means that subsystem is fully calibrated. Move the wearable in a figure‑eight if mag stays low. Live updates when the device is connected.</p>
                     <div class="cal-grid">
                         <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-bad"
                                 id="cal-sys">0/3</span></div>
@@ -271,7 +324,7 @@
         <div class="card" style="margin-bottom:16px;">
             <div class="card-title">Top Coaching Priorities</div>
             <div id="coaching-priorities" style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
-                <p style="color:var(--text3); font-size:0.9em;">Sync a session to see your coaching insights.</p>
+                <p style="color:var(--text3); font-size:0.9em;">Sync a session first — priorities appear here.</p>
             </div>
         </div>
 
@@ -317,28 +370,48 @@
                         <option value="competitive">Competitive</option>
                     </select>
                     <label>Pool Length (m)</label><input type="number" id="settings-pool-length" placeholder="25" style="margin-bottom:12px;">
+                    <label title="Used for guided setup and multi-device messaging">How many wearables are you using?</label>
+                    <input type="number" id="settings-wearable-count" min="1" max="6" value="1" style="margin-bottom:12px;">
+                    <p style="font-size:0.78em;color:var(--text3);margin:-8px 0 12px;">Sets how many devices you plan to register (wrist, head, etc.). The home checklist updates automatically.</p>
                     <button class="btn btn-gold" type="submit">Save Profile</button>
                 </form>
             </div>
-            <div class="card">
-                <div class="card-title">Registered Devices</div>
-                <div id="device-list" style="margin-top:10px;"></div>
+            <div class="card device-registration-card">
+                <div class="card-title">Your wearables (one at a time)</div>
+                <p class="device-reg-lead"><strong>HW ID</strong> + <strong>placement</strong> — each row in the list stays identifiable.</p>
+                <p class="device-reg-wifi-hint">Flash each ESP32 with a <strong>unique Device ID</strong> so its hotspot is <strong>GoldenForm_1</strong>, <strong>GoldenForm_2</strong>, … The banner below shows which network you’re on — match placement to that physical unit before Register.</p>
+                <div id="connected-wearable-banner" class="connected-wearable-banner" role="status" aria-live="polite"></div>
+                <div id="device-reg-slot" class="device-reg-slot" role="status"></div>
+                <div class="card-title" style="margin-top:14px;font-size:0.95em;">Registered in this app</div>
+                <div id="device-list" class="device-list-wrap" style="margin-top:10px;"></div>
                 <hr style="border-color:var(--bg4);margin:16px 0;">
-                <div class="card-title">Add Device</div>
-                <form onsubmit="registerDevice(event)" style="margin-top:10px;">
-                    <label>Device HW ID</label><input type="number" id="dev-hw-id" value="0" style="margin-bottom:8px;">
-                    <label>Body Placement</label>
+                <div class="card-title" style="font-size:0.95em;">Add the next device</div>
+                <ol class="device-reg-steps">
+                    <li><strong>One Wi‑Fi at a time</strong> — only power / sync <em>this</em> unit so your laptop joins the correct GoldenForm network.</li>
+                    <li><strong>Connect</strong> — join that Wi‑Fi, then use <strong>Load from connected device</strong> below (or type the HW ID printed on the unit / in serial logs).</li>
+                    <li><strong>Label</strong> — pick placement (right wrist, head, …) and a short name you will recognize in lists.</li>
+                    <li><strong>Register</strong> — tap <em>Register device</em>. Repeat for wearables 2…N.</li>
+                </ol>
+                <div class="device-reg-actions">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="fillDeviceFormFromConnectedDevice()">Load from connected device</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="applySmartDeviceDefaults()" title="Suggested placement and name">Suggest next placement</button>
+                </div>
+                <form onsubmit="registerDevice(event)" style="margin-top:12px;">
+                    <input type="hidden" id="dev-wifi-ssid" value="" autocomplete="off">
+                    <label>Hardware ID <span class="label-hint">(unique per unit; 0 = unknown)</span></label>
+                    <input type="number" id="dev-hw-id" value="0" min="0" style="margin-bottom:8px;">
+                    <label>Body placement <span class="label-hint">(how we route data &amp; 3D view)</span></label>
                     <select id="dev-role" style="margin-bottom:8px;">
-                        <option value="wrist_right">Right Wrist (Primary)</option>
-                        <option value="wrist_left">Left Wrist</option>
-                        <option value="head">Head (Breathing Detection)</option>
-                        <option value="ankle_right">Right Ankle</option>
-                        <option value="ankle_left">Left Ankle</option>
-                        <option value="waist">Waist / Back</option>
+                        <option value="wrist_right">Right wrist (primary stroke hand)</option>
+                        <option value="wrist_left">Left wrist</option>
+                        <option value="head">Head (breathing / orientation)</option>
+                        <option value="ankle_right">Right ankle</option>
+                        <option value="ankle_left">Left ankle</option>
+                        <option value="waist">Waist / back</option>
                     </select>
-                    <label>Name (optional)</label><input type="text" id="dev-name" placeholder="e.g. Right Hand"
-                        style="margin-bottom:10px;">
-                    <button class="btn btn-blue" type="submit">Register Device</button>
+                    <label>Display name <span class="label-hint">(shown in lists — e.g. “Blue strap · right”)</span></label>
+                    <input type="text" id="dev-name" placeholder="e.g. Wearable 2 · right wrist" style="margin-bottom:12px;">
+                    <button class="btn btn-blue" type="submit">Register device</button>
                 </form>
             </div>
         </div>

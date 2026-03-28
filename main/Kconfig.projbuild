@@ -199,12 +199,13 @@ endmenu
 menu "Multi-Device Configuration (Stretch Goal)"
 
     config GOLDENFORM_DEVICE_ID
-        int "Unique device identifier"
+        int "Unique device identifier (per physical ESP32)"
         range 0 255
         default 0
         help
-            Unique numeric ID for this device in a multi-device setup.
-            Default 0 = standalone single-device mode.
+            Each wearable must be flashed with a different ID so its Wi‑Fi SSID is unique
+            (e.g. GoldenForm_1 vs GoldenForm_2). Use 1, 2, 3… for multi-wearable.
+            ID 0 = AP SSID is only "GoldenForm" — do not use for multiple units at once (name clash).
 
     choice
         prompt "Device body placement"
@@ -226,10 +227,11 @@ menu "Multi-Device Configuration (Stretch Goal)"
     endchoice
 
     config GOLDENFORM_DEVICE_NAME
-        string "Device display name (SSID suffix)"
-        default "GF"
+        string "Optional SSID name prefix (before ID)"
+        default ""
         help
-            Short name appended to WiFi SSID: GoldenForm_<name><id>
+            Leave empty for SSID GoldenForm_<id> (e.g. GoldenForm_2).
+            If set (e.g. W), SSID is GoldenForm_W<id>. Each board still needs its own DEVICE_ID.
 
     config GOLDENFORM_MULTI_DEVICE_ENABLE
         bool "Enable multi-device synchronization"

@@ -254,8 +254,15 @@ static esp_err_t wifi_init_softap(void) {
 
   int dev_id = CONFIG_GOLDENFORM_DEVICE_ID;
   if (dev_id > 0) {
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%s%d",
-             WIFI_AP_SSID_BASE, CONFIG_GOLDENFORM_DEVICE_NAME, dev_id);
+    /* Unique SSID per physical board: flash each ESP32 with a different DEVICE_ID (1,2,3…).
+     * Empty DEVICE_NAME → GoldenForm_2; with prefix "W" → GoldenForm_W2. */
+    const char *name = CONFIG_GOLDENFORM_DEVICE_NAME;
+    if (name[0] != '\0') {
+      snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%s%d", WIFI_AP_SSID_BASE, name,
+               dev_id);
+    } else {
+      snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s_%d", WIFI_AP_SSID_BASE, dev_id);
+    }
   } else {
     snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s", WIFI_AP_SSID_BASE);
   }
@@ -276,6 +283,14 @@ static esp_err_t wifi_init_softap(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
+
+  /* Lower peak RF current slightly — reduces USB brownouts when AP first comes up (avoids mistaken "reset"). */
+  {
+    esp_err_t pwr = esp_wifi_set_max_tx_power(52); /* 13 dBm; units: 0.25 dBm (8..84) */
+    if (pwr != ESP_OK) {
+      ESP_LOGW(TAG, "esp_wifi_set_max_tx_power: %s", esp_err_to_name(pwr));
+    }
+  }
 
   ESP_LOGI(TAG, "WiFi AP started: SSID=%s, password=%s", s_ap_ssid,
            WIFI_AP_PASSWORD);

@@ -36,7 +36,14 @@ static const char *TAG = "GOLDENFORM";
 #define I2C_SCL_GPIO CONFIG_GOLDENFORM_I2C_SCL_GPIO         // GPIO 5
 #define BNO055_ADDR_GPIO CONFIG_GOLDENFORM_BNO055_ADDR_GPIO // GPIO 6
 
-// Button: Using BOOT button (GPIO0) on ESP32-S3 module
+/* Button: BOOT (GPIO0). In firmware this only starts/stops recording or sync — it does NOT call esp_restart().
+ *
+ * If the board "resets" or won't run the app when you use the button:
+ *  - Do NOT press RESET/EN while BOOT is held. On ESP32-S3, IO0 low at reset enters UART download mode
+ *    (bootloader), not GoldenForm — release BOOT before resetting, or power-cycle without holding BOOT.
+ *  - Starting the Wi‑Fi AP draws a current spike; a weak USB cable/supply can brown out the chip (looks like reset).
+ *    Use a short USB cable, powered hub, or battery that can deliver enough peak current.
+ * Hold duration for sync: BUTTON_HOLD_MS (short press is record/stop only). */
 #define BUTTON_GPIO 0
 
 // LED Configuration

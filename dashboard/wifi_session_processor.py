@@ -123,7 +123,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 user_id=body.get('user_id', 1),
                 device_hw_id=body.get('device_hw_id', 0),
                 role=body.get('role', 'wrist_right'),
-                name=body.get('name', '')
+                name=body.get('name', ''),
+                wifi_ssid=body.get('wifi_ssid', '') or ''
             )
             self._send_json({'status': 'ok', 'device_id': did})
         except Exception as e:
@@ -184,48 +185,66 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             body = self._read_body()
             session_id = body.get('session_id')
             stroke_num = body.get('stroke_num')
-            
+            try:
+                session_id = int(session_id)
+            except (TypeError, ValueError):
+                self._send_json({'error': 'Invalid session_id'}, 400)
+                return
+            try:
+                stroke_num = int(stroke_num)
+            except (TypeError, ValueError):
+                self._send_json({'error': 'Invalid stroke_num'}, 400)
+                return
+
             user = db.get_user()
             uid = user['id'] if user else None
-            
+
             session = db.get_session(session_id)
             if not session:
                 self._send_json({'error': 'Session not found'}, 404)
                 return
-            
+
             pd = session.get('processed_data', [])
-            # Filter for this stroke
-            # Note: in app.js we use strokeNumAt(d)
-            # In simple_imu_visualizer.py result it's 'stroke_count' or 'strokes'
-            stroke_samples = [d for d in pd if (d.get('strokes', 0) or d.get('stroke_count', 0)) == stroke_num]
-            
+
+            def stroke_idx(d):
+                return max(int(d.get('strokes') or 0), int(d.get('stroke_count') or 0))
+
+            stroke_samples = [d for d in pd if stroke_idx(d) == stroke_num]
+
             if not stroke_samples:
-                self._send_json({'error': f'Stroke {stroke_num} not found in session'}, 404)
+                self._send_json({'error': f'Stroke {stroke_num} not found in session (check stroke fields)'}, 404)
                 return
-            
-            # Map back to lia format expected by database
+
             lia_data = []
             for d in stroke_samples:
+                acc = d.get('acceleration', {}) or {}
+                q = d.get('quaternion', {}) or {}
                 lia_data.append({
-                    'lia_x': d.get('acceleration', {}).get('ax', 0),
-                    'lia_y': d.get('acceleration', {}).get('ay', 0),
-                    'lia_z': d.get('acceleration', {}).get('az', 0),
-                    'qw': d.get('quaternion', {}).get('qw', 1),
-                    'qx': d.get('quaternion', {}).get('qx', 0),
-                    'qy': d.get('quaternion', {}).get('qy', 0),
-                    'qz': d.get('quaternion', {}).get('qz', 0)
+                    'lia_x': acc.get('ax', 0),
+                    'lia_y': acc.get('ay', 0),
+                    'lia_z': acc.get('az', 0),
+                    'qw': q.get('qw', 1),
+                    'qx': q.get('qx', 0),
+                    'qy': q.get('qy', 0),
+                    'qz': q.get('qz', 0),
+                    'entry_angle': d.get('entry_angle', 0),
                 })
-            
+
             if uid:
                 db.save_ideal_stroke(uid, f'Stroke {stroke_num} from Session {session_id}', lia_data, len(lia_data))
-            
-            # Save file cache for stability
+
             ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
             with open(ideal_path, 'w') as f:
-                json.dump({'samples': lia_data, 'name': f'Stroke {stroke_num}'}, f)
-            
+                json.dump({
+                    'samples': lia_data,
+                    'name': f'Stroke {stroke_num}',
+                    'ideal_entry_angle': body.get('ideal_entry_angle', 30),
+                }, f)
+
             self._send_json({'status': 'ok', 'samples': len(lia_data)})
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self._send_json({'error': str(e)}, 500)
 
     def _get_ideal_stroke(self):

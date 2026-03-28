@@ -165,13 +165,34 @@ body {
   border-bottom-color: var(--gold);
 }
 
+.nav-right-cluster {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.nav-next-hint {
+  font-size: 0.72em;
+  color: var(--text2);
+  max-width: min(280px, 36vw);
+  line-height: 1.35;
+  text-align: right;
+}
+
+@media (max-width: 900px) {
+  .nav-next-hint {
+    display: none;
+  }
+}
+
 .nav-status {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 0.8em;
   color: var(--text3);
-  margin-left: 12px;
   white-space: nowrap;
 }
 
@@ -190,7 +211,7 @@ body {
 
 .status-dot.syncing {
   background: var(--amber);
-  animation: pulse 1.2s infinite;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
 }
 
 .status-dot.offline {
@@ -203,11 +224,350 @@ body {
   padding: 20px;
   max-width: 1300px;
   margin: 0 auto;
-  animation: fadeIn 0.3s ease;
+  /* Tab switches apply slideUp via JS — avoid a second fade that fights it and causes flicker */
+  animation: none;
 }
 
 .page.active {
   display: block;
+}
+
+/* ── SETUP JOURNEY (PDP-aligned flow) ── */
+.setup-journey-card {
+  margin-bottom: 20px;
+  border: 1px solid rgba(197, 165, 90, 0.2);
+}
+
+.setup-journey-lead {
+  font-size: 0.88em;
+  color: var(--text2);
+  line-height: 1.55;
+  margin: 10px 0 16px;
+}
+
+.journey-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.journey-step {
+  background: var(--bg3);
+  border: 1px solid var(--bg4);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  text-align: left;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.journey-step--done {
+  border-color: rgba(16, 185, 129, 0.35);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.08);
+}
+
+.journey-step--current {
+  border-color: rgba(197, 165, 90, 0.45);
+  box-shadow: 0 0 0 1px rgba(197, 165, 90, 0.12);
+}
+
+.journey-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.88em;
+  color: var(--text1);
+  margin-bottom: 6px;
+}
+
+.journey-check {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.journey-step p {
+  font-size: 0.78em;
+  color: var(--text3);
+  line-height: 1.45;
+  margin: 0 0 10px;
+}
+
+.journey-step .btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.setup-continue-wrap {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+}
+
+.setup-continue {
+  font-size: 0.82em;
+  color: var(--text2);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.setup-continue strong {
+  color: var(--text1);
+}
+
+/* First-run strip on Home (PDP base path — hidden once sessions exist) */
+.home-onboarding-steps {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-onboarding-step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 0.88em;
+  color: var(--text2);
+  line-height: 1.45;
+}
+
+.home-onboarding-num {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 6px;
+  background: var(--bg4);
+  color: var(--text1);
+  font-weight: 700;
+  font-size: 0.78em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.home-onboarding-stretch {
+  font-size: 0.78em;
+  color: var(--text3);
+  margin: 12px 0 0;
+  line-height: 1.4;
+}
+
+.home-onboarding-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+/* ── SETTINGS: device registration (one-by-one) ── */
+.device-registration-card .device-reg-lead {
+  font-size: 0.84em;
+  color: var(--text2);
+  line-height: 1.5;
+  margin: 6px 0 12px;
+}
+
+.device-reg-wifi-hint {
+  font-size: 0.78em;
+  color: var(--text3);
+  line-height: 1.45;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(197, 165, 90, 0.06);
+  border: 1px solid rgba(197, 165, 90, 0.2);
+}
+
+.connected-wearable-banner {
+  font-size: 0.8em;
+  line-height: 1.45;
+  margin: 0 0 12px;
+  min-height: 2.5rem;
+}
+
+.wearable-banner-inner {
+  display: block;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--bg4);
+  background: var(--bg3);
+}
+
+.wearable-banner-inner--online {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.wearable-banner-inner--offline {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.05);
+  color: var(--text2);
+}
+
+.device-reg-slot {
+  min-height: 2.75rem;
+  margin-bottom: 4px;
+}
+
+.device-reg-slot-inner {
+  display: block;
+  font-size: 0.82em;
+  line-height: 1.45;
+  color: var(--text2);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg3);
+  border: 1px solid var(--bg4);
+}
+
+.device-reg-slot-inner--ok {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.06);
+}
+
+.device-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.device-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--bg4);
+  background: var(--bg2);
+}
+
+.device-card-index {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85em;
+  border-radius: 8px;
+  background: var(--bg4);
+  color: var(--text1);
+}
+
+.device-card--1 .device-card-index { background: rgba(59, 130, 246, 0.35); }
+.device-card--2 .device-card-index { background: rgba(16, 185, 129, 0.35); }
+.device-card--3 .device-card-index { background: rgba(245, 158, 11, 0.35); }
+.device-card--4 .device-card-index { background: rgba(139, 92, 246, 0.35); }
+.device-card--5 .device-card-index { background: rgba(244, 63, 94, 0.35); }
+.device-card--6 .device-card-index { background: rgba(6, 182, 212, 0.35); }
+
+.device-card-wifi {
+  font-size: 0.78em;
+  color: var(--text3);
+  margin-top: 4px;
+}
+
+.device-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-card-title {
+  font-weight: 600;
+  font-size: 0.9em;
+  color: var(--text1);
+  margin-bottom: 4px;
+}
+
+.device-card-meta {
+  font-size: 0.78em;
+  color: var(--text3);
+  line-height: 1.35;
+}
+
+.device-card-meta strong {
+  color: var(--cyan);
+  font-weight: 600;
+}
+
+.device-card-hint {
+  font-size: 0.72em;
+  color: var(--text3);
+  margin-top: 6px;
+  line-height: 1.35;
+}
+
+.device-reg-steps {
+  margin: 10px 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.82em;
+  color: var(--text2);
+  line-height: 1.55;
+}
+
+.device-reg-steps li {
+  margin-bottom: 8px;
+}
+
+.device-reg-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.label-hint {
+  font-weight: 400;
+  font-size: 0.88em;
+  color: var(--text3);
+}
+
+/* ── SESSION: Wi‑Fi playbook ── */
+.sync-playbook-card {
+  margin-bottom: 12px;
+}
+
+.sync-playbook {
+  margin: 10px 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.84em;
+  color: var(--text2);
+  line-height: 1.55;
+}
+
+.sync-playbook li {
+  margin-bottom: 6px;
+}
+
+.sync-playbook-note {
+  font-size: 0.78em;
+  color: var(--text3);
+  margin-top: 10px;
+  line-height: 1.45;
+}
+
+.sync-playbook-note--first {
+  color: var(--text2);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(6, 182, 212, 0.08);
+  border: 1px solid rgba(6, 182, 212, 0.22);
+  margin-top: 10px;
+}
+
+.sync-playbook-wrap--online .sync-playbook li[data-step="4"] {
+  color: var(--green);
+}
+
+.cal-explainer {
+  font-size: 0.8em;
+  color: var(--text2);
+  line-height: 1.5;
+  margin: 0 0 12px;
 }
 
 /* ── HERO ── */
@@ -401,6 +761,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   background: var(--bg2);
   border: 1px solid var(--bg4);
   border-radius: var(--radius);
@@ -456,6 +817,28 @@ body {
   overflow: hidden;
 }
 
+.progress-track--scrub {
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.progress-track--scrub.scrubbing {
+  box-shadow: inset 0 0 0 1px var(--gold-dim), 0 0 0 2px rgba(197, 165, 90, 0.2);
+}
+
+.progress-track--scrub.scrubbing .progress-fill {
+  transition: none;
+}
+
+.progress-track--scrub:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
 .progress-fill {
   height: 100%;
   width: 0%;
@@ -464,11 +847,57 @@ body {
   transition: width 0.05s linear;
 }
 
+.progress-track--scrub .progress-fill {
+  border-radius: 7px;
+  min-width: 0;
+}
+
+.progress-playhead {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: var(--text1);
+  border: 2px solid var(--gold);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.playback-time-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 118px;
+}
+
 .time-label {
   font-size: 0.75em;
   color: var(--text3);
   white-space: nowrap;
   margin-left: 4px;
+}
+
+.playback-time-block .time-label {
+  margin-left: 0;
+}
+
+.time-fine {
+  font-size: 0.68em;
+  color: var(--amber);
+  max-width: 220px;
+  text-align: right;
+}
+
+.time-frame {
+  font-size: 0.68em;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── HAPTIC TIMELINE (TIDR 2-1-2) ── */
@@ -644,6 +1073,12 @@ body {
 .badge-gold {
   background: rgba(197, 165, 90, 0.15);
   color: var(--gold);
+}
+
+.badge-outline {
+  background: transparent;
+  border: 1px solid var(--bg4);
+  color: var(--text2);
 }
 
 .badge-green {
