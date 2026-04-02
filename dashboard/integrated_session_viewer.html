@@ -135,11 +135,13 @@
                 <div class="viz-analysis-bar" style="margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:8px;font-size:0.82em;color:var(--text2);display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;">
                     <span style="color:var(--text3);width:100%;margin-bottom:2px;">Playback — <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10). Side view above shows LIA + tilt; open 3D for pool scene.</span>
                     <label style="display:flex;align-items:center;gap:6px;">Path
-                        <select id="viz-stream-mode" onchange="onVizStreamModeChange()" style="max-width:200px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
-                            <option value="kinematic">Coach blend (smooth, vs ideal)</option>
-                            <option value="position">Position / LIA stream (analysis)</option>
+                        <select id="viz-stream-mode" onchange="onVizStreamModeChange()" style="max-width:220px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
+                            <option value="position" selected>LIA position (recommended — matches tracker)</option>
+                            <option value="kinematic">Coach blend (smooth arc vs ideal)</option>
                         </select>
                     </label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Ghost of ideal stroke — off by default for a cleaner view"><input type="checkbox" id="viz-show-ideal" /> Ideal overlay</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Lane silhouette — optional context"><input type="checkbox" id="viz-show-swimmer" /> Swimmer ref</label>
                     <label style="display:flex;align-items:center;gap:6px;">Range
                         <select id="viz-stroke-playback" style="max-width:160px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
                             <option value="0">All strokes</option>

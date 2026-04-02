@@ -494,9 +494,9 @@ async function loadDevices() {
     if (wristDevice) {
         activeWristDeviceRole = wristDevice.role.toLowerCase();
         if (typeof handGroup !== 'undefined' && handGroup) {
-            const flip = activeWristDeviceRole === 'wrist_left' ? -2.75 : 2.75;
-            handGroup.scale.set(flip, 2.75, 2.75);
-            if (ghostArmGroup) ghostArmGroup.scale.set(flip, 2.75, 2.75);
+            const flip = activeWristDeviceRole === 'wrist_left' ? -2.45 : 2.45;
+            handGroup.scale.set(flip, 2.45, 2.45);
+            if (ghostArmGroup) ghostArmGroup.scale.set(flip, 2.45, 2.45);
         }
     }
     const list = document.getElementById('device-list');
@@ -1932,8 +1932,8 @@ const TRAIL_MAX_POINTS = 2000;
 const TRAIL_SMOOTH_WINDOW = 7;
 /** Base interval for playback (ms); combined with speed slider. */
 const PLAYBACK_BASE_MS = 18;
-/** 'kinematic' = canonical+LIA blend; 'position' = smoothed IMU position stream (analysis). */
-let vizStreamMode = 'kinematic';
+/** 'kinematic' = canonical+LIA blend; 'position' = processor LIA world integration (matches firmware path). */
+let vizStreamMode = 'position';
 /** 0 = full session; else play only this stroke #. */
 let playbackStrokeFilter = 0;
 let loopStrokePlayback = false;
@@ -2456,7 +2456,7 @@ function createHandModel() {
     thumbGrp.add(tTip);
     group.add(thumbGrp);
 
-    group.scale.setScalar(2.75);
+    group.scale.setScalar(2.45);
     return group;
 }
 
@@ -2470,9 +2470,9 @@ function createPoolEnvironment() {
     // Water surface (+Z = down-lane from the starting wall at -Z)
     const waterGeo = new THREE.PlaneGeometry(2.5, pLength, 12, 64);
     const waterMat = new THREE.MeshStandardMaterial({
-        color: 0x0a4a72, emissive: 0x001a2a,
-        roughness: 0.15, metalness: 0.2,
-        transparent: true, opacity: 0.42, side: THREE.DoubleSide
+        color: 0x0c5280, emissive: 0x001018,
+        roughness: 0.22, metalness: 0.12,
+        transparent: true, opacity: 0.34, side: THREE.DoubleSide
     });
     const water = new THREE.Mesh(waterGeo, waterMat);
     water.rotation.x = -Math.PI / 2;
@@ -2577,7 +2577,7 @@ function init3D() {
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x06060e);
-    scene.fog = new THREE.FogExp2(0x06060e, 0.028);
+    scene.fog = new THREE.FogExp2(0x06060e, 0.022);
 
     const w = Math.max(canvas.clientWidth || 800, 400);
     const h = Math.max(canvas.clientHeight || 450, 400);
@@ -2620,7 +2620,7 @@ function init3D() {
     trailGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
     trailGeo.setAttribute('color', new THREE.Float32BufferAttribute([], 3));
     trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
-        vertexColors: true, transparent: true, opacity: 0.9, linewidth: 2
+        vertexColors: true, transparent: true, opacity: 0.72, linewidth: 2
     }));
     scene.add(trailLine);
 
@@ -2632,12 +2632,19 @@ function init3D() {
 
     ghostArmGroup = createHandModel();
     if (ghostArmGroup) {
+        const ghostMat = (hex) => {
+            const o = { color: hex, transparent: true, opacity: 0.12, roughness: 0.5, metalness: 0, wireframe: false, depthWrite: false };
+            return THREE.MeshPhysicalMaterial
+                ? new THREE.MeshPhysicalMaterial({ ...o, clearcoat: 0.2, clearcoatRoughness: 0.6 })
+                : new THREE.MeshStandardMaterial(o);
+        };
         ghostArmGroup.children.forEach(c => {
-            if (c.material) c.material = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.15, wireframe: true });
+            if (c.material) c.material = ghostMat(0x6eb8e8);
             if (c.children) c.children.forEach(cc => {
-                if (cc.material) cc.material = new THREE.MeshStandardMaterial({ color: 0x88ccff, transparent: true, opacity: 0.15, wireframe: true });
+                if (cc.material) cc.material = ghostMat(0x5aa8d8);
             });
         });
+        ghostArmGroup.visible = false;
         scene.add(ghostArmGroup);
     }
 
@@ -2647,6 +2654,7 @@ function init3D() {
     swimmerBody = createSwimmerBody();
     if (swimmerBody) {
         swimmerBody.position.set(0, 0, POOL_FRAME.zWall + 0.35);
+        swimmerBody.visible = false;
         scene.add(swimmerBody);
     }
 
@@ -3007,7 +3015,9 @@ function renderFrame(idx) {
     }
 
     if (ghostArmGroup) {
-        if (idealStrokeData && idealStrokeData.length > 0 && vizStreamMode === 'kinematic') {
+        const idealCb = document.getElementById('viz-show-ideal');
+        const userWantsIdeal = idealCb ? idealCb.checked : false;
+        if (userWantsIdeal && idealStrokeData && idealStrokeData.length > 0 && vizStreamMode === 'kinematic') {
             ghostArmGroup.visible = true;
             const uStroke = strokeProgressU(idx);
             const idealIdx = Math.floor(uStroke * (idealStrokeData.length - 1));
@@ -3215,6 +3225,27 @@ function bindVizPlaybackControls() {
     if (loopFull) {
         loopFull.addEventListener('change', () => { loopFullSession = loopFull.checked; });
     }
+    const modeEl = document.getElementById('viz-stream-mode');
+    if (modeEl) {
+        modeEl.value = vizStreamMode;
+    }
+}
+
+function bindVizSceneToggles() {
+    const idealEl = document.getElementById('viz-show-ideal');
+    const swimEl = document.getElementById('viz-show-swimmer');
+    if (idealEl && !idealEl.dataset.bound) {
+        idealEl.dataset.bound = '1';
+        idealEl.addEventListener('change', () => {
+            if (ghostArmGroup) ghostArmGroup.visible = !!idealEl.checked;
+        });
+    }
+    if (swimEl && !swimEl.dataset.bound) {
+        swimEl.dataset.bound = '1';
+        swimEl.addEventListener('change', () => {
+            if (swimmerBody) swimmerBody.visible = !!swimEl.checked;
+        });
+    }
 }
 
 function clearViz() {
@@ -3328,6 +3359,7 @@ function bindNavigationButtons() {
 window.addEventListener('DOMContentLoaded', () => {
     bindNavigationButtons();
     bindVizPlaybackControls();
+    bindVizSceneToggles();
     initScrubberPointerHandlers();
     refreshCalibrationSavedStrip();
     loadUserProfile();

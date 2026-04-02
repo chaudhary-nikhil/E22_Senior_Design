@@ -752,7 +752,10 @@ void app_main(void) {
       }
     }
 
-    // Read IMU whenever sensor is available
+    /* IMU path (same signals the legacy UART visualizer used):
+     * fusion quaternion + linear accel (LIA) + gyro + per-channel cal status.
+     * Dashboard StrokeProcessor replays world-frame integration from these fields
+     * on Wi‑Fi/SD — no separate UART pipeline required. */
     if (bno055_available) {
       bno055_sample_t sample;
       err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);

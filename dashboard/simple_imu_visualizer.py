@@ -583,7 +583,7 @@ class StrokeProcessor:
             # 5. Integration Logic
             # ONLY integrate during the stroke pull-through window.
             # Between strokes: position is frozen, velocity is zero.
-            # This ensures the cube only moves during actual strokes.
+            # World-frame R * Kalman(LIA) — same physics as legacy UART stream (0401fbde).
             int_ax = (ww + xx - yy - zz) * smooth_x + 2 * (xy - wz) * smooth_y + 2 * (xz + wy) * smooth_z
             int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
             int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
@@ -599,7 +599,7 @@ class StrokeProcessor:
 
             if self.stroke_integrating:
                 # Legacy UART (0401fbde): with accel+gyro fusion >= 2, use tight deadzone and
-                # light decay — same world-frame path as live serial (R * Kalman-smoothed LIA).
+                # light decay — same world-frame path as Wi‑Fi/SD replay (R * Kalman-smoothed LIA).
                 well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
                 if well_cal_integrate:
                     deadzone = self.ACCEL_DEADZONE_WELL_CAL
@@ -613,18 +613,29 @@ class StrokeProcessor:
                     decay_stat = self.STATIONARY_FRICTION
 
                 is_accelerating = False
-                if abs(int_ax) < deadzone:
-                    int_ax = 0.0
+                # Vector deadzone when well calibrated: avoids false "motion" from one noisy
+                # axis drifting the integrator diagonally (common IMU double-integration issue).
+                if well_cal_integrate:
+                    w_mag = math.sqrt(int_ax * int_ax + int_ay * int_ay + int_az * int_az)
+                    if w_mag < deadzone:
+                        int_ax = 0.0
+                        int_ay = 0.0
+                        int_az = 0.0
+                    else:
+                        is_accelerating = True
                 else:
-                    is_accelerating = True
-                if abs(int_ay) < deadzone:
-                    int_ay = 0.0
-                else:
-                    is_accelerating = True
-                if abs(int_az) < deadzone:
-                    int_az = 0.0
-                else:
-                    is_accelerating = True
+                    if abs(int_ax) < deadzone:
+                        int_ax = 0.0
+                    else:
+                        is_accelerating = True
+                    if abs(int_ay) < deadzone:
+                        int_ay = 0.0
+                    else:
+                        is_accelerating = True
+                    if abs(int_az) < deadzone:
+                        int_az = 0.0
+                    else:
+                        is_accelerating = True
 
                 self.velocity[0] += int_ax * dt
                 self.velocity[1] += int_ay * dt
@@ -634,6 +645,14 @@ class StrokeProcessor:
                 self.velocity[0] *= decay
                 self.velocity[1] *= decay
                 self.velocity[2] *= decay
+
+                # Bleed residual velocity when acceleration is near quiet (reduces slow drift
+                # in one direction while still tracking real pull transients).
+                if well_cal_integrate and accel_mag < 0.5:
+                    vb = 0.92
+                    self.velocity[0] *= vb
+                    self.velocity[1] *= vb
+                    self.velocity[2] *= vb
                 
                 self.position[0] += self.velocity[0] * dt
                 self.position[1] += self.velocity[1] * dt
