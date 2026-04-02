@@ -179,7 +179,10 @@ class StrokeProcessor:
         # INTEGRATION WINDOW: Only integrate during active stroke pull-through.
         # Typical arm pull: 0.3-0.5s. After that, hand exits water (recovery).
         # We must NOT track recovery, only the underwater pull.
-        self.STROKE_INTEGRATION_TIMEOUT = 0.6  # hard cutoff - pull-through is 0.3-0.5s max
+        # Pull-through window: slightly longer when fusion is strong (matches live UART feel
+        # from commit 0401fbde — gyro-led tracking had longer apparent motion)
+        self.STROKE_INTEGRATION_TIMEOUT = 0.6  # default hard cutoff (seconds)
+        self.STROKE_INTEGRATION_TIMEOUT_WELL_CAL = 0.72  # when accel+gyro cal >= 2
         self.STROKE_SETTLE_ACCEL = 0.8  # m/s² - accel below this = motion settling
         self.STROKE_SETTLE_REQUIRED = 3  # consecutive quiet samples to end integration
         self.stroke_settle_count = 0
@@ -187,10 +190,14 @@ class StrokeProcessor:
         self.stroke_integration_start = 0
         
         self.MIN_CAL_LEVEL = 0  # Relaxed: IMUPLUS mode makes 3/3 accel impossible while swimming
-        self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor
+        self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor (accel only)
         self.ACCEL_DEADZONE_UNCAL = 1.0  # m/s² - larger deadzone for uncalibrated accel
-        self.VELOCITY_DECAY = 0.97  # Base friction during active stroke
-        self.STATIONARY_FRICTION = 0.85  # Braking when accel is low
+        # Legacy UART stream (0401fbde): world-frame integration used 0.98 / 0.80 with 0.2 deadzone
+        self.VELOCITY_DECAY = 0.97  # default — active stroke friction
+        self.STATIONARY_FRICTION = 0.85
+        self.VELOCITY_DECAY_WELL_CAL = 0.98
+        self.STATIONARY_FRICTION_WELL_CAL = 0.80
+        self.ACCEL_DEADZONE_WELL_CAL = 0.2  # m/s² — tight, like legacy live stream after BNO fusion
 
         self.stroke_count = 0  # Track number of strokes
         self.stroke_start_time = 0  # To track duration
@@ -552,7 +559,13 @@ class StrokeProcessor:
             # =================================================================
             if self.stroke_integrating:
                 time_since_stroke = (t_ms - self.stroke_integration_start) / 1000.0
-                if time_since_stroke > self.STROKE_INTEGRATION_TIMEOUT:
+                well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
+                t_limit = (
+                    self.STROKE_INTEGRATION_TIMEOUT_WELL_CAL
+                    if well_cal_integrate
+                    else self.STROKE_INTEGRATION_TIMEOUT
+                )
+                if time_since_stroke > t_limit:
                     self.stroke_integrating = False
                     self.in_stroke = False
                     self.stroke_settle_count = 0
@@ -585,21 +598,39 @@ class StrokeProcessor:
                 int_az -= self.hp_avg[2]
 
             if self.stroke_integrating:
-                deadzone = self.ACCEL_DEADZONE if cal_accel >= 2 else self.ACCEL_DEADZONE_UNCAL
+                # Legacy UART (0401fbde): with accel+gyro fusion >= 2, use tight deadzone and
+                # light decay — same world-frame path as live serial (R * Kalman-smoothed LIA).
+                well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
+                if well_cal_integrate:
+                    deadzone = self.ACCEL_DEADZONE_WELL_CAL
+                    decay_act = self.VELOCITY_DECAY_WELL_CAL
+                    decay_stat = self.STATIONARY_FRICTION_WELL_CAL
+                else:
+                    deadzone = (
+                        self.ACCEL_DEADZONE if cal_accel >= 2 else self.ACCEL_DEADZONE_UNCAL
+                    )
+                    decay_act = self.VELOCITY_DECAY
+                    decay_stat = self.STATIONARY_FRICTION
+
                 is_accelerating = False
-                
-                if abs(int_ax) < deadzone: int_ax = 0.0
-                else: is_accelerating = True
-                if abs(int_ay) < deadzone: int_ay = 0.0
-                else: is_accelerating = True
-                if abs(int_az) < deadzone: int_az = 0.0
-                else: is_accelerating = True
+                if abs(int_ax) < deadzone:
+                    int_ax = 0.0
+                else:
+                    is_accelerating = True
+                if abs(int_ay) < deadzone:
+                    int_ay = 0.0
+                else:
+                    is_accelerating = True
+                if abs(int_az) < deadzone:
+                    int_az = 0.0
+                else:
+                    is_accelerating = True
 
                 self.velocity[0] += int_ax * dt
                 self.velocity[1] += int_ay * dt
                 self.velocity[2] += int_az * dt
-                
-                decay = self.VELOCITY_DECAY if is_accelerating else self.STATIONARY_FRICTION
+
+                decay = decay_act if is_accelerating else decay_stat
                 self.velocity[0] *= decay
                 self.velocity[1] *= decay
                 self.velocity[2] *= decay
@@ -660,6 +691,12 @@ class StrokeProcessor:
             "phase_pcts": dict(self.last_phase_pcts),
             "phase_progress": round(phase_progress, 3),
             "stroke_velocity_ms": round(stroke_vel_ms, 3),
+            # World-frame LIA integration tuning (matches live UART @ 0401fbde when fusion strong)
+            "position_integration": (
+                "legacy_uart_match"
+                if (cal_accel >= 2 and cal_gyro >= 2)
+                else ("hp_gravity_residual" if cal_accel < 2 else "standard")
+            ),
             
             "haptic_fired": data_dict.get('haptic_fired', data_dict.get('haptic', False)),
             "deviation_score": data_dict.get('deviation_score', data_dict.get('deviation', 0.0)),
