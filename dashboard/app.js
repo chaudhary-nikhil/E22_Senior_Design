@@ -1,6 +1,5 @@
 // GoldenForm App — Core Logic v2
-// Visualization overhaul: stroke-phase position, haptic markers, ideal overlay,
-// multi-device, calibration display, production polish
+// Session viz: IMU cube + LIA position trail (processor-aligned); Wi‑Fi/SD data path.
 //
 // PDP flow (single spine: Home checklist → tab CTAs):
 // Base:   Profile → register wearables (Wi‑Fi) → Session sync handshake (0 sessions OK) →
@@ -22,8 +21,6 @@ let isPlaying = false;
 let playbackInterval = null;
 let positionScale = 3.0;
 let idealStrokeData = null;
-/** True if user registered a head-mounted device in Settings (SQLite). */
-let registeredHeadDevice = false;
 let activeWristDeviceRole = 'wrist_right';
 
 // ── TAB NAVIGATION ──
@@ -203,7 +200,6 @@ function escapeHtml(s) {
 const ROLE_LABELS = {
     wrist_right: 'Right wrist',
     wrist_left: 'Left wrist',
-    head: 'Head',
     ankle_right: 'Right ankle',
     ankle_left: 'Left ankle',
     waist: 'Waist / back'
@@ -214,6 +210,7 @@ const DEVICE_ROLE_ORDER = Object.keys(ROLE_LABELS);
 
 function normalizeDeviceRole(role) {
     const r = String(role || 'wrist_right').toLowerCase();
+    if (r === 'head') return 'wrist_right';
     return DEVICE_ROLE_ORDER.includes(r) ? r : 'wrist_right';
 }
 
@@ -489,14 +486,12 @@ async function loadDevices() {
     const devices = (res && res.devices) || [];
     lastDevicesList = devices;
     cachedDeviceListLength = devices.length;
-    registeredHeadDevice = devices.some(d => String(d.role || '').toLowerCase() === 'head');
     const wristDevice = devices.find(d => String(d.role || '').toLowerCase().startsWith('wrist'));
     if (wristDevice) {
         activeWristDeviceRole = wristDevice.role.toLowerCase();
-        if (typeof handGroup !== 'undefined' && handGroup) {
-            const flip = activeWristDeviceRole === 'wrist_left' ? -2.45 : 2.45;
-            handGroup.scale.set(flip, 2.45, 2.45);
-            if (ghostArmGroup) ghostArmGroup.scale.set(flip, 2.45, 2.45);
+        if (typeof imuCube !== 'undefined' && imuCube) {
+            const flip = activeWristDeviceRole === 'wrist_left' ? -1 : 1;
+            imuCube.scale.set(flip, 1, 1);
         }
     }
     const list = document.getElementById('device-list');
@@ -504,7 +499,7 @@ async function loadDevices() {
         if (!devices.length) {
             list.innerHTML = '<p style="color:var(--text3);font-size:0.85em;">No devices registered yet. Use the steps below — one Wi‑Fi, one registration at a time.</p>';
         } else {
-            const roleIcons = { wrist_right: '🤚', wrist_left: '✋', head: '🧠', ankle_right: '🦶', ankle_left: '🦶', waist: '🫁' };
+            const roleIcons = { wrist_right: '🤚', wrist_left: '✋', ankle_right: '🦶', ankle_left: '🦶', waist: '🫁' };
             list.innerHTML = devices.map((d, i) => {
                 const idx = i + 1;
                 const colorClass = 'device-card--' + ((i % 6) + 1);
@@ -583,7 +578,7 @@ function startDevicePolling() {
     if (devicePollInterval) clearInterval(devicePollInterval);
     // Poll immediately on start
     pollDevice();
-    devicePollInterval = setInterval(pollDevice, 5000);
+    devicePollInterval = setInterval(pollDevice, 2500);
 }
 
 async function pollDevice() {
@@ -896,9 +891,8 @@ async function selectSession(i) {
     currentIndex = 0;
     integratedPositions = [];
     rawIntegratedPositions = [];
-    lastRenderedStrokeCount = 0;
     lastCalStripFrameIdx = -1;
-    followHandInView = true;
+    refreshVizCoordinateTransform();
     isPlaying = false;
     if (playbackInterval) { clearInterval(playbackInterval); playbackInterval = null; }
     // Pre-compute stroke boundaries and haptic events for timeline
@@ -1020,7 +1014,6 @@ function togglePlayback() {
     isPlaying = !isPlaying;
     const btn = document.getElementById('play-btn');
     if (isPlaying) {
-        followHandInView = true;
         if (btn) btn.textContent = '⏸';
         if (playbackInterval) clearInterval(playbackInterval);
         const tick = () => {
@@ -1160,8 +1153,31 @@ function formatTimeFine(s) {
 }
 
 // ── SESSION SUMMARY ──
+function resetSessionSummaryPlaceholders() {
+    const dash = '—';
+    setText('sum-strokes', dash);
+    setText('sum-turns', dash);
+    setText('sum-distance', dash);
+    setText('sum-pace', dash);
+    setText('sum-duration', dash);
+    setText('sum-rate', dash);
+    setText('sum-consistency', dash);
+    setText('sum-samples', dash);
+}
+
+function resetHomeStatsPlaceholders() {
+    const dash = '—';
+    setText('home-last-strokes', dash);
+    setText('home-last-rate', dash);
+    setText('home-last-consistency', dash);
+    setText('home-last-distance', dash);
+}
+
 function updateSessionSummary() {
-    if (!sessionMetrics) return;
+    if (!sessionMetrics || activeSessionIdx < 0 || !processedData.length) {
+        resetSessionSummaryPlaceholders();
+        return;
+    }
     const m = sessionMetrics;
     const poolLen = userProfile ? (userProfile.pool_length || 25) : 25;
     const distance = (m.turn_count || 0) * poolLen; // Note: if turn_count=1, it means they finished 1 length of 25m? Or completed 1 turn (2 lengths)?
@@ -1180,10 +1196,12 @@ function updateSessionSummary() {
     setText('sum-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '--');
     setText('sum-samples', processedData.length);
     
-    setText('home-last-strokes', m.stroke_count || 0);
-    setText('home-last-rate', m.stroke_rate ? m.stroke_rate.toFixed(1) : '--');
-    setText('home-last-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '--');
-    setText('home-last-distance', totalDist + 'm');
+    if (activeSessionIdx >= 0 && savedSessions[activeSessionIdx]) {
+        setText('home-last-strokes', m.stroke_count || 0);
+        setText('home-last-rate', m.stroke_rate ? m.stroke_rate.toFixed(1) : '—');
+        setText('home-last-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '—');
+        setText('home-last-distance', totalDist + 'm');
+    }
 }
 function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
 
@@ -1243,6 +1261,17 @@ function maybeAutoSaveCalibrationFromPoll(res) {
     if (score > prevScore) {
         persistCalibrationSnapshot(n, res.device_id);
     }
+}
+
+function openCalibrationGuide() {
+    const m = document.getElementById('cal-guide-modal');
+    if (!m) return;
+    m.classList.add('show');
+}
+function closeCalibrationGuide() {
+    const m = document.getElementById('cal-guide-modal');
+    if (!m) return;
+    m.classList.remove('show');
 }
 
 async function saveCalibrationSnapshotManual() {
@@ -1323,24 +1352,6 @@ function updateAnalysis() {
     setText('form-score', score.toFixed(1));
     const scoreEl = document.getElementById('form-score');
     if (scoreEl) scoreEl.style.color = score >= 7 ? 'var(--green)' : score >= 5 ? 'var(--amber)' : 'var(--red)';
-
-    const br = m.breathing || {};
-    const breathCard = document.getElementById('breathing-card');
-    if (breathCard) {
-        const headSamples = processedData.some(d => Number(d.device_role) === 3);
-        const rightHeavy = (br.right_pct || 0) >= (br.left_pct || 0);
-        const showBreathing = registeredHeadDevice && headSamples && (br.breath_count || 0) > 0 && rightHeavy;
-        if (showBreathing) {
-            breathCard.style.display = '';
-            setText('breath-count', br.breath_count);
-            setText('breath-rate', br.breaths_per_minute || 0);
-            setText('breath-left', (br.left_pct || 0) + '%');
-            setText('breath-right', (br.right_pct || 0) + '%');
-            setText('breath-roll', (br.avg_roll || 0) + '°');
-        } else {
-            breathCard.style.display = 'none';
-        }
-    }
 
     buildStrokeTable();
     buildIdealComparison();
@@ -1910,30 +1921,27 @@ function updateCharts(idx) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  3D VISUALIZATION — Realistic hand, LIA-integrated path, phase-colored trail
+//  3D VISUALIZATION — IMU cube + phase-colored LIA trail (processor positions)
 // ══════════════════════════════════════════════════════════════════
 let scene, camera, renderer, controls;
 /** Single rAF loop for Three.js — cancel on WebGL context loss to avoid stacked loops / flicker. */
 let vizRafId = null;
-let handGroup = null;
-let handMaterials = [];
+let imuCube = null;
+/** Six face materials (+X,-X,+Y,-Y,+Z,-Z) for haptic flash tinting. */
+let cubeMaterials = [];
 let trailLine = null;
-let strokeMarkerGroup = null;
 let hapticFlashUntil = 0;
 /** Throttle live calibration strip updates during playback/scrub (was every frame → layout churn). */
 let lastCalStripFrameIdx = -1;
 let integratedPositions = [];
-let lastRenderedStrokeCount = 0;
 let playbackStrokeSegments = [];
+/** Euler offsets (rad) applied after quaternion — from first-sample “gravity” axis when available (legacy session visualizer behavior). */
+let vizCoordinateTransform = { rotationX: 0, rotationY: 0, rotationZ: 0 };
 
-const SKIN_COLOR = 0xc9a088;
-const SKIN_COLOR_SHADOW = 0x9a7359;
 const TRAIL_MAX_POINTS = 2000;
 const TRAIL_SMOOTH_WINDOW = 7;
 /** Base interval for playback (ms); combined with speed slider. */
 const PLAYBACK_BASE_MS = 18;
-/** 'kinematic' = canonical+LIA blend; 'position' = processor LIA world integration (matches firmware path). */
-let vizStreamMode = 'position';
 /** 0 = full session; else play only this stroke #. */
 let playbackStrokeFilter = 0;
 let loopStrokePlayback = false;
@@ -1941,7 +1949,7 @@ let loopStrokePlayback = false;
 let playbackSpeedMultiplier = 0.35;
 /** When playing all strokes, loop entire session. */
 let loopFullSession = false;
-/** Smoothed position-only path (pool-framed), parallel to integratedPositions. */
+/** Smoothed LIA positions (matches StrokeProcessor world integration, lightly smoothed per stroke). */
 let positionStreamPositions = [];
 const PHASE_COLOR_HEX = {
     glide: 0x3b82f6, catch: 0x22c55e, pull: 0xf97316,
@@ -2013,52 +2021,6 @@ function cacheIdealLocal(samples, idealEntryAngle, name) {
 /** Raw LIA / processor positions (session-relative). */
 let rawIntegratedPositions = [];
 
-/** Lateral separation between stroke columns (world X). */
-const VIZ_STROKE_X_SPREAD = 0.14;
-/** How much real LIA integration is mixed in (rest is canonical full-stroke arc). */
-const VIZ_CANONICAL_BLEND = 0.88;
-/**
- * Pool frame: world +Z is down-lane (away from starting wall). Canonical stroke path is offset so
- * stroke 1 starts near the wall and each stroke advances along the lane (research-style: inertial path
- * blended with body-fixed kinematics, lane-aligned for readability).
- */
-const POOL_FRAME = { zWall: -4.25, zPerStroke: 0.52, zAlongU: 0.22 };
-
-/**
- * One freestyle arm cycle in normalized time u ∈ [0,1], keyed in meters before * positionScale.
- * Order: above water → pull under → recovery over → entry at angle → (u=1 meets next stroke reset).
- * Matches coach visualization: full path is visible each stroke, not only IMU rotation.
- */
-const STROKE_PATH_KEYS = [
-    { u: 0.0,  x: 0.0,  y: 0.38, z: -0.14 },
-    { u: 0.14, x: 0.02, y: 0.32, z: -0.10 },
-    { u: 0.32, x: 0.04, y: -0.06, z: 0.0 },
-    { u: 0.48, x: 0.05, y: -0.22, z: 0.08 },
-    { u: 0.62, x: 0.04, y: -0.20, z: 0.12 },
-    { u: 0.76, x: 0.0,  y: 0.34, z: 0.06 },
-    { u: 0.88, x: -0.02, y: 0.12, z: -0.04 },
-    { u: 1.0,  x: 0.0,  y: 0.38, z: -0.14 }
-];
-
-function sampleStrokeCanonical(u) {
-    const s = positionScale;
-    const uu = Math.max(0, Math.min(1, u));
-    for (let k = 0; k < STROKE_PATH_KEYS.length - 1; k++) {
-        const a = STROKE_PATH_KEYS[k];
-        const b = STROKE_PATH_KEYS[k + 1];
-        if (uu >= a.u && uu <= b.u) {
-            const t = b.u > a.u ? (uu - a.u) / (b.u - a.u) : 0;
-            const tt = t * t * (3 - 2 * t);
-            const x = THREE.MathUtils.lerp(a.x, b.x, tt);
-            const y = THREE.MathUtils.lerp(a.y, b.y, tt);
-            const z = THREE.MathUtils.lerp(a.z, b.z, tt);
-            return new THREE.Vector3(x * s, y * s, z * s);
-        }
-    }
-    const last = STROKE_PATH_KEYS[STROKE_PATH_KEYS.length - 1];
-    return new THREE.Vector3(last.x * s, last.y * s, last.z * s);
-}
-
 function getSegEnd(upToIndex) {
     if (!processedData.length || upToIndex < 0) return 0;
     refreshStrokeFieldMode();
@@ -2102,19 +2064,6 @@ function entryAngleForSample(i) {
     }
     const ideal = (sessionMetrics && Number(sessionMetrics.ideal_entry_angle)) || 30;
     return ideal;
-}
-
-/** Nudge path during entry window using reported angle (deg). */
-function entryAnglePathNudge(u, entryDeg) {
-    const s = positionScale;
-    if (u < 0.74 || u > 0.98) return new THREE.Vector3(0, 0, 0);
-    const w = Math.sin((u - 0.74) / 0.24 * Math.PI);
-    const delta = (entryDeg - 30) / 45;
-    return new THREE.Vector3(
-        -delta * 0.04 * w * s,
-        delta * 0.06 * w * s,
-        delta * 0.03 * w * s
-    );
 }
 
 function nq(q) {
@@ -2172,32 +2121,6 @@ function buildRawIntegratedPositions() {
     }
 }
 
-/** Per-stroke: canonical full stroke arc + small LIA residual + entry-angle nudge. */
-function applyStrokeAnchoredDisplay() {
-    integratedPositions = [];
-    if (!rawIntegratedPositions.length || rawIntegratedPositions.length !== processedData.length) return;
-    refreshStrokeFieldMode();
-    for (let i = 0; i < processedData.length; i++) {
-        const segStart = getSegStart(i);
-        const r0 = rawIntegratedPositions[segStart];
-        const ri = rawIntegratedPositions[i];
-        const strokeN = Math.max(1, strokeNumAt(processedData[segStart]) || 1);
-        const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
-        const u = strokeProgressU(i);
-        const canon = sampleStrokeCanonical(u);
-        const delta = new THREE.Vector3().subVectors(ri, r0);
-        const ea = entryAngleForSample(i);
-        const nudge = entryAnglePathNudge(u, ea);
-        const pos = canon.clone()
-            .multiplyScalar(VIZ_CANONICAL_BLEND)
-            .add(delta.multiplyScalar(1.0 - VIZ_CANONICAL_BLEND))
-            .add(new THREE.Vector3(spread, 0, 0))
-            .add(nudge);
-        pos.z += POOL_FRAME.zWall + (strokeN - 1) * POOL_FRAME.zPerStroke + u * POOL_FRAME.zAlongU;
-        integratedPositions.push(pos);
-    }
-}
-
 function integratePositions() {
     integratedPositions = [];
     rawIntegratedPositions = [];
@@ -2205,8 +2128,10 @@ function integratePositions() {
     if (!processedData.length) return;
     buildRawIntegratedPositions();
     if (!playbackStrokeSegments.length) buildPlaybackStrokeSegments();
-    applyStrokeAnchoredDisplay();
-    buildPositionStreamPositions();
+    let filled = fillMissingRawPositions(rawIntegratedPositions);
+    filled = smoothRawPathPerStroke(filled);
+    positionStreamPositions = filled;
+    integratedPositions = filled;
 }
 function getSegStart(upToIndex) {
     if (!processedData.length || upToIndex < 0) return 0;
@@ -2275,32 +2200,9 @@ function smoothRawPathPerStroke(points) {
     return out;
 }
 
-function applyPoolFrameOnly(i, vec) {
-    const segStart = getSegStart(i);
-    const strokeN = Math.max(1, strokeNumAt(processedData[segStart]) || 1);
-    const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
-    const u = strokeProgressU(i);
-    const ea = entryAngleForSample(i);
-    const nudge = entryAnglePathNudge(u, ea);
-    const pos = vec.clone().add(new THREE.Vector3(spread, 0, 0)).add(nudge);
-    pos.z += POOL_FRAME.zWall + (strokeN - 1) * POOL_FRAME.zPerStroke + u * POOL_FRAME.zAlongU;
-    return pos;
-}
-
-function buildPositionStreamPositions() {
-    positionStreamPositions = [];
-    if (!rawIntegratedPositions.length || rawIntegratedPositions.length !== processedData.length) return;
-    refreshStrokeFieldMode();
-    let filled = fillMissingRawPositions(rawIntegratedPositions);
-    filled = smoothRawPathPerStroke(filled);
-    for (let i = 0; i < processedData.length; i++) {
-        positionStreamPositions.push(applyPoolFrameOnly(i, filled[i]));
-    }
-}
-
-/** Positions used for hand, trail, and camera follow. */
+/** Positions used for cube, trail, and camera follow. */
 function currentAnimationPositions() {
-    return vizStreamMode === 'position' ? positionStreamPositions : integratedPositions;
+    return positionStreamPositions;
 }
 
 /**
@@ -2351,215 +2253,74 @@ function buildPlaybackStrokeSegments() {
         playbackStrokeSegments.push({ startIdx: start, endIdx: processedData.length - 1, strokeNum: last });
 }
 
-let poolEnvironment = null;
-let swimmerBody = null;
-let ghostArmGroup = null;
-let splashGroup = null;
 let velocityArrow = null;
-/** Orbit target softly follows the hand so translation stays in frame during playback. */
-let followHandInView = true;
+/** Orbit target softly follows the device so integrated motion stays in frame. */
+/** When true during playback, orbit target follows the device (can fight manual orbit). Default off so drag-to-look works. */
+let followDeviceInView = false;
 
-function createHandModel() {
-    if (typeof THREE === 'undefined') return null;
-    const group = new THREE.Group();
-    handMaterials = [];
-    const skinMat = (hex) => {
-        const c = hex != null ? hex : SKIN_COLOR;
-        let m;
-        if (THREE.MeshPhysicalMaterial) {
-            m = new THREE.MeshPhysicalMaterial({
-                color: c,
-                roughness: 0.42,
-                metalness: 0,
-                emissive: 0x060403,
-                clearcoat: 0.08,
-                clearcoatRoughness: 0.45
-            });
-        } else {
-            m = new THREE.MeshStandardMaterial({
-                color: c,
-                roughness: 0.42,
-                metalness: 0.06,
-                emissive: 0x060403
-            });
+function accelSampleForOrientation(d) {
+    if (!d) return null;
+    const acc = d.acceleration || {};
+    let ax = acc.ax, ay = acc.ay, az = acc.az;
+    if (ax == null && d.lia) {
+        ax = d.lia.x; ay = d.lia.y; az = d.lia.z;
+    }
+    ax = ax || 0; ay = ay || 0; az = az || 0;
+    const mag = Math.hypot(ax, ay, az);
+    if (mag < 2.5) return null;
+    return { ax, ay, az };
+}
+
+function computeVizCoordinateTransformFromAccel(first) {
+    const ax = first.ax, ay = first.ay, az = first.az;
+    const absAx = Math.abs(ax), absAy = Math.abs(ay), absAz = Math.abs(az);
+    let rotationX = 0, rotationY = 0, rotationZ = 0;
+    if (absAx > absAy && absAx > absAz) {
+        rotationZ = ax > 0 ? Math.PI / 2 : -Math.PI / 2;
+    } else if (absAy > absAx && absAy > absAz) {
+        rotationZ = ay > 0 ? 0 : Math.PI;
+    } else {
+        rotationX = az > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+    return { rotationX, rotationY, rotationZ };
+}
+
+function refreshVizCoordinateTransform() {
+    vizCoordinateTransform = { rotationX: 0, rotationY: 0, rotationZ: 0 };
+    if (!processedData || !processedData.length) return;
+    for (let i = 0; i < Math.min(processedData.length, 400); i++) {
+        const a = accelSampleForOrientation(processedData[i]);
+        if (a) {
+            vizCoordinateTransform = computeVizCoordinateTransformFromAccel(a);
+            return;
         }
-        m.userData.baseColor = c;
-        handMaterials.push(m);
+    }
+}
+
+function createImuCube() {
+    if (typeof THREE === 'undefined') return null;
+    cubeMaterials = [];
+    const mk = (hex) => {
+        const m = new THREE.MeshStandardMaterial({
+            color: hex, roughness: 0.38, metalness: 0.06, emissive: 0x000000
+        });
+        m.userData.baseHex = hex;
+        cubeMaterials.push(m);
         return m;
     };
-
-    // Palm: main pad + thenar bulge (reads as a hand, not a disk)
-    const palmGeo = new THREE.SphereGeometry(0.046, 32, 24);
-    palmGeo.scale(1.85, 0.32, 2.05);
-    const palm = new THREE.Mesh(palmGeo, skinMat(SKIN_COLOR));
-    palm.position.set(0, 0, 0.01);
-    group.add(palm);
-
-    const thenar = new THREE.Mesh(new THREE.SphereGeometry(0.024, 20, 14), skinMat(SKIN_COLOR_SHADOW));
-    thenar.position.set(0.028, -0.014, 0.055);
-    thenar.scale.set(1.1, 0.65, 1.15);
-    group.add(thenar);
-
-    // Wrist / forearm stub (tapered)
-    const wristGeo = new THREE.CylinderGeometry(0.028, 0.036, 0.055, 14);
-    const wrist = new THREE.Mesh(wristGeo, skinMat(SKIN_COLOR));
-    wrist.position.set(0, 0, -0.078);
-    wrist.rotation.x = Math.PI / 2;
-    group.add(wrist);
-
-    const addFinger = (fx, lengths, r0) => {
-        let z = 0.052;
-        let r = r0;
-        for (let k = 0; k < lengths.length; k++) {
-            const len = lengths[k];
-            const geo = new THREE.CylinderGeometry(r * 0.88, r, len, 12, 2);
-            const seg = new THREE.Mesh(geo, skinMat(SKIN_COLOR));
-            seg.position.set(fx, 0, z + len / 2);
-            seg.rotation.x = Math.PI / 2;
-            group.add(seg);
-            const kn = new THREE.Mesh(new THREE.SphereGeometry(r * 0.92, 10, 8), skinMat(SKIN_COLOR_SHADOW));
-            kn.position.set(fx, 0, z);
-            group.add(kn);
-            z += len;
-            r *= 0.84;
-        }
-        const tip = new THREE.Mesh(new THREE.SphereGeometry(r * 1.05, 10, 8), skinMat(SKIN_COLOR));
-        tip.position.set(fx, 0, z);
-        group.add(tip);
-    };
-
-    addFinger(-0.024, [0.034, 0.024, 0.018], 0.0078);
-    addFinger(-0.008, [0.040, 0.028, 0.021], 0.0082);
-    addFinger(0.008, [0.037, 0.026, 0.019], 0.008);
-    addFinger(0.024, [0.030, 0.021, 0.016], 0.0068);
-
-    const thumbGrp = new THREE.Group();
-    thumbGrp.position.set(-0.05, -0.008, -0.012);
-    thumbGrp.rotation.set(-0.35, -0.12, 0.62);
-    const tSegs = [
-        { rt: 0.011, rb: 0.012, len: 0.028 },
-        { rt: 0.008, rb: 0.011, len: 0.026 }
+    const geometry = new THREE.BoxGeometry(0.42, 0.42, 0.11);
+    const materials = [
+        mk(0xff3333), mk(0x33ff66), mk(0x3388ff), mk(0xffee33),
+        mk(0xff33ee), mk(0x33ffee)
     ];
-    let tz = 0;
-    for (const ts of tSegs) {
-        const seg = new THREE.Mesh(
-            new THREE.CylinderGeometry(ts.rt, ts.rb, ts.len, 12, 2),
-            skinMat(SKIN_COLOR_SHADOW)
-        );
-        seg.position.set(0, 0, tz + ts.len / 2);
-        seg.rotation.x = Math.PI / 2;
-        thumbGrp.add(seg);
-        tz += ts.len;
-    }
-    const tTip = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), skinMat(SKIN_COLOR));
-    tTip.position.set(0, 0, tz);
-    thumbGrp.add(tTip);
-    group.add(thumbGrp);
-
-    group.scale.setScalar(2.45);
-    return group;
-}
-
-function createPoolEnvironment() {
-    if (typeof THREE === 'undefined') return null;
-    const group = new THREE.Group();
-
-    const pLength = userProfile ? (userProfile.pool_length || 25) : 25;
-    const half = pLength / 2;
-
-    // Water surface (+Z = down-lane from the starting wall at -Z)
-    const waterGeo = new THREE.PlaneGeometry(2.5, pLength, 12, 64);
-    const waterMat = new THREE.MeshStandardMaterial({
-        color: 0x0c5280, emissive: 0x001018,
-        roughness: 0.22, metalness: 0.12,
-        transparent: true, opacity: 0.34, side: THREE.DoubleSide
-    });
-    const water = new THREE.Mesh(waterGeo, waterMat);
-    water.rotation.x = -Math.PI / 2;
-    group.add(water);
-
-    // Pool floor (tiled)
-    const floorGeo = new THREE.PlaneGeometry(2.5, pLength);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0x113344, roughness: 0.8 });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -1.2;
-    group.add(floor);
-
-    // Starting wall (pool edge / push-off end) — thin slab at -Z end of the lane
-    const wallGeo = new THREE.BoxGeometry(2.7, 1.4, 0.12);
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x3a4a58, roughness: 0.85, metalness: 0.05 });
-    const wall = new THREE.Mesh(wallGeo, wallMat);
-    wall.position.set(0, 0.15, -half);
-    group.add(wall);
-
-    // Lane ropes (parallel to +Z swim direction)
-    const ropeGeo = new THREE.CylinderGeometry(0.04, 0.04, pLength, 8);
-    const ropeMat = new THREE.MeshStandardMaterial({ color: 0xcc3333, roughness: 0.6 });
-    const rope1 = new THREE.Mesh(ropeGeo, ropeMat);
-    rope1.rotation.x = Math.PI / 2;
-    rope1.position.set(-1.25, 0, 0);
-    group.add(rope1);
-
-    const rope2 = new THREE.Mesh(ropeGeo, ropeMat);
-    rope2.rotation.x = Math.PI / 2;
-    rope2.position.set(1.25, 0, 0);
-    group.add(rope2);
-
-    // Direction arrow on pool bottom (subtle): +Z = swim direction
-    const arr = new THREE.ArrowHelper(
-        new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -1.18, -half + 1.2), 1.8,
-        0x4488aa, 0.2, 0.12
-    );
-    arr.line.material.transparent = true;
-    arr.line.material.opacity = 0.35;
-    arr.cone.material.transparent = true;
-    arr.cone.material.opacity = 0.35;
-    group.add(arr);
-
-    return group;
-}
-
-function createSwimmerBody() {
-    if (typeof THREE === 'undefined') return null;
-    const group = new THREE.Group();
-    const skinMat = new THREE.MeshStandardMaterial({color: 0xd2a18c, roughness: 0.4, metalness:0.05});
-    const capMat = new THREE.MeshStandardMaterial({color: 0x222222, roughness: 0.6});
-    
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 16), capMat);
-    head.position.set(0, 0.05, -0.2);
-    head.scale.set(1, 0.9, 1.15);
-    group.add(head);
-
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.45, 12, 16), skinMat);
-    torso.rotation.x = Math.PI / 2;
-    torso.position.set(0, -0.05, 0.15);
-    group.add(torso);
-
-    return group;
-}
-
-function createSplash(position) {
-    if (!splashGroup || typeof THREE === 'undefined') return;
-    const count = 6 + Math.floor(Math.random() * 4);
-    for (let i = 0; i < count; i++) {
-        const geo = new THREE.SphereGeometry(0.02 + Math.random() * 0.03, 4, 3);
-        const mat = new THREE.MeshBasicMaterial({
-            color: 0x66ccff, transparent: true, opacity: 0.7
-        });
-        const drop = new THREE.Mesh(geo, mat);
-        drop.position.copy(position);
-        drop.position.y = 0.05;
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 0.02 + Math.random() * 0.04;
-        drop.userData = {
-            vx: Math.cos(angle) * speed,
-            vy: 0.03 + Math.random() * 0.05,
-            vz: Math.sin(angle) * speed,
-            life: 1.0
-        };
-        splashGroup.add(drop);
-    }
+    const mesh = new THREE.Mesh(geometry, materials);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    const wire = new THREE.WireframeGeometry(geometry);
+    mesh.add(new THREE.LineSegments(wire, new THREE.LineBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.38
+    })));
+    return mesh;
 }
 
 function init3D() {
@@ -2576,8 +2337,8 @@ function init3D() {
     }
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x06060e);
-    scene.fog = new THREE.FogExp2(0x06060e, 0.022);
+    scene.background = new THREE.Color(0x12121a);
+    scene.fog = new THREE.FogExp2(0x12121a, 0.012);
 
     const w = Math.max(canvas.clientWidth || 800, 400);
     const h = Math.max(canvas.clientHeight || 450, 400);
@@ -2588,6 +2349,17 @@ function init3D() {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.domElement.style.touchAction = 'none';
+    renderer.domElement.style.cursor = 'grab';
+    renderer.domElement.addEventListener('pointerdown', () => {
+        renderer.domElement.style.cursor = 'grabbing';
+        followDeviceInView = false;
+        const fe = document.getElementById('viz-follow-device');
+        if (fe) fe.checked = false;
+    }, { passive: true });
+    renderer.domElement.addEventListener('pointerup', () => {
+        renderer.domElement.style.cursor = 'grab';
+    }, { passive: true });
 
     if (!canvas.dataset.gfWebglListeners) {
         canvas.dataset.gfWebglListeners = '1';
@@ -2611,10 +2383,11 @@ function init3D() {
     }
     if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
 
-    const gh = new THREE.GridHelper(14, 28, 0x1a1a26, 0x0e0e16);
-    gh.position.y = -1.21;
-    gh.visible = false;
+    const gh = new THREE.GridHelper(14, 28, 0x3a3a48, 0x1e1e28);
+    gh.position.y = -0.65;
     scene.add(gh);
+    const axes = new THREE.AxesHelper(1.1);
+    scene.add(axes);
 
     const trailGeo = new THREE.BufferGeometry();
     trailGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
@@ -2624,42 +2397,8 @@ function init3D() {
     }));
     scene.add(trailLine);
 
-    strokeMarkerGroup = new THREE.Group();
-    scene.add(strokeMarkerGroup);
-
-    handGroup = createHandModel();
-    if (handGroup) scene.add(handGroup);
-
-    ghostArmGroup = createHandModel();
-    if (ghostArmGroup) {
-        const ghostMat = (hex) => {
-            const o = { color: hex, transparent: true, opacity: 0.12, roughness: 0.5, metalness: 0, wireframe: false, depthWrite: false };
-            return THREE.MeshPhysicalMaterial
-                ? new THREE.MeshPhysicalMaterial({ ...o, clearcoat: 0.2, clearcoatRoughness: 0.6 })
-                : new THREE.MeshStandardMaterial(o);
-        };
-        ghostArmGroup.children.forEach(c => {
-            if (c.material) c.material = ghostMat(0x6eb8e8);
-            if (c.children) c.children.forEach(cc => {
-                if (cc.material) cc.material = ghostMat(0x5aa8d8);
-            });
-        });
-        ghostArmGroup.visible = false;
-        scene.add(ghostArmGroup);
-    }
-
-    poolEnvironment = createPoolEnvironment();
-    if (poolEnvironment) scene.add(poolEnvironment);
-
-    swimmerBody = createSwimmerBody();
-    if (swimmerBody) {
-        swimmerBody.position.set(0, 0, POOL_FRAME.zWall + 0.35);
-        swimmerBody.visible = false;
-        scene.add(swimmerBody);
-    }
-
-    splashGroup = new THREE.Group();
-    scene.add(splashGroup);
+    imuCube = createImuCube();
+    if (imuCube) scene.add(imuCube);
 
     velocityArrow = new THREE.ArrowHelper(
         new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 0.22,
@@ -2683,12 +2422,17 @@ function init3D() {
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
+        controls.enableRotate = true;
+        controls.enableZoom = true;
         controls.enablePan = true;
+        controls.screenSpacePanning = false;
         controls.target.set(0, 0.1, 0.5);
-        controls.minDistance = 0.35;
-        controls.maxDistance = 24;
-        controls.maxPolarAngle = Math.PI * 0.92;
-        controls.minPolarAngle = 0.08;
+        controls.minDistance = 0.25;
+        controls.maxDistance = 28;
+        controls.maxPolarAngle = Math.PI * 0.95;
+        controls.minPolarAngle = 0.05;
+        controls.rotateSpeed = 0.85;
+        controls.zoomSpeed = 0.9;
     }
 
     vizRafId = requestAnimationFrame(animate);
@@ -2881,52 +2625,10 @@ function animate() {
         vizRafId = null;
         return;
     }
-    if (strokeMarkerGroup) {
-        for (let i = strokeMarkerGroup.children.length - 1; i >= 0; i--) {
-            const m = strokeMarkerGroup.children[i];
-            if (m.userData.ripple) {
-                m.userData.age = (m.userData.age || 0) + 0.032;
-                const g = 1 + m.userData.age * 1.15;
-                m.scale.set(g, g, 1);
-                m.material.opacity = Math.max(0, 0.9 - m.userData.age * 0.48);
-                if (m.material.opacity <= 0.02) {
-                    strokeMarkerGroup.remove(m);
-                    m.geometry.dispose();
-                    m.material.dispose();
-                }
-            } else {
-                m.material.opacity -= 0.015;
-                m.scale.multiplyScalar(1.02);
-                if (m.material.opacity <= 0) {
-                    strokeMarkerGroup.remove(m);
-                    m.geometry.dispose();
-                    m.material.dispose();
-                }
-            }
-        }
-    }
-    // Animate splash particles
-    if (splashGroup) {
-        for (let i = splashGroup.children.length - 1; i >= 0; i--) {
-            const drop = splashGroup.children[i];
-            const u = drop.userData;
-            u.vy -= 0.002; // gravity
-            drop.position.x += u.vx;
-            drop.position.y += u.vy;
-            drop.position.z += u.vz;
-            u.life -= 0.025;
-            drop.material.opacity = Math.max(0, u.life * 0.7);
-            if (u.life <= 0) {
-                splashGroup.remove(drop);
-                drop.geometry.dispose();
-                drop.material.dispose();
-            }
-        }
-    }
-    if (handGroup && hapticFlashUntil > 0 && Date.now() > hapticFlashUntil) {
-        handMaterials.forEach(m => {
-            m.color.setHex(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
-            m.emissive.setHex(0x060403);
+    if (imuCube && hapticFlashUntil > 0 && Date.now() > hapticFlashUntil) {
+        cubeMaterials.forEach(m => {
+            if (m.userData.baseHex != null) m.color.setHex(m.userData.baseHex);
+            m.emissive.setHex(0x000000);
         });
         hapticFlashUntil = 0;
     }
@@ -2944,9 +2646,9 @@ function renderFrame(idx) {
     const anim = currentAnimationPositions();
     const pos = anim[idx] || new THREE.Vector3();
 
-    if (handGroup) {
-        const showHand = document.getElementById('show-hand');
-        handGroup.visible = showHand ? showHand.checked : true;
+    if (imuCube) {
+        const showCube = document.getElementById('show-cube');
+        imuCube.visible = showCube ? showCube.checked : true;
         const uStroke = strokeProgressU(idx);
         const qBase = nq(d.quaternion);
         const qDisplay = qBase.clone();
@@ -2956,25 +2658,29 @@ function renderFrame(idx) {
             const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rad);
             qDisplay.multiply(qPitch);
         }
-        handGroup.setRotationFromQuaternion(qDisplay);
-        handGroup.position.copy(pos);
+        imuCube.setRotationFromQuaternion(qDisplay);
+        const ct = vizCoordinateTransform;
+        imuCube.rotation.x += ct.rotationX;
+        imuCube.rotation.y += ct.rotationY;
+        imuCube.rotation.z += ct.rotationZ;
+        imuCube.position.copy(pos);
         const phase = d.stroke_phase || d.phase || 'idle';
         const phaseHex = PHASE_COLOR_HEX[phase] || PHASE_COLOR_HEX.idle;
         if (hapticFlashUntil <= Date.now()) {
-            handMaterials.forEach(m => {
-                const base = new THREE.Color(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
+            cubeMaterials.forEach(m => {
+                const base = new THREE.Color(m.userData.baseHex != null ? m.userData.baseHex : 0x888888);
                 const tint = new THREE.Color(phaseHex);
-                m.color.copy(base.lerp(tint, 0.25));
-                m.emissive.setHex(0x060403);
+                m.color.copy(base.lerp(tint, 0.22));
+                m.emissive.setHex(0x000000);
             });
         }
     }
 
     if (d.haptic_fired && hapticFlashUntil <= Date.now()) {
         hapticFlashUntil = Date.now() + 300;
-        handMaterials.forEach(m => {
+        cubeMaterials.forEach(m => {
             m.color.setHex(0xff4444);
-            m.emissive.setHex(0x880000);
+            m.emissive.setHex(0x440000);
         });
     }
 
@@ -2999,81 +2705,10 @@ function renderFrame(idx) {
         velocityArrow.visible = false;
     }
 
-    if (controls && followHandInView) {
-        controls.target.lerp(pos, 0.14);
-    }
-
-    if (swimmerBody) {
-        const sc = strokeNumAt(d);
-        const strokeN = Math.max(1, sc || 1);
-        const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
-        
-        // Offset swimmer body so the correct shoulder meets the arm path
-        // Shoulder width is approx 0.18m in our model
-        const offset = activeWristDeviceRole === 'wrist_left' ? (0.17 * positionScale) : (-0.17 * positionScale);
-        swimmerBody.position.x = spread + offset;
-    }
-
-    if (ghostArmGroup) {
-        const idealCb = document.getElementById('viz-show-ideal');
-        const userWantsIdeal = idealCb ? idealCb.checked : false;
-        if (userWantsIdeal && idealStrokeData && idealStrokeData.length > 0 && vizStreamMode === 'kinematic') {
-            ghostArmGroup.visible = true;
-            const uStroke = strokeProgressU(idx);
-            const idealIdx = Math.floor(uStroke * (idealStrokeData.length - 1));
-            const idealSample = idealStrokeData[idealIdx];
-            
-            const sc = strokeNumAt(d);
-            const strokeN = Math.max(1, sc || 1);
-            const spread = ((strokeN - 1) % 7 - 3) * VIZ_STROKE_X_SPREAD * positionScale;
-            
-            const canon = sampleStrokeCanonical(uStroke);
-            const idealEA = idealSample.entry_angle || 30;
-            const idealNudge = entryAnglePathNudge(uStroke, idealEA);
-            
-            let qIdeal = nq(idealSample.quaternion || {qw:1,qx:0,qy:0,qz:0}).clone();
-            if (uStroke >= 0.70 && uStroke <= 0.99 && idealEA > 0.5) {
-                const rad = (idealEA - 30) * (Math.PI / 180) * 0.6;
-                const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rad);
-                qIdeal.multiply(qPitch);
-            }
-            ghostArmGroup.setRotationFromQuaternion(qIdeal);
-            ghostArmGroup.position.copy(canon.clone().multiplyScalar(VIZ_CANONICAL_BLEND).add(new THREE.Vector3(spread, 0, 0)).add(idealNudge));
-        } else {
-            ghostArmGroup.visible = false;
-        }
-    }
-
-    // Splash when hand crosses water surface (y=0 going down)
-    if (idx > 0 && anim[idx - 1]) {
-        const prevY = anim[idx - 1].y;
-        if (prevY > 0 && pos.y <= 0 && strokeNumAt(d) > 0) {
-            createSplash(pos);
-        }
-    }
-
-    // Tint hand blue when below water
-    if (handGroup && hapticFlashUntil <= Date.now() && pos.y < 0) {
-        handMaterials.forEach(m => {
-            const base = new THREE.Color(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
-            const water = new THREE.Color(0x4488aa);
-            const depth = Math.min(1, Math.abs(pos.y) * 2);
-            m.color.copy(base.lerp(water, depth * 0.4));
-        });
-    }
-
-    const sc = strokeNumAt(d);
-    if (sc > lastRenderedStrokeCount && strokeMarkerGroup) {
-        lastRenderedStrokeCount = sc;
-        const rippleGeo = new THREE.RingGeometry(0.05, 0.095, 48);
-        const rippleMat = new THREE.MeshBasicMaterial({
-            color: 0x7dd3fc, transparent: true, opacity: 0.9, side: THREE.DoubleSide
-        });
-        const ripple = new THREE.Mesh(rippleGeo, rippleMat);
-        ripple.rotation.x = -Math.PI / 2;
-        ripple.position.set(pos.x, 0.016, pos.z);
-        ripple.userData = { ripple: true, age: 0 };
-        strokeMarkerGroup.add(ripple);
+    const followEl = document.getElementById('viz-follow-device');
+    const wantFollow = followEl ? followEl.checked : false;
+    if (controls && wantFollow && followDeviceInView && isPlaying) {
+        controls.target.lerp(pos, 0.12);
     }
 
     if (trailLine) {
@@ -3172,17 +2807,7 @@ function refreshVizPlaybackUI() {
     if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 
-function onVizStreamModeChange() {
-    const el = document.getElementById('viz-stream-mode');
-    vizStreamMode = el && el.value === 'position' ? 'position' : 'kinematic';
-    integratedPositions = [];
-    rawIntegratedPositions = [];
-    positionStreamPositions = [];
-    integratePositions();
-    renderFrame(currentIndex);
-}
-
-function focusVizOnHand() {
+function focusVizOnDevice() {
     if (!camera || !controls || !processedData.length) return;
     if (integratedPositions.length !== processedData.length) integratePositions();
     const anim = currentAnimationPositions();
@@ -3190,7 +2815,7 @@ function focusVizOnHand() {
     if (!pos) return;
     controls.target.copy(pos);
     camera.position.copy(pos.clone().add(new THREE.Vector3(0.7, 0.6, 0.85)));
-    followHandInView = false;
+    followDeviceInView = false;
     controls.update();
 }
 
@@ -3225,25 +2850,11 @@ function bindVizPlaybackControls() {
     if (loopFull) {
         loopFull.addEventListener('change', () => { loopFullSession = loopFull.checked; });
     }
-    const modeEl = document.getElementById('viz-stream-mode');
-    if (modeEl) {
-        modeEl.value = vizStreamMode;
-    }
-}
-
-function bindVizSceneToggles() {
-    const idealEl = document.getElementById('viz-show-ideal');
-    const swimEl = document.getElementById('viz-show-swimmer');
-    if (idealEl && !idealEl.dataset.bound) {
-        idealEl.dataset.bound = '1';
-        idealEl.addEventListener('change', () => {
-            if (ghostArmGroup) ghostArmGroup.visible = !!idealEl.checked;
-        });
-    }
-    if (swimEl && !swimEl.dataset.bound) {
-        swimEl.dataset.bound = '1';
-        swimEl.addEventListener('change', () => {
-            if (swimmerBody) swimmerBody.visible = !!swimEl.checked;
+    const followCb = document.getElementById('viz-follow-device');
+    if (followCb && !followCb.dataset.bound) {
+        followCb.dataset.bound = '1';
+        followCb.addEventListener('change', () => {
+            followDeviceInView = !!followCb.checked;
         });
     }
 }
@@ -3255,7 +2866,6 @@ function clearViz() {
     integratedPositions = [];
     rawIntegratedPositions = [];
     positionStreamPositions = [];
-    lastRenderedStrokeCount = 0;
     hapticFlashUntil = 0;
     refreshStrokeFieldMode();
     playbackStrokeSegments = [];
@@ -3263,30 +2873,16 @@ function clearViz() {
         trailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
         trailLine.geometry.setAttribute('color', new THREE.Float32BufferAttribute([], 3));
     }
-    if (strokeMarkerGroup) {
-        while (strokeMarkerGroup.children.length) {
-            const c = strokeMarkerGroup.children[0];
-            strokeMarkerGroup.remove(c);
-            c.geometry?.dispose();
-            c.material?.dispose();
-        }
-    }
-    if (handGroup) {
-        handGroup.position.set(0, 0, 0);
-        handGroup.quaternion.identity();
-        handMaterials.forEach(m => {
-            m.color.setHex(m.userData.baseColor != null ? m.userData.baseColor : SKIN_COLOR);
-            m.emissive.setHex(0x060403);
+    if (imuCube) {
+        imuCube.position.set(0, 0, 0);
+        imuCube.rotation.set(0, 0, 0);
+        imuCube.quaternion.identity();
+        cubeMaterials.forEach(m => {
+            if (m.userData.baseHex != null) m.color.setHex(m.userData.baseHex);
+            m.emissive.setHex(0x000000);
         });
     }
-    if (splashGroup) {
-        while (splashGroup.children.length) {
-            const c = splashGroup.children[0];
-            splashGroup.remove(c);
-            c.geometry?.dispose();
-            c.material?.dispose();
-        }
-    }
+    resetSessionSummaryPlaceholders();
     setText('play-time', '0:00.00 / 0:00.00');
     setText('play-time-fine', '');
     setText('play-frame', '—');
@@ -3297,7 +2893,7 @@ function clearViz() {
     clearSideViewCanvas();
 }
 function resetView() {
-    followHandInView = false;
+    followDeviceInView = false;
     if (camera) {
         camera.position.set(2.1, 2.15, 3.4);
         camera.lookAt(0, 0.1, 0.5);
@@ -3329,8 +2925,7 @@ Object.assign(window, {
     stepFrame,
     updateScale,
     resetView,
-    onVizStreamModeChange,
-    focusVizOnHand,
+    focusVizOnDevice,
     clearViz,
     registerUser,
     registerDevice,
@@ -3342,7 +2937,9 @@ Object.assign(window, {
     testHapticDevice,
     selectSession,
     deleteSession,
-    saveCalibrationSnapshotManual
+    saveCalibrationSnapshotManual,
+    openCalibrationGuide,
+    closeCalibrationGuide
 });
 
 function bindNavigationButtons() {
@@ -3359,9 +2956,10 @@ function bindNavigationButtons() {
 window.addEventListener('DOMContentLoaded', () => {
     bindNavigationButtons();
     bindVizPlaybackControls();
-    bindVizSceneToggles();
     initScrubberPointerHandlers();
     refreshCalibrationSavedStrip();
+    resetSessionSummaryPlaceholders();
+    resetHomeStatsPlaceholders();
     loadUserProfile();
     loadDevices();
     loadSavedSessions();

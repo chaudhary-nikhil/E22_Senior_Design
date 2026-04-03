@@ -155,8 +155,9 @@ class StrokeProcessor:
         # Flip turn: 20-40 m/s² impact. Open turn: 15-25 m/s² (hand contacts wall).
         # Normal swimming strokes: 5-12 m/s². Vigorous dry-land strokes: up to 15 m/s².
         # Must be well above stroke range to avoid false positives.
-        self.WALL_IMPACT_THRESHOLD = 20.0  # m/s²
-        self.WALL_SUSTAINED_COUNT = 3  # require N consecutive high-accel samples
+        self.WALL_IMPACT_THRESHOLD = 34.0  # m/s² — above typical stroke LIA peaks; real wall push is higher
+        self.WALL_SUSTAINED_COUNT = 4  # require N consecutive high-accel samples (stricter than strokes)
+        self.STROKE_TURN_COOLDOWN_MS = 2000  # ignore wall/turn shortly after a stroke impact
         self.TURN_LOCKOUT_DURATION = 2.5  # seconds
         self.last_wall_impact_time_ms = 0
         self.wall_high_count = 0
@@ -357,21 +358,8 @@ class StrokeProcessor:
             #   - Gliding phases (filtered by low sustained acceleration)
             # =================================================================
             
-            # --- WALL/TURN DETECTION ---
-            # Require sustained high acceleration (not just a single-sample spike)
-            if accel_mag > self.WALL_IMPACT_THRESHOLD:
-                self.wall_high_count += 1
-                if self.wall_high_count >= self.WALL_SUSTAINED_COUNT:
-                    if (t_ms - self.last_wall_impact_time_ms) / 1000.0 > self.TURN_LOCKOUT_DURATION:
-                        self.turn_count += 1
-                    self.last_wall_impact_time_ms = t_ms
-                    self.recent_world_az.clear()
-                    self.wall_high_count = 0
-            else:
-                self.wall_high_count = 0
-            
-            time_since_wall = (t_ms - self.last_wall_impact_time_ms) / 1000.0
-            in_turn_lockout = (time_since_wall < self.TURN_LOCKOUT_DURATION)
+            time_since_wall = (t_ms - self.last_wall_impact_time_ms) / 1000.0 if self.last_wall_impact_time_ms else 999.0
+            in_turn_lockout = (self.last_wall_impact_time_ms > 0 and time_since_wall < self.TURN_LOCKOUT_DURATION)
             
             # --- GLIDE PHASE DETECTION ---
             # During glide, acceleration is very low and steady
@@ -480,6 +468,7 @@ class StrokeProcessor:
             if stroke_detected:
                 self.stroke_count += 1
                 self.last_stroke_time_ms = t_ms
+                self.wall_high_count = 0
                 self.recent_world_az.clear()
                 self.glide_sample_count = 0
                 self.position = [0.0, 0.0, 0.0]
@@ -498,6 +487,22 @@ class StrokeProcessor:
                 pitch_rad = math.asin(sinp)
                 self.last_entry_angle = abs(math.degrees(pitch_rad))
                 self.entry_angles.append(self.last_entry_angle)
+
+            # --- WALL/TURN (after stroke): vigorous strokes must not register as turns ---
+            since_stroke_ms = (t_ms - self.last_stroke_time_ms) if self.last_stroke_time_ms else self.STROKE_TURN_COOLDOWN_MS + 1
+            if since_stroke_ms >= self.STROKE_TURN_COOLDOWN_MS:
+                if accel_mag > self.WALL_IMPACT_THRESHOLD:
+                    self.wall_high_count += 1
+                    if self.wall_high_count >= self.WALL_SUSTAINED_COUNT:
+                        if (t_ms - self.last_wall_impact_time_ms) / 1000.0 > self.TURN_LOCKOUT_DURATION:
+                            self.turn_count += 1
+                        self.last_wall_impact_time_ms = t_ms
+                        self.recent_world_az.clear()
+                        self.wall_high_count = 0
+                else:
+                    self.wall_high_count = 0
+            else:
+                self.wall_high_count = 0
             
             # --- STROKE PHASE TRACKING (gyroscope-enhanced, runs AFTER stroke
             # detection so stroke_integrating/stroke_start_time are up-to-date) ---

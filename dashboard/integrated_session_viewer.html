@@ -105,7 +105,7 @@
                     </div>
                 </div>
                 <details class="viz-3d-details" open>
-                    <summary class="viz-3d-summary">3D pool view (optional — drag to orbit) — collapse to focus on side view</summary>
+                    <summary class="viz-3d-summary">3D IMU — colored device cube (drag to orbit) — collapse to focus on side view</summary>
                     <div class="card viz-card viz-card--nested3d">
                         <canvas id="canvas3d" width="800" height="450"></canvas>
                     </div>
@@ -133,15 +133,8 @@
                     </div>
                 </div>
                 <div class="viz-analysis-bar" style="margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:8px;font-size:0.82em;color:var(--text2);display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;">
-                    <span style="color:var(--text3);width:100%;margin-bottom:2px;">Playback — <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10). Side view above shows LIA + tilt; open 3D for pool scene.</span>
-                    <label style="display:flex;align-items:center;gap:6px;">Path
-                        <select id="viz-stream-mode" onchange="onVizStreamModeChange()" style="max-width:220px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
-                            <option value="position" selected>LIA position (recommended — matches tracker)</option>
-                            <option value="kinematic">Coach blend (smooth arc vs ideal)</option>
-                        </select>
-                    </label>
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Ghost of ideal stroke — off by default for a cleaner view"><input type="checkbox" id="viz-show-ideal" /> Ideal overlay</label>
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Lane silhouette — optional context"><input type="checkbox" id="viz-show-swimmer" /> Swimmer ref</label>
+                    <span style="color:var(--text3);width:100%;margin-bottom:2px;">Playback — <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10). <strong>3D:</strong> drag to orbit, scroll/pinch to zoom. Side view: LIA + tilt.</span>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Off by default — when on, camera follows the cube during Play only"><input type="checkbox" id="viz-follow-device" /> Follow device while playing</label>
                     <label style="display:flex;align-items:center;gap:6px;">Range
                         <select id="viz-stroke-playback" style="max-width:160px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
                             <option value="0">All strokes</option>
@@ -150,7 +143,7 @@
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-stroke" /> Loop stroke</label>
                     <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-full" /> Loop full session</label>
                     <label style="display:flex;align-items:center;gap:6px;" title="Default slower for side-view stroke analysis">Speed <input type="range" id="viz-playback-speed" min="0.05" max="4" step="0.05" value="0.35" style="width:120px;vertical-align:middle;" /><span id="viz-speed-label">0.35×</span></label>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="focusVizOnHand()">Focus on hand</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="focusVizOnDevice()">Focus on cube</button>
                     <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset camera</button>
                 </div>
                 <!-- Timeline Legend -->
@@ -187,31 +180,34 @@
                     <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
                             id="session-count-badge">0</span></div>
                     <div style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap;">
-                        <button type="button" class="btn btn-gold" style="flex:1;min-width:120px;" id="sync-btn" onclick="syncFromDevice()">Sync Device</button>
+                        <button type="button" class="btn btn-gold" style="flex:1;min-width:120px;" id="sync-btn" onclick="syncFromDevice()" title="Downloads sessions from the wearable. Auto-sync also runs when you connect to GoldenForm Wi‑Fi.">Sync now</button>
                         <button type="button" class="btn btn-blue" style="flex:1;min-width:120px;" id="merge-btn"
                             onclick="mergeLatestSessions()">Merge Devices</button>
                     </div>
-                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">Multi‑wearable: repeat sync for each unit, then merge when ready.</p>
+                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">Connecting to <strong>GoldenForm</strong> Wi‑Fi usually triggers an automatic sync. Use <strong>Sync now</strong> to retry or pull data right after a swim. Multi‑wearable: sync each unit, then <strong>Merge</strong>.</p>
                     <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
                     <div class="session-list" id="session-cards"></div>
                 </div>
                 <div class="card">
                     <div class="card-title">Session Summary</div>
                     <div class="summary-grid">
-                        <span>Strokes: <strong id="sum-strokes">0</strong></span>
-                        <span>Turns: <strong id="sum-turns">0</strong></span>
-                        <span>Distance: <strong id="sum-distance">0m</strong></span>
-                        <span>Pace: <strong id="sum-pace">--:--</strong></span>
-                        <span>Duration: <strong id="sum-duration">0:00</strong></span>
-                        <span>Rate: <strong id="sum-rate">--</strong></span>
-                        <span>Consistency: <strong id="sum-consistency">--</strong></span>
-                        <span>Samples: <strong id="sum-samples">0</strong></span>
+                        <span>Strokes: <strong id="sum-strokes">—</strong></span>
+                        <span>Turns: <strong id="sum-turns">—</strong></span>
+                        <span>Distance: <strong id="sum-distance">—</strong></span>
+                        <span>Pace: <strong id="sum-pace">—</strong></span>
+                        <span>Duration: <strong id="sum-duration">—</strong></span>
+                        <span>Rate: <strong id="sum-rate">—</strong></span>
+                        <span>Consistency: <strong id="sum-consistency">—</strong></span>
+                        <span>Samples: <strong id="sum-samples">—</strong></span>
                     </div>
                 </div>
                 <!-- Calibration Status (TIDR 6-1-4) — BNO055 fusion / register status -->
                 <div class="card">
                     <div class="card-title">IMU calibration (sensor fusion)</div>
-                    <p class="cal-explainer">Values are <strong>0–3</strong> per channel (system, gyro, accel, magnetometer). <strong>3/3</strong> means that subsystem is fully calibrated. Move the wearable in a figure‑eight if mag stays low. Live updates when the device is connected.</p>
+                    <p class="cal-explainer">BNO055 fusion quality: <strong>0–3</strong> per channel. Join the wearable’s Wi‑Fi — values update every few seconds (no swim required). Tap <strong>Calibration guide</strong> for step‑by‑step moves. Saving stores a snapshot in this browser for reference.</p>
+                    <div style="display:flex;justify-content:center;margin-bottom:10px;">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="openCalibrationGuide()">Calibration guide</button>
+                    </div>
                     <div class="cal-grid">
                         <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-bad"
                                 id="cal-sys">0/3</span></div>
@@ -240,26 +236,16 @@
                         <div>Deviation: <strong id="live-deviation">0.000</strong></div>
                     </div>
                 </div>
-                <div class="card" id="breathing-card" style="display:none;">
-                    <div class="card-title">Breathing Analysis</div>
-                    <div class="live-data">
-                        <div>Breaths: <strong id="breath-count">0</strong></div>
-                        <div>Rate: <strong id="breath-rate">0</strong>/min</div>
-                        <div>Left: <strong id="breath-left">0%</strong></div>
-                        <div>Right: <strong id="breath-right">0%</strong></div>
-                        <div>Avg Roll: <strong id="breath-roll">0°</strong></div>
-                    </div>
-                </div>
                 <div class="card">
                     <div class="card-title">3D Controls</div>
                     <div style="margin-top:8px;">
-                        <label>Arc Scale: <span id="scale-val">3.0x</span></label>
+                        <label>Position scale: <span id="scale-val">3.0x</span></label>
                         <input type="range" min="0.5" max="10" step="0.1" value="3" oninput="updateScale(this.value)"
                             style="width:100%;">
                     </div>
                     <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-size:0.9em;">
-                        <input type="checkbox" id="show-hand" checked>
-                        <span>Show 3D hand along stroke path</span>
+                        <input type="checkbox" id="show-cube" checked>
+                        <span>Show 3D IMU cube</span>
                     </label>
                     <div style="display:flex;gap:6px;margin-top:8px;">
                         <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset View</button>
@@ -388,7 +374,7 @@
                     <label>Pool Length (m)</label><input type="number" id="settings-pool-length" placeholder="25" style="margin-bottom:12px;">
                     <label title="Used for guided setup and multi-device messaging">How many wearables are you using?</label>
                     <input type="number" id="settings-wearable-count" min="1" max="6" value="1" style="margin-bottom:12px;">
-                    <p style="font-size:0.78em;color:var(--text3);margin:-8px 0 12px;">Sets how many devices you plan to register (wrist, head, etc.). The home checklist updates automatically.</p>
+                    <p style="font-size:0.78em;color:var(--text3);margin:-8px 0 12px;">Sets how many wearables you plan to register (e.g. two wrists). The home checklist updates automatically.</p>
                     <button class="btn btn-gold" type="submit">Save Profile</button>
                 </form>
             </div>
@@ -405,7 +391,7 @@
                 <ol class="device-reg-steps">
                     <li><strong>One Wi‑Fi at a time</strong> — only power / sync <em>this</em> unit so your laptop joins the correct GoldenForm network.</li>
                     <li><strong>Connect</strong> — join that Wi‑Fi, then use <strong>Load from connected device</strong> below (or type the HW ID printed on the unit / in serial logs).</li>
-                    <li><strong>Label</strong> — pick placement (right wrist, head, …) and a short name you will recognize in lists.</li>
+                    <li><strong>Label</strong> — pick placement (left/right wrist, etc.) and a short name you will recognize in lists.</li>
                     <li><strong>Register</strong> — tap <em>Register device</em>. Repeat for wearables 2…N.</li>
                 </ol>
                 <div class="device-reg-actions">
@@ -420,7 +406,6 @@
                     <select id="dev-role" style="margin-bottom:8px;">
                         <option value="wrist_right">Right wrist (primary stroke hand)</option>
                         <option value="wrist_left">Left wrist</option>
-                        <option value="head">Head (breathing / orientation)</option>
                         <option value="ankle_right">Right ankle</option>
                         <option value="ankle_left">Left ankle</option>
                         <option value="waist">Waist / back</option>
@@ -476,6 +461,22 @@
                 <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100" style="margin-bottom:16px;">
                 <button class="btn btn-gold" type="submit" style="width:100%;">Get Started</button>
             </form>
+        </div>
+    </div>
+
+    <div id="cal-guide-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="cal-guide-title">
+        <div class="modal" style="max-width:440px;">
+            <div class="modal-brand">GoldenForm</div>
+            <h2 id="cal-guide-title" style="margin-bottom:10px;">IMU calibration guide</h2>
+            <p style="color:var(--text2);font-size:0.9em;margin-bottom:14px;">Connect to the wearable Wi‑Fi and watch the four badges update (polls every few seconds). Do these in order:</p>
+            <ol style="margin:0 0 16px 18px;color:var(--text2);font-size:0.88em;line-height:1.55;">
+                <li style="margin-bottom:10px;"><strong style="color:var(--text1);">Gyroscope</strong> — place the unit still on a table. Wait until <strong>Gyro 3/3</strong>.</li>
+                <li style="margin-bottom:10px;"><strong style="color:var(--text1);">Accelerometer</strong> — slowly place each face of the board/box flat (six orientations, like calibrating a cube).</li>
+                <li style="margin-bottom:10px;"><strong style="color:var(--text1);">Magnetometer</strong> — move in a wide figure‑eight, away from metal, laptops, and speakers until <strong>Mag 3/3</strong>.</li>
+                <li><strong style="color:var(--text1);">System</strong> — usually rises last as fusion locks in; gentle slow rotations help.</li>
+            </ol>
+            <p style="font-size:0.78em;color:var(--text3);margin-bottom:14px;">Tap <strong>Save calibration snapshot</strong> to store the best reading in this browser. It does not replace on‑device fusion — it is a reference for you.</p>
+            <button type="button" class="btn btn-gold" style="width:100%;" onclick="closeCalibrationGuide()">Got it</button>
         </div>
     </div>
 

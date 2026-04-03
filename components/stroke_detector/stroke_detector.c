@@ -38,8 +38,10 @@ static const char *TAG = "STROKE_DET";
 #define IMPACT_DELTA_A_THRESHOLD 4.0f    // m/s² fallback delta
 #define ENTRY_GYRO_THRESHOLD 0.8f        // rad/s hand rotation
 #define MIN_STROKE_INTERVAL_MS 1100      // 1.1s between strokes
-#define WALL_IMPACT_THRESHOLD 20.0f      // m/s² for turn detection
-#define WALL_SUSTAINED_COUNT 3           // consecutive high-accel samples
+/* Wall push-off is far stronger than stroke impacts; strokes often peak ~20–28 m/s² LIA. */
+#define WALL_IMPACT_THRESHOLD 34.0f      // m/s² — must exceed typical stroke spikes
+#define WALL_SUSTAINED_COUNT 4           // consecutive high-accel samples (stricter)
+#define STROKE_TURN_COOLDOWN_MS 2000     // ignore wall/turn right after a stroke impact
 #define TURN_LOCKOUT_MS 2500             // 2.5s lockout after turn
 #define STROKE_INTEGRATION_TIMEOUT_MS 600 // 0.6s integration window
 
@@ -203,23 +205,6 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
   float gyro_mag = sqrtf(sample->gx * sample->gx + sample->gy * sample->gy +
                          sample->gz * sample->gz);
 
-  // --- WALL / TURN DETECTION ---
-  if (accel_mag > WALL_IMPACT_THRESHOLD) {
-    s_state.wall_high_count++;
-    if (s_state.wall_high_count >= WALL_SUSTAINED_COUNT) {
-      uint32_t time_since_wall = t_ms - s_state.last_wall_impact_time_ms;
-      if (time_since_wall > TURN_LOCKOUT_MS) {
-        s_state.turn_count++;
-        event.turn_detected = true;
-      }
-      s_state.last_wall_impact_time_ms = t_ms;
-      s_state.recent_world_az_count = 0;
-      s_state.wall_high_count = 0;
-    }
-  } else {
-    s_state.wall_high_count = 0;
-  }
-
   bool in_turn_lockout =
       ((t_ms - s_state.last_wall_impact_time_ms) < TURN_LOCKOUT_MS) &&
       (s_state.last_wall_impact_time_ms > 0);
@@ -284,6 +269,7 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
     s_state.last_stroke_time_ms = t_ms;
     s_state.recent_world_az_count = 0;
     s_state.recent_world_az_idx = 0;
+    s_state.wall_high_count = 0; // stroke spikes must not accumulate toward "wall"
 
     // Start integration window for ideal comparison
     s_state.stroke_integrating = true;
@@ -308,6 +294,32 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
              "entry=%.1f°)",
              (unsigned)s_state.stroke_count, accel_mag, world_az, gyro_mag,
              event.entry_angle);
+  }
+
+  // --- WALL / TURN (after stroke): hard strokes must not register as turns ---
+  {
+    uint32_t since_stroke = (s_state.last_stroke_time_ms > 0)
+                                ? (t_ms - s_state.last_stroke_time_ms)
+                                : STROKE_TURN_COOLDOWN_MS + 1;
+    if (since_stroke >= STROKE_TURN_COOLDOWN_MS) {
+      if (accel_mag > WALL_IMPACT_THRESHOLD) {
+        s_state.wall_high_count++;
+        if (s_state.wall_high_count >= WALL_SUSTAINED_COUNT) {
+          uint32_t time_since_wall = t_ms - s_state.last_wall_impact_time_ms;
+          if (time_since_wall > TURN_LOCKOUT_MS) {
+            s_state.turn_count++;
+            event.turn_detected = true;
+          }
+          s_state.last_wall_impact_time_ms = t_ms;
+          s_state.recent_world_az_count = 0;
+          s_state.wall_high_count = 0;
+        }
+      } else {
+        s_state.wall_high_count = 0;
+      }
+    } else {
+      s_state.wall_high_count = 0;
+    }
   }
 
   // --- INTEGRATION WINDOW (accumulate LIA for comparison) ---

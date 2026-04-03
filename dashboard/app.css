@@ -729,6 +729,13 @@ body {
   background: var(--bg1);
 }
 
+/* OrbitControls: allow drag-to-rotate on touch devices without scrolling the page */
+#canvas3d {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .cal-saved-strip {
   line-height: 1.45;
 }
