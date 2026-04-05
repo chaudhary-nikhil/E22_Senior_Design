@@ -39,6 +39,11 @@ esp_err_t wifi_server_init(void);
 esp_err_t wifi_server_start_ap(void);
 
 /**
+ * @brief SSID string used for the AP (after wifi_server_start_ap), including device suffix.
+ */
+const char *wifi_server_get_ap_ssid(void);
+
+/**
  * @brief Stop the WiFi AP and HTTP server (SSID disappears).
  *        Call when leaving sync mode.
  * @return esp_err_t ESP_OK on success
@@ -86,6 +91,23 @@ bool wifi_server_is_transfer_complete(void);
  * @return true if AP is running
  */
 bool wifi_server_is_ap_active(void);
+
+/**
+ * @brief Protobuf `device_role` field for logged samples: 0 = wrist_right, 4 = wrist_left.
+ *        Value is stored in NVS (user-settable via POST /api/user_config); Kconfig is only the factory default.
+ */
+uint32_t goldenform_device_role_pb(void);
+
+/**
+ * @brief Set wrist role from dashboard strings "wrist_left" or "wrist_right"; persists to NVS.
+ */
+esp_err_t goldenform_set_device_role_str(const char *role);
+
+/**
+ * @brief Called when POST /api/registration_done completes successfully (after HTTP response is sent).
+ *        Firmware uses this to clear registration linger state, stop the status LED blink, and shut down the AP.
+ */
+void wifi_server_set_registration_done_callback(void (*cb)(void));
 
 /**
  * @brief Deinitialize WiFi server

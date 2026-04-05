@@ -64,3 +64,8 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 
 # SD card: SPI memory only (no SDIO) — avoids CMD5 and "command not supported" log
 CONFIG_SD_ENABLE_SDIO_SUPPORT=n
+
+# PDP: sessions on SD, sync over Wi‑Fi (UART is debug/console only)
+CONFIG_GOLDENFORM_REQUIRE_SD=y
+
+# GoldenForm AP + HTTP at boot: registration and dashboard without long-press sync

@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>GoldenForm — Swim Analysis</title>
+    <title>GoldenForm · Swim Analysis</title>
     <meta name="description" content="GoldenForm swim stroke analysis and real-time haptic feedback system">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15,7 +15,6 @@
 </head>
 
 <body>
-    <!-- Navigation -->
     <nav class="app-nav">
         <span class="nav-brand">GoldenForm</span>
         <div class="nav-tabs">
@@ -26,12 +25,12 @@
             <button type="button" class="nav-tab" id="tab-settings" data-tab-target="settings" onclick="switchTab('settings')">Settings</button>
         </div>
         <div class="nav-right-cluster">
-            <div class="nav-next-hint" id="nav-next-hint" title="Suggested next action"></div>
+            <button type="button" class="nav-cal-pill nav-cal-pill--muted" id="nav-cal-pill" onclick="switchTab('session')" title="IMU fusion quality (opens Session)" aria-label="Calibration status, open Session tab">Cal …</button>
+            <div class="nav-next-hint" id="nav-next-hint" title="Suggested next action">Loading…</div>
             <div class="nav-status"><span class="status-dot"></span><span id="conn-text">Offline</span></div>
         </div>
     </nav>
 
-    <!-- ═══════ HOME ═══════ -->
     <div class="page active" id="page-home">
         <div class="hero-section">
             <h1 class="hero-title">Welcome, <span id="home-user-name">Swimmer</span></h1>
@@ -43,7 +42,7 @@
                 <span>Your setup path</span>
                 <span class="badge badge-outline" id="setup-journey-phase" style="font-size:0.75em;">Loading…</span>
             </div>
-            <p class="setup-journey-lead" id="setup-journey-lead">No screen on the wearable — follow the steps below; each button opens the right tab.</p>
+            <p class="setup-journey-lead" id="setup-journey-lead">The wearable has no screen. Use the steps below; each button opens the right tab.</p>
             <div class="setup-journey" id="setup-journey" aria-label="Setup steps"></div>
             <div id="setup-journey-continue" class="setup-continue-wrap" aria-live="polite"></div>
         </div>
@@ -70,10 +69,10 @@
         <div class="card home-onboarding-card" id="getting-started" style="margin-top:16px;display:none;">
             <div class="card-title">First-time path</div>
             <div class="home-onboarding-steps">
-                <div class="home-onboarding-step"><span class="home-onboarding-num">1</span><span><strong>Settings</strong> — save profile, register each wearable (GoldenForm Wi‑Fi).</span></div>
-                <div class="home-onboarding-step"><span class="home-onboarding-num">2</span><span><strong>Session</strong> — Sync Device once (0 sessions is OK).</span></div>
-                <div class="home-onboarding-step"><span class="home-onboarding-num">3</span><span><strong>Swim</strong> — record on the device, then sync again.</span></div>
-                <div class="home-onboarding-step"><span class="home-onboarding-num">4</span><span><strong>Analysis / Insights</strong> — after data loads.</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">1</span><span><strong>Settings:</strong> profile, wearables, then IMU calibration on Wi‑Fi.</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">2</span><span><strong>Session:</strong> first <strong>Sync now</strong> checks the link (zero files the first time is fine).</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">3</span><span><strong>Pool:</strong> record, then <strong>Sync now</strong> again to import.</span></div>
+                <div class="home-onboarding-step"><span class="home-onboarding-num">4</span><span><strong>Analysis / Insights</strong> when data is in.</span></div>
             </div>
             <p class="home-onboarding-stretch">More than one unit: sync each, then <strong>Merge</strong> on Session.</p>
             <div class="home-onboarding-actions">
@@ -92,49 +91,51 @@
         </div>
     </div>
 
-    <!-- ═══════ SESSION ═══════ -->
     <div class="page" id="page-session">
+        <header class="page-heading page-heading--compact">
+            <h1 class="page-heading__title">Session</h1>
+            <p class="page-heading__sub">Replay · 3D · sync</p>
+        </header>
+        <div id="session-cal-banner" class="session-cal-banner" role="status" aria-live="polite" hidden></div>
         <div class="grid-23">
-            <!-- Main Viz Area -->
             <div>
                 <div class="card viz-card viz-side-card">
-                    <div class="card-title">Side view — LIA position &amp; device tilt</div>
-                    <p class="viz-side-lead">Sagittal plane: <strong>forward = pz</strong>, <strong>vertical = py</strong> (meters, origin at each stroke start). Green line = quaternion pitch; numbers compare gyro in the pull plane. Use playback <strong>Speed</strong> below for slow motion.</p>
+                    <div class="card-title">Side view: LIA position and device tilt</div>
+                    <p class="viz-side-lead">Forward and vertical motion for each stroke. With two bands merged, paths use <strong>solid = this stroke’s band</strong> and <strong>dashed = other band</strong> (same time window). Use <strong>Speed</strong> to slow playback.</p>
                     <div class="viz-side-canvas-wrap">
                         <canvas id="canvas-side-view" width="880" height="340"></canvas>
                     </div>
                 </div>
                 <details class="viz-3d-details" open>
-                    <summary class="viz-3d-summary">3D IMU — colored device cube (drag to orbit) — collapse to focus on side view</summary>
+                    <summary class="viz-3d-summary">3D view: drag to rotate, pinch to zoom. Collapse for more side view.</summary>
                     <div class="card viz-card viz-card--nested3d">
                         <canvas id="canvas3d" width="800" height="450"></canvas>
+                        <p style="font-size:0.78em;color:var(--text3);margin:8px 0 0;line-height:1.4;">Two bands merged: <strong>two cubes</strong> (nearest time on each stream) and <strong>two trail colors</strong>.</p>
                     </div>
                 </details>
-                <!-- Playback Controls -->
                 <div class="playback-bar">
                     <button type="button" class="play-btn" id="play-btn" onclick="togglePlayback()" aria-label="Play/Pause">▶</button>
                     <button type="button" class="pb-btn" onclick="resetPlayback()" title="Reset" aria-label="Reset to start">⏮</button>
-                    <button type="button" class="pb-btn" onclick="stepFrame(-1)" title="Previous sample (arrow ←)" aria-label="Previous frame">◀</button>
-                    <button type="button" class="pb-btn" onclick="skipBackward()" title="Back 30 samples" aria-label="Skip back">⏪</button>
-                    <button type="button" class="pb-btn" onclick="skipForward()" title="Forward 30 samples" aria-label="Skip forward">⏩</button>
-                    <button type="button" class="pb-btn" onclick="stepFrame(1)" title="Next sample (arrow →)" aria-label="Next frame">▶</button>
+                    <button type="button" class="pb-btn" onclick="stepFrame(-1)" title="Previous frame" aria-label="Previous frame">◀</button>
+                    <button type="button" class="pb-btn" onclick="skipBackward()" title="Skip back" aria-label="Skip back">⏪</button>
+                    <button type="button" class="pb-btn" onclick="skipForward()" title="Skip forward" aria-label="Skip forward">⏩</button>
+                    <button type="button" class="pb-btn" onclick="stepFrame(1)" title="Next frame" aria-label="Next frame">▶</button>
                     <div class="progress-container">
                         <div class="progress-track progress-track--scrub" id="progress-scrubber" role="slider" tabindex="0" aria-label="Scrub session timeline" data-scrubber="1">
                             <div class="progress-fill" id="progress-fill"></div>
                             <div class="progress-playhead" id="progress-playhead" aria-hidden="true"></div>
                         </div>
-                        <!-- Haptic & Stroke Timeline (TIDR 2-1-2) -->
                         <div class="haptic-timeline" id="haptic-timeline"></div>
                     </div>
                     <div class="playback-time-block">
                         <span class="time-label" id="play-time">0:00 / 0:00</span>
                         <span class="time-label time-fine" id="play-time-fine"></span>
-                        <span class="time-label time-frame" id="play-frame">—</span>
+                        <span class="time-label time-frame" id="play-frame">-</span>
                     </div>
                 </div>
                 <div class="viz-analysis-bar" style="margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:8px;font-size:0.82em;color:var(--text2);display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;">
-                    <span style="color:var(--text3);width:100%;margin-bottom:2px;">Playback — <strong>tab to timeline</strong> then ←/→ step one IMU sample (Shift = 10). <strong>3D:</strong> drag to orbit, scroll/pinch to zoom. Side view: LIA + tilt.</span>
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Off by default — when on, camera follows the cube during Play only"><input type="checkbox" id="viz-follow-device" /> Follow device while playing</label>
+                    <span style="color:var(--text3);width:100%;margin-bottom:2px;"><strong>Tab</strong> timeline · <strong>←/→</strong> one frame (hold Shift: 10) · <strong>3D</strong> drag / pinch to zoom</span>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Off by default. When on, camera follows the cube during Play only."><input type="checkbox" id="viz-follow-device" /> Follow device while playing</label>
                     <label style="display:flex;align-items:center;gap:6px;">Range
                         <select id="viz-stroke-playback" style="max-width:160px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
                             <option value="0">All strokes</option>
@@ -146,32 +147,36 @@
                     <button type="button" class="btn btn-outline btn-sm" onclick="focusVizOnDevice()">Focus on cube</button>
                     <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset camera</button>
                 </div>
-                <!-- Timeline Legend -->
                 <div class="timeline-legend">
                     <span class="legend-item"><span class="legend-dot stroke-dot"></span>Stroke</span>
                     <span class="legend-item"><span class="legend-dot haptic-dot"></span>Haptic Fired</span>
                 </div>
-                <!-- Charts -->
+                <p class="viz-drift-hint" style="font-size:0.78em;color:var(--text3);margin:10px 0 0;line-height:1.45;">
+                    Path shows motion during the pull; colors follow stroke phase. Two-band merge keeps each wrist in order.
+                </p>
                 <div class="grid-2" style="margin-top:12px;">
                     <div class="chart-card">
-                        <h4>Acceleration (m/s²)</h4>
+                        <h4>Acceleration: LIA (m/s²)</h4>
                         <div class="chart-wrap"><canvas id="accelChart"></canvas></div>
                     </div>
                     <div class="chart-card">
-                        <h4>Angular Velocity (rad/s)</h4>
+                        <h4>Angular velocity (rad/s)</h4>
                         <div class="chart-wrap"><canvas id="gyroChart"></canvas></div>
                     </div>
                 </div>
+                <div class="chart-card" style="margin-top:12px;">
+                    <h4>Magnetometer (µT)</h4>
+                    <div class="chart-wrap chart-wrap--tall"><canvas id="magChart"></canvas></div>
+                </div>
             </div>
-            <!-- Sidebar -->
             <div>
                 <div class="card sync-playbook-card" id="sync-playbook-wrap">
                     <div class="card-title">Wi‑Fi sync (wearable has no dashboard)</div>
                     <ol class="sync-playbook" id="sync-playbook">
-                        <li data-step="1"><strong>Hold sync</strong> on the wearable — it opens the <strong>GoldenForm</strong> Wi‑Fi network (same for first link or after a swim).</li>
-                        <li data-step="2"><strong>Join Wi‑Fi</strong> — connect this phone/laptop to that network (stay on it for sync).</li>
-                        <li data-step="3"><strong>Tap “Sync Device”</strong> below — sessions download; <strong>0 sessions</strong> is valid before your first swim (link + registry + profile still apply).</li>
-                        <li data-step="4"><strong>After swimming</strong> — stop recording on the device, enter sync again, repeat steps 1–3 to fetch new sessions.</li>
+                        <li data-step="1"><strong>Hold sync</strong> on the wearable until the <strong>GoldenForm</strong> hotspot appears (first step for registration and sync).</li>
+                        <li data-step="2"><strong>Join</strong> that Wi‑Fi on this computer (menu bar or Settings).</li>
+                        <li data-step="3"><strong>Sync now</strong> (first time): confirms the app reached the band. You may see zero sessions.</li>
+                        <li data-step="4"><strong>After a swim</strong>, <strong>Sync now</strong> again to download that recording. Not the same as the empty first sync.</li>
                     </ol>
                     <p class="sync-playbook-note sync-playbook-note--first" id="sync-playbook-first" style="display:none;"></p>
                     <p class="sync-playbook-note" id="sync-playbook-multi"></p>
@@ -180,50 +185,26 @@
                     <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
                             id="session-count-badge">0</span></div>
                     <div style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap;">
-                        <button type="button" class="btn btn-gold" style="flex:1;min-width:120px;" id="sync-btn" onclick="syncFromDevice()" title="Downloads sessions from the wearable. Auto-sync also runs when you connect to GoldenForm Wi‑Fi.">Sync now</button>
+                        <button type="button" class="btn btn-gold" style="flex:1;min-width:120px;" id="sync-btn" onclick="syncFromDevice()" title="Download sessions from the wearable while connected to its GoldenForm Wi‑Fi.">Sync now</button>
                         <button type="button" class="btn btn-blue" style="flex:1;min-width:120px;" id="merge-btn"
                             onclick="mergeLatestSessions()">Merge Devices</button>
                     </div>
-                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">Connecting to <strong>GoldenForm</strong> Wi‑Fi usually triggers an automatic sync. Use <strong>Sync now</strong> to retry or pull data right after a swim. Multi‑wearable: sync each unit, then <strong>Merge</strong>.</p>
+                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">First <strong>Sync now</strong> = link check. After swimming, <strong>Sync now</strong> = pull that file. Two wrists: sync each → <strong>Merge</strong>.</p>
+                    <p style="font-size:0.7em;color:var(--text3);margin-bottom:8px;"><button type="button" class="btn btn-outline btn-sm" onclick="clearLocalSessions()" title="Remove sessions from this device">Clear local list</button></p>
                     <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
                     <div class="session-list" id="session-cards"></div>
                 </div>
                 <div class="card">
                     <div class="card-title">Session Summary</div>
                     <div class="summary-grid">
-                        <span>Strokes: <strong id="sum-strokes">—</strong></span>
-                        <span>Turns: <strong id="sum-turns">—</strong></span>
-                        <span>Distance: <strong id="sum-distance">—</strong></span>
-                        <span>Pace: <strong id="sum-pace">—</strong></span>
-                        <span>Duration: <strong id="sum-duration">—</strong></span>
-                        <span>Rate: <strong id="sum-rate">—</strong></span>
-                        <span>Consistency: <strong id="sum-consistency">—</strong></span>
-                        <span>Samples: <strong id="sum-samples">—</strong></span>
-                    </div>
-                </div>
-                <!-- Calibration Status (TIDR 6-1-4) — BNO055 fusion / register status -->
-                <div class="card">
-                    <div class="card-title">IMU calibration (sensor fusion)</div>
-                    <p class="cal-explainer">BNO055 fusion quality: <strong>0–3</strong> per channel. Join the wearable’s Wi‑Fi — values update every few seconds (no swim required). Tap <strong>Calibration guide</strong> for step‑by‑step moves. Saving stores a snapshot in this browser for reference.</p>
-                    <div style="display:flex;justify-content:center;margin-bottom:10px;">
-                        <button type="button" class="btn btn-outline btn-sm" onclick="openCalibrationGuide()">Calibration guide</button>
-                    </div>
-                    <div class="cal-grid">
-                        <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-bad"
-                                id="cal-sys">0/3</span></div>
-                        <div class="cal-item"><span class="cal-label">Gyro</span><span class="cal-badge cal-bad"
-                                id="cal-gyro">0/3</span></div>
-                        <div class="cal-item"><span class="cal-label">Accel</span><span class="cal-badge cal-bad"
-                                id="cal-accel">0/3</span></div>
-                        <div class="cal-item"><span class="cal-label">Mag</span><span class="cal-badge cal-bad"
-                                id="cal-mag">0/3</span></div>
-                    </div>
-                    <div style="text-align:center;margin-top:8px;font-size:0.85em;color:var(--text3);">Quality: <strong
-                            id="cal-quality">0%</strong></div>
-                    <p id="cal-hint" style="font-size:0.75em;color:var(--text3);margin-top:6px;text-align:center;"></p>
-                    <p id="cal-saved-strip" class="cal-saved-strip" style="font-size:0.78em;color:var(--text2);margin-top:10px;text-align:center;"></p>
-                    <div style="display:flex;justify-content:center;margin-top:8px;">
-                        <button type="button" class="btn btn-outline btn-sm" id="cal-save-btn" onclick="saveCalibrationSnapshotManual()">Save calibration snapshot</button>
+                        <span>Strokes: <strong id="sum-strokes">-</strong></span>
+                        <span>Turns: <strong id="sum-turns">-</strong></span>
+                        <span>Distance: <strong id="sum-distance">-</strong></span>
+                        <span>Pace: <strong id="sum-pace">-</strong></span>
+                        <span>Duration: <strong id="sum-duration">-</strong></span>
+                        <span>Rate: <strong id="sum-rate">-</strong></span>
+                        <span>Consistency: <strong id="sum-consistency">-</strong></span>
+                        <span>Samples: <strong id="sum-samples">-</strong></span>
                     </div>
                 </div>
                 <div class="card">
@@ -231,9 +212,10 @@
                     <div class="live-data">
                         <div>Stroke: <strong id="live-strokes">0</strong></div>
                         <div>Phase: <strong id="live-phase" class="phase-label">idle</strong></div>
-                        <div>Entry Angle: <strong id="live-angle">0°</strong></div>
-                        <div>Gyro: <strong id="live-gyro">0.0</strong> rad/s</div>
-                        <div>Deviation: <strong id="live-deviation">0.000</strong></div>
+                        <div>Entry angle: <strong id="live-angle">0°</strong></div>
+                        <div>‖ω‖ now: <strong id="live-gyro">0.00</strong> <span class="live-unit">rad/s</span></div>
+                        <div>‖ω‖ at water entry: <strong id="live-entry-gyro">-</strong> <span class="live-unit">rad/s</span></div>
+                        <div>Haptic / dev.: <strong id="live-deviation">0.000</strong></div>
                     </div>
                 </div>
                 <div class="card">
@@ -256,8 +238,11 @@
         </div>
     </div>
 
-    <!-- ═══════ ANALYSIS ═══════ -->
     <div class="page" id="page-analysis">
+        <header class="page-heading page-heading--compact">
+            <h1 class="page-heading__title">Analysis</h1>
+            <p class="page-heading__sub">Scores · ideal compare · strokes</p>
+        </header>
         <div class="grid-3">
             <div class="card stat-card" style="text-align:center;">
                 <div class="card-title">Form Score</div>
@@ -291,7 +276,6 @@
                 <span>🔵 Glide</span><span>🟢 Catch</span><span>🟡 Pull</span><span>🟣 Recovery</span>
             </div>
         </div>
-        <!-- Ideal vs Actual (TIDR 2-1-1) -->
         <div class="card">
             <div class="card-header">
                 <span class="card-title">Ideal vs Actual Comparison</span>
@@ -321,12 +305,16 @@
         </div>
     </div>
 
-    <!-- ═══════ INSIGHTS ═══════ -->
     <div class="page" id="page-insights">
+        <header class="page-heading page-heading--compact">
+            <h1 class="page-heading__title">Insights</h1>
+            <p class="page-heading__sub">Coaching · trends</p>
+        </header>
+        <p id="insights-source-hint" class="insights-source-hint" hidden></p>
         <div class="card" style="margin-bottom:16px;">
             <div class="card-title">Top Coaching Priorities</div>
             <div id="coaching-priorities" style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
-                <p style="color:var(--text3); font-size:0.9em;">Sync a session first — priorities appear here.</p>
+                <p style="color:var(--text3); font-size:0.9em;">Sync a session first. Priorities appear here.</p>
             </div>
         </div>
 
@@ -352,8 +340,11 @@
         </div>
     </div>
 
-    <!-- ═══════ SETTINGS ═══════ -->
     <div class="page" id="page-settings">
+        <header class="page-heading">
+            <h1 class="page-heading__title">Settings</h1>
+            <p class="page-heading__sub">Profile, wearables, IMU calibration, baseline</p>
+        </header>
         <div class="grid-2">
             <div class="card">
                 <div class="card-title">Profile</div>
@@ -372,68 +363,82 @@
                         <option value="competitive">Competitive</option>
                     </select>
                     <label>Pool Length (m)</label><input type="number" id="settings-pool-length" placeholder="25" style="margin-bottom:12px;">
-                    <label title="Used for guided setup and multi-device messaging">How many wearables are you using?</label>
-                    <input type="number" id="settings-wearable-count" min="1" max="6" value="1" style="margin-bottom:12px;">
-                    <p style="font-size:0.78em;color:var(--text3);margin:-8px 0 12px;">Sets how many wearables you plan to register (e.g. two wrists). The home checklist updates automatically.</p>
+                    <label>How many wearables?</label>
+                    <input type="number" id="settings-wearable-count" min="1" max="2" value="1" style="margin-bottom:12px;" title="1 or 2 (left and right)">
+                    <p class="settings-field-hint">1 = one wrist, 2 = both. The checklist uses this.</p>
                     <button class="btn btn-gold" type="submit">Save Profile</button>
                 </form>
             </div>
             <div class="card device-registration-card">
-                <div class="card-title">Your wearables (one at a time)</div>
-                <p class="device-reg-lead"><strong>HW ID</strong> + <strong>placement</strong> — each row in the list stays identifiable.</p>
-                <p class="device-reg-wifi-hint">Flash each ESP32 with a <strong>unique Device ID</strong> so its hotspot is <strong>GoldenForm_1</strong>, <strong>GoldenForm_2</strong>, … The banner below shows which network you’re on — match placement to that physical unit before Register.</p>
+                <div class="card-title">Wearables</div>
+                <p class="device-reg-lead">On the band, <strong>hold sync</strong> until the <strong>GoldenForm</strong> hotspot appears. On this computer, <strong>join that Wi‑Fi</strong> in Settings or the menu bar (password <strong>goldenform123</strong>), pick which wrist, then <strong>Add this wearable</strong>.</p>
                 <div id="connected-wearable-banner" class="connected-wearable-banner" role="status" aria-live="polite"></div>
                 <div id="device-reg-slot" class="device-reg-slot" role="status"></div>
-                <div class="card-title" style="margin-top:14px;font-size:0.95em;">Registered in this app</div>
+                <div class="card-title card-title--sub">Your bands</div>
                 <div id="device-list" class="device-list-wrap" style="margin-top:10px;"></div>
-                <hr style="border-color:var(--bg4);margin:16px 0;">
-                <div class="card-title" style="font-size:0.95em;">Add the next device</div>
-                <ol class="device-reg-steps">
-                    <li><strong>One Wi‑Fi at a time</strong> — only power / sync <em>this</em> unit so your laptop joins the correct GoldenForm network.</li>
-                    <li><strong>Connect</strong> — join that Wi‑Fi, then use <strong>Load from connected device</strong> below (or type the HW ID printed on the unit / in serial logs).</li>
-                    <li><strong>Label</strong> — pick placement (left/right wrist, etc.) and a short name you will recognize in lists.</li>
-                    <li><strong>Register</strong> — tap <em>Register device</em>. Repeat for wearables 2…N.</li>
-                </ol>
+                <input type="hidden" id="dev-wifi-ssid" value="" autocomplete="off">
+                <input type="hidden" id="dev-hw-id" value="">
+                <label for="dev-role">Which wrist?</label>
+                <select id="dev-role" style="margin-bottom:12px;max-width:280px;">
+                    <option value="wrist_right">Right wrist</option>
+                    <option value="wrist_left">Left wrist</option>
+                </select>
                 <div class="device-reg-actions">
-                    <button type="button" class="btn btn-outline btn-sm" onclick="fillDeviceFormFromConnectedDevice()">Load from connected device</button>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="applySmartDeviceDefaults()" title="Suggested placement and name">Suggest next placement</button>
+                    <button type="button" class="btn btn-gold" onclick="addWearableFromConnection()">Add this wearable</button>
                 </div>
-                <form onsubmit="registerDevice(event)" style="margin-top:12px;">
-                    <input type="hidden" id="dev-wifi-ssid" value="" autocomplete="off">
-                    <label>Hardware ID <span class="label-hint">(unique per unit; 0 = unknown)</span></label>
-                    <input type="number" id="dev-hw-id" value="0" min="0" style="margin-bottom:8px;">
-                    <label>Body placement <span class="label-hint">(how we route data &amp; 3D view)</span></label>
-                    <select id="dev-role" style="margin-bottom:8px;">
-                        <option value="wrist_right">Right wrist (primary stroke hand)</option>
-                        <option value="wrist_left">Left wrist</option>
-                        <option value="ankle_right">Right ankle</option>
-                        <option value="ankle_left">Left ankle</option>
-                        <option value="waist">Waist / back</option>
-                    </select>
-                    <label>Display name <span class="label-hint">(shown in lists — e.g. “Blue strap · right”)</span></label>
-                    <input type="text" id="dev-name" placeholder="e.g. Wearable 2 · right wrist" style="margin-bottom:12px;">
-                    <button class="btn btn-blue" type="submit">Register device</button>
-                </form>
+                <p class="settings-field-hint" style="margin-top:10px;">The app reads the hardware ID from the band after you connect. Two bands: use one Wi‑Fi at a time and add each separately.</p>
             </div>
         </div>
-        <div class="card" style="margin-top:16px;">
-            <div class="card-title">Haptic & Device Config</div>
-            <p style="color:var(--text3);font-size:0.85em;margin-top:6px;">Your profile (wingspan & skill) automatically syncs with the device upon connection to calibrate haptic thresholds.</p>
-            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-                <button class="btn btn-outline btn-sm" onclick="testHapticDevice()">Test Haptic Buzz</button>
+
+        <div class="card card--calibration" id="card-imu-calibration">
+            <div class="card-header card-header--cal">
+                <div>
+                    <div class="card-title">IMU calibration (sensor fusion)</div>
+                    <p class="cal-product-note">Stay on the band Wi‑Fi here. Numbers update live. While you swim, the radio stays off to save power; stroke cues use the motor on the band (faster than sending over Wi‑Fi). For downloads, use sync mode again and run Session <strong>Sync now</strong> like usual.</p>
+                </div>
+            </div>
+            <p class="cal-explainer">Each channel is 0 to 3 while you are connected. Open the <strong>guide</strong> for the figure eight and face tilts. We save a snapshot in this browser when quality goes up (you can save manually too).</p>
+            <div id="cal-ready-banner" class="cal-ready-banner" hidden role="status" aria-live="polite"></div>
+            <div class="cal-guide-row">
+                <button type="button" class="btn btn-outline btn-sm" onclick="openCalibrationGuide()">Calibration guide</button>
+            </div>
+            <div class="cal-grid">
+                <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-bad" id="cal-sys">0/3</span></div>
+                <div class="cal-item"><span class="cal-label">Gyro</span><span class="cal-badge cal-bad" id="cal-gyro">0/3</span></div>
+                <div class="cal-item"><span class="cal-label">Accel</span><span class="cal-badge cal-bad" id="cal-accel">0/3</span></div>
+                <div class="cal-item"><span class="cal-label">Mag</span><span class="cal-badge cal-bad" id="cal-mag">0/3</span></div>
+            </div>
+            <div class="cal-quality-row">Quality <strong id="cal-quality">0%</strong></div>
+            <p id="cal-hint" class="cal-hint"></p>
+            <p id="cal-saved-strip" class="cal-saved-strip"></p>
+            <div class="cal-save-row">
+                <button type="button" class="btn btn-outline btn-sm" id="cal-save-btn" onclick="saveCalibrationSnapshotManual()">Save calibration snapshot</button>
             </div>
         </div>
-        <div class="card" style="margin-top:16px;">
-            <div class="card-title">Ideal Stroke Data</div>
-            <p style="color:var(--text3);font-size:0.85em;margin-top:6px;" id="ideal-status">No ideal stroke saved</p>
-            <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-                <button class="btn btn-gold btn-sm" onclick="setCurrentAsIdeal()">Record from Session</button>
-                <button class="btn btn-outline btn-sm" style="border-color:#ef4444;color:#ef4444" onclick="deleteIdealStroke()">Delete Ideal</button>
+
+        <div class="card card--ideal" style="margin-top:16px;">
+            <div class="card-title">Ideal stroke baseline</div>
+            <p class="ideal-viewer-context" id="ideal-viewer-context"></p>
+            <div class="ideal-baseline-block">
+                <p class="ideal-status-line" id="ideal-status">No ideal baseline saved</p>
+                <p class="ideal-meta-line" id="ideal-meta"></p>
+                <div class="ideal-actions-row">
+                    <button type="button" class="btn btn-gold" onclick="setCurrentAsIdeal()">Save current session as ideal</button>
+                    <button type="button" class="btn btn-outline" style="border-color:#ef4444;color:#ef4444" onclick="deleteIdealStroke()">Delete baseline</button>
+                </div>
             </div>
+        </div>
+        <div class="card card--haptic" style="margin-top:16px;">
+            <div class="card-title">Haptics</div>
+            <p class="settings-field-hint">Thresholds sync when the wearable is on Wi‑Fi. In the water, cues run on the band so they stay fast. Wi‑Fi is for setup and for pulling files after a swim.</p>
+            <details class="settings-diagnostics">
+                <summary>Diagnostics</summary>
+                <p class="settings-field-hint">For bench checks only. Not needed for normal swims.</p>
+                <button type="button" class="btn btn-outline btn-sm" onclick="testHapticDevice()">Test motor</button>
+            </details>
         </div>
     </div>
 
-    <!-- Registration Modal -->
     <div class="modal-overlay" id="reg-modal">
         <div class="modal">
             <div class="modal-brand">GoldenForm</div>
@@ -447,15 +452,15 @@
                 <label>Height (cm)</label>
                 <input type="number" id="reg-height" placeholder="175" min="100" max="230"
                     style="margin-bottom:12px;">
-                <label>Wingspan (cm) <span style="color:var(--text3);font-weight:400;">— fingertip to fingertip</span></label>
+                <label>Wingspan (cm) <span style="color:var(--text3);font-weight:400;">(fingertip to fingertip)</span></label>
                 <input type="number" id="reg-wingspan" placeholder="180" min="100" max="260"
                     style="margin-bottom:12px;">
                 <label>Skill Level</label>
                 <select id="reg-skill" style="margin-bottom:16px;">
-                    <option value="beginner">Beginner — learning form basics</option>
-                    <option value="intermediate">Intermediate — comfortable swimmer</option>
-                    <option value="advanced">Advanced — competitive training</option>
-                    <option value="competitive">Competitive — race-level athlete</option>
+                    <option value="beginner">Beginner</option>
+                    <option value="intermediate">Intermediate</option>
+                    <option value="advanced">Advanced</option>
+                    <option value="competitive">Competitive</option>
                 </select>
                 <label>Pool Length (m)</label>
                 <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100" style="margin-bottom:16px;">
@@ -468,22 +473,51 @@
         <div class="modal" style="max-width:440px;">
             <div class="modal-brand">GoldenForm</div>
             <h2 id="cal-guide-title" style="margin-bottom:10px;">IMU calibration guide</h2>
-            <p style="color:var(--text2);font-size:0.9em;margin-bottom:14px;">Connect to the wearable Wi‑Fi and watch the four badges update (polls every few seconds). Do these in order:</p>
-            <ol style="margin:0 0 16px 18px;color:var(--text2);font-size:0.88em;line-height:1.55;">
-                <li style="margin-bottom:10px;"><strong style="color:var(--text1);">Gyroscope</strong> — place the unit still on a table. Wait until <strong>Gyro 3/3</strong>.</li>
-                <li style="margin-bottom:10px;"><strong style="color:var(--text1);">Accelerometer</strong> — slowly place each face of the board/box flat (six orientations, like calibrating a cube).</li>
-                <li style="margin-bottom:10px;"><strong style="color:var(--text1);">Magnetometer</strong> — move in a wide figure‑eight, away from metal, laptops, and speakers until <strong>Mag 3/3</strong>.</li>
-                <li><strong style="color:var(--text1);">System</strong> — usually rises last as fusion locks in; gentle slow rotations help.</li>
+            <p style="color:var(--text2);font-size:0.88em;margin-bottom:12px;">On wearable Wi‑Fi, badges update live. Suggested order:</p>
+            <ol style="margin:0 0 14px 18px;color:var(--text2);font-size:0.85em;line-height:1.5;">
+                <li style="margin-bottom:8px;"><strong style="color:var(--text1);">Gyro:</strong> still on table, 3/3</li>
+                <li style="margin-bottom:8px;"><strong style="color:var(--text1);">Accel:</strong> six faces flat</li>
+                <li style="margin-bottom:8px;"><strong style="color:var(--text1);">Mag:</strong> wide figure 8, away from metal, 3/3</li>
+                <li><strong style="color:var(--text1);">System:</strong> last; slow rotations</li>
             </ol>
-            <p style="font-size:0.78em;color:var(--text3);margin-bottom:14px;">Tap <strong>Save calibration snapshot</strong> to store the best reading in this browser. It does not replace on‑device fusion — it is a reference for you.</p>
+            <p style="font-size:0.76em;color:var(--text3);margin-bottom:14px;"><strong>Save</strong> stores a snapshot in this browser (we also save when quality goes up). Fusion runs on the band.</p>
             <button type="button" class="btn btn-gold" style="width:100%;" onclick="closeCalibrationGuide()">Got it</button>
         </div>
     </div>
 
-    <!-- CDNs (Accelerators) -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.1/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.160.1/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.145.0/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.145.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script defer src="/js/gf_api.js"></script>
+    <script defer src="/js/gf_roles.js"></script>
+    <script defer src="/js/gf_constants.js"></script>
+    <script defer src="/js/gf_bootstrap.js"></script>
+    <script defer src="/js/gf_time.js"></script>
+    <script defer src="/js/gf_state.js"></script>
+    <script defer src="/js/gf_app_nav_profile.js"></script>
+    <script defer src="/js/gf_session_transfer.js"></script>
+    <script defer src="/js/gf_wifi_banners.js"></script>
+    <script defer src="/js/gf_wifi_devices.js"></script>
+    <script defer src="/js/gf_wifi_poll_sync.js"></script>
+    <script defer src="/js/gf_viz_stroke_fields.js"></script>
+    <script defer src="/js/gf_haptic_timeline.js"></script>
+    <script defer src="/js/gf_playback.js"></script>
+    <script defer src="/js/gf_session_summary.js"></script>
+    <script defer src="/js/gf_calibration.js"></script>
+    <script defer src="/js/gf_onboarding_journey.js"></script>
+    <script defer src="/js/gf_analysis.js"></script>
+    <script defer src="/js/gf_ideal_comparison.js"></script>
+    <script defer src="/js/gf_progress.js"></script>
+    <script defer src="/js/gf_coaching.js"></script>
+    <script defer src="/js/gf_ideal_samples.js"></script>
+    <script defer src="/js/gf_ideal_device.js"></script>
+    <script defer src="/js/gf_viz_charts.js"></script>
+    <script defer src="/js/gf_viz_math.js"></script>
+    <script defer src="/js/gf_viz_integration.js"></script>
+    <script defer src="/js/gf_viz_three_scene.js"></script>
+    <script defer src="/js/gf_viz_side_view.js"></script>
+    <script defer src="/js/gf_viz_render.js"></script>
+    <script defer src="/js/gf_viz_controls.js"></script>
     <script defer src="/app.js"></script>
 </body>
 

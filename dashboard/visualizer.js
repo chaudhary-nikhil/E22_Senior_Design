@@ -1,4 +1,7 @@
-
+/**
+ * @deprecated Legacy file-based session viewer used by session_logger.py.
+ * GoldenForm product UI is integrated_session_viewer.html + dashboard/js/gf_*.js (wifi_session_processor.py).
+ */
 
 class SessionVisualizer {
     constructor() {

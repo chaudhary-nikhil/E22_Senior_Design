@@ -201,15 +201,13 @@ typedef struct {
 
   // Multi-device metadata (populated from Kconfig)
   uint8_t device_id;   // CONFIG_GOLDENFORM_DEVICE_ID
-  uint8_t device_role; // 0=WRIST, 1=ANKLE, 2=WAIST, 3=HEAD, 4=WRIST_LEFT,
-                       // 5=ANKLE_LEFT
+  uint8_t device_role; // 0=right wrist, 4=left wrist (legacy values ignored)
 
   // Session running counts (populated from stroke detector)
   uint32_t stroke_count;
   uint32_t turn_count;
 
-  // Head device: breath counter (set by main loop for head role)
-  uint32_t breath_count;
+  uint32_t breath_count; /* protobuf field; always 0 in current firmware */
 
   // Angle of attack at water entry (degrees, set by stroke detector)
   float entry_angle;
@@ -222,6 +220,12 @@ esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
 esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys,
                                         uint8_t *gyro, uint8_t *accel,
                                         uint8_t *mag);
+/**
+ * @brief Last fusion calibration values from the most recent bno055_read_sample() (same numbers as IMU loop / serial).
+ *        Use this for HTTP /api/device_info instead of a second I2C read to avoid bus contention with the sampling task.
+ */
+void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
+                                 uint8_t *mag);
 esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out);
 esp_err_t bno055_reset(int port, uint8_t addr);
 esp_err_t bno055_start_calibration(int port, uint8_t addr);

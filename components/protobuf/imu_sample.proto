@@ -55,14 +55,14 @@ message ImuSample {
 
   // Multi-device metadata
   uint32 device_id = 28;        // Unique device identifier (from Kconfig)
-  uint32 device_role = 29;      // 0=wrist, 1=ankle, 2=waist
+  uint32 device_role = 29;      // 0=right wrist, 4=left wrist (legacy other values ignored)
 
   // Session running counts
   uint32 stroke_count = 30;     // Running stroke count for this session
   uint32 turn_count = 31;       // Running turn count for this session
 
-  // Head device breathing (stretch goal)
-  uint32 breath_count = 32;     // Running breath count (head device only)
+  // Legacy wire field; always 0 in current builds (kept for old SD/session compatibility)
+  uint32 breath_count = 32;
 
   // Angle of attack at water entry
   float entry_angle = 33;       // Hand pitch angle at stroke start (degrees)

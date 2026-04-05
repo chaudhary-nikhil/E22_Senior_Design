@@ -54,6 +54,13 @@ class StrokeProcessor:
     """
     Holds the state for velocity and position integration.
     Detects strokes on DOWNWARD hand entry into water (catch phase).
+
+    Position path (dashboard + UART replay): Kalman-smoothed sensor LIA → quaternion rotation
+    to world frame → integrate only while ``stroke_integrating`` (pull-through window after impact).
+    This supersedes older gyro-threshold ``in_stroke`` gating from early branches; it is tuned to
+    match live JSON streams at reference
+    https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
+    and the integrated GoldenForm dashboard consumes ``position`` + ``tracking_active`` from here.
     
     Research basis (SwimBIT & Frontiers IMU swimming papers):
     - Water entry creates distinct deceleration spike (~1.5-2.5 m/s²)
@@ -211,6 +218,9 @@ class StrokeProcessor:
         self.last_entry_angle = 0.0
         self.entry_angles = []  # All entry angles this session
         self.ideal_entry_angle = 30.0  # degrees, configurable per user
+        # Gyro ‖ω‖ (rad/s) at water-entry sample — PDP: angle of attack + rotation at impact
+        self.last_entry_gyro_mag = 0.0
+        self.last_entry_gx = self.last_entry_gy = self.last_entry_gz = 0.0
         
         # STROKE PHASE TRACKING (Research: IEEE Swimming Phase Segmentation,
         # Frontiers fbioe.2021.793302 — gyroscope angular velocity is the primary
@@ -487,6 +497,10 @@ class StrokeProcessor:
                 pitch_rad = math.asin(sinp)
                 self.last_entry_angle = abs(math.degrees(pitch_rad))
                 self.entry_angles.append(self.last_entry_angle)
+                self.last_entry_gyro_mag = gyro_mag
+                self.last_entry_gx = float(data_dict.get('gx', 0) or 0)
+                self.last_entry_gy = float(data_dict.get('gy', 0) or 0)
+                self.last_entry_gz = float(data_dict.get('gz', 0) or 0)
 
             # --- WALL/TURN (after stroke): vigorous strokes must not register as turns ---
             since_stroke_ms = (t_ms - self.last_stroke_time_ms) if self.last_stroke_time_ms else self.STROKE_TURN_COOLDOWN_MS + 1
@@ -699,6 +713,11 @@ class StrokeProcessor:
             
             "acceleration": {"ax": lia_x, "ay": lia_y, "az": lia_z},  # Use linear acceleration (LIA)
             "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
+            "magnetometer": {
+                "mx": float(data_dict.get('mx', 0) or 0),
+                "my": float(data_dict.get('my', 0) or 0),
+                "mz": float(data_dict.get('mz', 0) or 0),
+            },
             "tracking_active": self.stroke_integrating,
             "stroke_count": self.stroke_count,
             "strokes": fw_strokes,
@@ -709,6 +728,12 @@ class StrokeProcessor:
             "entry_angle": display_entry,
             "avg_entry_angle": round(avg_entry, 1),
             "ideal_entry_angle": self.ideal_entry_angle,
+            "entry_gyro_mag": round(self.last_entry_gyro_mag, 4),
+            "entry_gyro": {
+                "gx": round(self.last_entry_gx, 4),
+                "gy": round(self.last_entry_gy, 4),
+                "gz": round(self.last_entry_gz, 4),
+            },
             
             # Stroke phase & Signal processing
             "stroke_phase": self.current_phase,
@@ -749,85 +774,6 @@ class StrokeProcessor:
             self.just_reset = False
         
         return json.dumps(vis_data)
-
-
-class BreathingDetector:
-    """
-    Detects breathing events from head-worn IMU quaternion data.
-    
-    Research basis: Head roll >30 degrees during freestyle indicates breath turn.
-    Roll direction (positive vs negative) indicates left vs right side breathing.
-    Breath should correlate with arm recovery phase for proper timing.
-    """
-    def __init__(self):
-        self.breaths = []  # list of {timestamp, side, roll_angle, quality}
-        self.breath_count = 0
-        self.last_breath_time = 0
-        self.MIN_BREATH_INTERVAL = 1.5  # seconds between breaths
-        self.ROLL_THRESHOLD = 30.0  # degrees, head must rotate more than this
-        self.in_breath = False
-        self.breath_start_roll = 0
-        self.neutral_roll = 0  # calibrated neutral head position
-        self.calibrated = False
-        self.calibration_rolls = []
-        self.CALIBRATION_SAMPLES = 50  # first 50 samples to find neutral
-
-    def feed(self, t_ms, qw, qx, qy, qz):
-        """Process one sample. Returns breath event dict or None."""
-        # Compute roll from quaternion: roll = atan2(2*(qw*qx + qy*qz), 1 - 2*(qx² + qy²))
-        sinr = 2.0 * (qw * qx + qy * qz)
-        cosr = 1.0 - 2.0 * (qx * qx + qy * qy)
-        roll_deg = math.degrees(math.atan2(sinr, cosr))
-
-        # Calibrate neutral position from first N samples
-        if not self.calibrated:
-            self.calibration_rolls.append(roll_deg)
-            if len(self.calibration_rolls) >= self.CALIBRATION_SAMPLES:
-                self.neutral_roll = sum(self.calibration_rolls) / len(self.calibration_rolls)
-                self.calibrated = True
-            return None
-
-        relative_roll = roll_deg - self.neutral_roll
-        abs_roll = abs(relative_roll)
-        time_since_last = (t_ms - self.last_breath_time) / 1000.0
-
-        if abs_roll > self.ROLL_THRESHOLD and not self.in_breath and time_since_last > self.MIN_BREATH_INTERVAL:
-            self.in_breath = True
-            self.breath_start_roll = relative_roll
-        elif self.in_breath and abs_roll < self.ROLL_THRESHOLD * 0.5:
-            # Head returned to neutral, breath complete
-            self.in_breath = False
-            self.breath_count += 1
-            self.last_breath_time = t_ms
-            side = 'right' if self.breath_start_roll > 0 else 'left'
-            event = {
-                'timestamp': t_ms,
-                'side': side,
-                'roll_angle': round(abs(self.breath_start_roll), 1),
-                'breath_number': self.breath_count
-            }
-            self.breaths.append(event)
-            return event
-        return None
-
-    def get_stats(self):
-        if not self.breaths:
-            return {'breath_count': 0, 'breaths_per_minute': 0, 'left_pct': 0, 'right_pct': 0, 'avg_roll': 0}
-        left = sum(1 for b in self.breaths if b['side'] == 'left')
-        right = len(self.breaths) - left
-        total = len(self.breaths)
-        if total >= 2:
-            dur = (self.breaths[-1]['timestamp'] - self.breaths[0]['timestamp']) / 60000.0
-            bpm = total / dur if dur > 0 else 0
-        else:
-            bpm = 0
-        return {
-            'breath_count': total,
-            'breaths_per_minute': round(bpm, 1),
-            'left_pct': round(left / total * 100) if total else 0,
-            'right_pct': round(right / total * 100) if total else 0,
-            'avg_roll': round(sum(b['roll_angle'] for b in self.breaths) / total, 1) if total else 0
-        }
 
 
 def align_sessions_by_hop(sessions):

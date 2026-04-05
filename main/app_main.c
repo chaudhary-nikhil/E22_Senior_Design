@@ -36,7 +36,7 @@ static const char *TAG = "GOLDENFORM";
 #define I2C_SCL_GPIO CONFIG_GOLDENFORM_I2C_SCL_GPIO         // GPIO 5
 #define BNO055_ADDR_GPIO CONFIG_GOLDENFORM_BNO055_ADDR_GPIO // GPIO 6
 
-/* Button: BOOT (GPIO0). In firmware this only starts/stops recording or sync — it does NOT call esp_restart().
+/* Button: BOOT (GPIO0). PDP flow: record/stop → SD, hold → Wi‑Fi sync to dashboard (no UART session pipeline).
  *
  * If the board "resets" or won't run the app when you use the button:
  *  - Do NOT press RESET/EN while BOOT is held. On ESP32-S3, IO0 low at reset enters UART download mode
@@ -255,8 +255,64 @@ static void status_led_blink_stop_and_wait(void) {
   gpio_set_level(STATUS_LED_GPIO, 0);
 }
 
+/**
+ * Blink status LED (GPIO 41) during registration/config linger (idle, not syncing).
+ * Do not require wifi_server_is_ap_active() here: during boot the AP can still be
+ * starting; gating on AP caused need=false and the branch below stopped the blink
+ * and it never recovered reliably.
+ */
+static void registration_led_update(void) {
+  if (!wifi_available) {
+    return;
+  }
+  const bool want_reg_blink =
+      current_state == STATE_IDLE && ap_lingering;
+  if (want_reg_blink) {
+    if (status_led_blink_task_handle == NULL) {
+      status_led_blink_start();
+    }
+  } else if (current_state == STATE_IDLE &&
+             status_led_blink_task_handle != NULL) {
+    status_led_blink_stop_and_wait();
+  }
+}
+
+/** Deferred from HTTP POST /api/registration_done so the response finishes before the AP/HTTP stack is torn down. */
+static void registration_done_worker(void *arg) {
+  (void)arg;
+  vTaskDelay(pdMS_TO_TICKS(100));
+  if (current_state != STATE_IDLE) {
+    ESP_LOGW(TAG, "registration_done: ignored (not idle)");
+    vTaskDelete(NULL);
+    return;
+  }
+  ap_lingering = false;
+  status_led_blink_stop_and_wait();
+  if (wifi_available && wifi_server_is_ap_active()) {
+    esp_err_t e = wifi_server_stop_ap();
+    if (e != ESP_OK) {
+      ESP_LOGW(TAG, "registration_done: stop_ap %s", esp_err_to_name(e));
+    }
+  }
+  vTaskDelete(NULL);
+}
+
+static void goldenform_registration_done_callback(void) {
+  if (xTaskCreate(registration_done_worker, "gf_reg_done", 4096, NULL, 5, NULL) !=
+      pdPASS) {
+    ESP_LOGW(TAG, "registration_done: could not spawn worker task");
+  }
+}
+
 // ============== State Transitions ==============
 static void transition_to_logging(void) {
+#if CONFIG_GOLDENFORM_REQUIRE_SD
+  if (!storage_available) {
+    ESP_LOGE(TAG, "Recording blocked: SD card required (PDP). Insert card, power-cycle if needed.");
+    error_led_set(true);
+    return;
+  }
+#endif
   ESP_LOGI(TAG, "========================================");
   ESP_LOGI(TAG, ">>> STATE: LOGGING");
   ESP_LOGI(TAG, "Recording IMU data to SD card...");
@@ -593,21 +649,38 @@ void app_main(void) {
     }
   }
 
-  // Initialize SD card storage
-  err = storage_init();
-  if (err == ESP_OK) {
-    storage_available = true;
-    ESP_LOGI(TAG, "SD card storage initialized");
-  } else {
-    ESP_LOGW(TAG, "SD card not available - continuing without storage");
+  /* SD: required for PDP sessions (Wi‑Fi sync reads from card). Retry mount — cards often need settle time. */
+  {
+    const int boot_sd_tries = 5;
+    for (int attempt = 1; attempt <= boot_sd_tries; attempt++) {
+      err = storage_init();
+      if (err == ESP_OK) {
+        storage_available = true;
+        ESP_LOGI(TAG, "SD card storage initialized (attempt %d/%d)", attempt, boot_sd_tries);
+        break;
+      }
+      ESP_LOGW(TAG, "SD mount failed (%s), attempt %d/%d", esp_err_to_name(err), attempt,
+               boot_sd_tries);
+      if (attempt < boot_sd_tries) {
+        vTaskDelay(pdMS_TO_TICKS(800));
+      }
+    }
+  }
+  if (!storage_available) {
+#if CONFIG_GOLDENFORM_REQUIRE_SD
+    ESP_LOGE(TAG, "SD card required for PDP — insert FAT32 card, check SPI wiring (MOSI/MISO/SCK/CS), then reset.");
+#else
+    ESP_LOGW(TAG, "SD card not available — continuing without storage (dev mode)");
+#endif
     error_led_set(true);
   }
 
-  // Prepare WiFi subsystem (AP not started yet — starts on sync hold)
+  // Prepare WiFi only; AP starts when user holds BOOT for sync/registration (not at boot).
   err = wifi_server_init();
   if (err == ESP_OK) {
     wifi_available = true;
-    ESP_LOGI(TAG, "WiFi subsystem ready (AP starts on sync hold)");
+    wifi_server_set_registration_done_callback(goldenform_registration_done_callback);
+    ESP_LOGI(TAG, "WiFi ready — hold BOOT ~1.5s to open GoldenForm AP for registration/sync");
   } else {
     ESP_LOGW(TAG, "WiFi init failed - continuing without WiFi");
     error_led_set(true);
@@ -752,10 +825,10 @@ void app_main(void) {
       }
     }
 
-    /* IMU path (same signals the legacy UART visualizer used):
-     * fusion quaternion + linear accel (LIA) + gyro + per-channel cal status.
-     * Dashboard StrokeProcessor replays world-frame integration from these fields
-     * on Wi‑Fi/SD — no separate UART pipeline required. */
+    registration_led_update();
+
+    /* IMU samples → protobuf on SD; dashboard integrates via StrokeProcessor after Wi‑Fi sync.
+     * (USB/UART is IDF console only — not the PDP data path.) */
     if (bno055_available) {
       bno055_sample_t sample;
       err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
@@ -824,26 +897,12 @@ void app_main(void) {
         sample.stroke_count = stroke_event.stroke_count;
         sample.turn_count = stroke_event.turn_count;
 
-        // Populate device metadata from Kconfig
+        // Populate device metadata (wrist side from NVS / user_config, not compile-time)
         sample.device_id = CONFIG_GOLDENFORM_DEVICE_ID;
-#if defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST)
-        sample.device_role = 0;
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_ANKLE)
-        sample.device_role = 1;
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WAIST)
-        sample.device_role = 2;
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_HEAD)
-        sample.device_role = 3;
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST_LEFT)
-        sample.device_role = 4;
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_ANKLE_LEFT)
-        sample.device_role = 5;
-#else
-        sample.device_role = 0;
-#endif
-        // Pass entry angle and breath count through from stroke detector
+        sample.device_role = goldenform_device_role_pb();
         sample.entry_angle = stroke_event.entry_angle;
-        sample.breath_count = 0; // Head device will populate this
+        /* Protobuf field 32: reserved for legacy sessions; always zero in current firmware */
+        sample.breath_count = 0;
 
         if (stroke_event.stroke_detected) {
           ESP_LOGI(TAG, "Stroke #%u detected", (unsigned)stroke_event.stroke_count);

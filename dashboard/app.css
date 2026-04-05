@@ -173,6 +173,99 @@ body {
   flex-shrink: 0;
 }
 
+.nav-cal-pill {
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(21, 21, 40, 0.85);
+  color: var(--text2);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+
+.nav-cal-pill:hover {
+  border-color: rgba(197, 165, 90, 0.45);
+  color: var(--text1);
+}
+
+.nav-cal-pill--ok {
+  border-color: rgba(16, 185, 129, 0.45);
+  color: var(--green);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.nav-cal-pill--warn {
+  border-color: rgba(245, 158, 11, 0.5);
+  color: var(--amber);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.nav-cal-pill--muted {
+  opacity: 0.85;
+}
+
+@media (max-width: 640px) {
+  .nav-cal-pill {
+    font-size: 0.68rem;
+    padding: 5px 8px;
+  }
+}
+
+.session-cal-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin-bottom: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(21, 21, 40, 0.55);
+  color: var(--text2);
+}
+
+.session-cal-banner__icon {
+  flex-shrink: 0;
+  font-weight: 700;
+  opacity: 0.9;
+}
+
+.session-cal-banner--ok {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--text1);
+}
+
+.session-cal-banner--warn {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--text1);
+}
+
+.session-cal-banner--muted {
+  border-color: rgba(117, 117, 144, 0.35);
+  color: var(--text3);
+}
+
+.page-session--weak-cal .viz-card {
+  opacity: 0.94;
+}
+
+.haptic-flow-hint {
+  display: block;
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(197, 165, 90, 0.45);
+  font-size: 0.8em;
+  color: var(--text3);
+}
+
 .nav-next-hint {
   font-size: 0.72em;
   color: var(--text2);
@@ -185,6 +278,17 @@ body {
   .nav-next-hint {
     display: none;
   }
+}
+
+.insights-source-hint {
+  font-size: 0.78em;
+  color: var(--text3);
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bg3);
+  border: 1px solid var(--bg4);
+  line-height: 1.45;
 }
 
 .nav-status {
@@ -407,6 +511,15 @@ body {
   color: var(--text2);
 }
 
+.wearable-banner-sdwarn {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(244, 63, 94, 0.25);
+  color: var(--amber);
+  font-weight: 600;
+}
+
 .device-reg-slot {
   min-height: 2.75rem;
   margin-bottom: 4px;
@@ -568,6 +681,89 @@ body {
   color: var(--text2);
   line-height: 1.5;
   margin: 0 0 12px;
+}
+
+.card--calibration {
+  margin-top: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.card--calibration-ready {
+  border-color: rgba(16, 185, 129, 0.45);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.12);
+}
+
+.card-header--cal {
+  margin-bottom: 10px;
+}
+
+.card-header--cal .card-title {
+  margin-bottom: 8px;
+}
+
+.cal-product-note {
+  font-size: 0.8em;
+  color: var(--text2);
+  line-height: 1.55;
+  margin: 0;
+  max-width: 720px;
+}
+
+.cal-guide-row,
+.cal-save-row {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0 4px;
+}
+
+.cal-quality-row {
+  text-align: center;
+  margin-top: 10px;
+  font-size: 0.88em;
+  color: var(--text3);
+}
+
+.cal-quality-row strong {
+  color: var(--text1);
+  font-size: 1.05em;
+}
+
+.cal-hint {
+  font-size: 0.78em;
+  color: var(--text3);
+  margin: 10px 0 0;
+  text-align: center;
+  line-height: 1.45;
+  min-height: 2.6em;
+}
+
+.cal-ready-banner {
+  margin: 0 0 14px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.cal-ready-banner__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.14), rgba(6, 182, 212, 0.08));
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.cal-ready-banner__title {
+  font-weight: 700;
+  font-size: 0.95em;
+  color: var(--text1);
+  letter-spacing: 0.02em;
+}
+
+.cal-ready-banner__sub {
+  font-size: 0.82em;
+  color: var(--text2);
+  line-height: 1.5;
 }
 
 /* ── HERO ── */
@@ -738,6 +934,10 @@ body {
 
 .cal-saved-strip {
   line-height: 1.45;
+  font-size: 0.78em;
+  color: var(--text2);
+  margin-top: 10px;
+  text-align: center;
 }
 
 .chart-card {
@@ -758,6 +958,16 @@ body {
 .chart-wrap {
   height: 140px;
   margin-top: 8px;
+}
+
+.chart-wrap--tall {
+  height: 160px;
+}
+
+.live-data .live-unit {
+  font-size: 0.85em;
+  color: var(--text3);
+  font-weight: 400;
 }
 
 /* ── SUMMARY GRID ── */
@@ -1047,19 +1257,19 @@ body {
 }
 
 .phase-glide {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
 }
 
 .phase-catch {
-  background: linear-gradient(135deg, #22c55e, #16a34a);
+  background: linear-gradient(135deg, #15803d, #14532d);
 }
 
 .phase-pull {
-  background: linear-gradient(135deg, #eab308, #ca8a04);
+  background: linear-gradient(135deg, #ea580c, #9a3412);
 }
 
 .phase-recovery {
-  background: linear-gradient(135deg, #a855f7, #7c3aed);
+  background: linear-gradient(135deg, #9333ea, #6b21a8);
 }
 
 .phase-label {
@@ -1068,10 +1278,10 @@ body {
   font-size: 0.85em;
 }
 
-.phase-label-catch { background: rgba(34, 197, 94, 0.2); color: var(--green); }
-.phase-label-pull { background: rgba(234, 179, 8, 0.2); color: var(--amber); }
-.phase-label-recovery { background: rgba(168, 85, 247, 0.2); color: var(--purple); }
-.phase-label-glide { background: rgba(59, 130, 246, 0.2); color: var(--blue); }
+.phase-label-catch { background: rgba(21, 128, 61, 0.28); color: #4ade80; }
+.phase-label-pull { background: rgba(194, 65, 12, 0.25); color: #fb923c; }
+.phase-label-recovery { background: rgba(126, 34, 206, 0.25); color: #c084fc; }
+.phase-label-glide { background: rgba(37, 99, 235, 0.22); color: #60a5fa; }
 .phase-label-idle { background: rgba(100, 100, 120, 0.2); color: var(--text3); }
 
 /* ── DATA TABLE ── */
@@ -1504,6 +1714,123 @@ input[type="range"]::-webkit-slider-thumb {
   .haptic-timeline {
     height: 10px;
   }
+}
+
+/* ── Page context (where you are) ── */
+.page-heading {
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--bg4);
+}
+
+.page-heading--compact {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+}
+
+.page-heading__title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text1);
+  letter-spacing: -0.02em;
+}
+
+.page-heading__sub {
+  font-size: 0.82rem;
+  color: var(--text3);
+  margin-top: 4px;
+}
+
+.settings-field-hint {
+  font-size: 0.76rem;
+  color: var(--text3);
+  margin: -4px 0 12px;
+  line-height: 1.4;
+}
+
+.settings-divider {
+  border: none;
+  border-top: 1px solid var(--bg4);
+  margin: 16px 0;
+}
+
+.card-title--sub {
+  margin-top: 8px;
+  font-size: 0.92em !important;
+}
+
+.ideal-viewer-context {
+  font-size: 0.82rem;
+  color: var(--text2);
+  margin: 0 0 12px;
+  line-height: 1.45;
+}
+
+.ideal-status-line {
+  font-size: 0.95rem;
+  color: var(--text1);
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.ideal-meta-line {
+  font-size: 0.78rem;
+  color: var(--text3);
+  margin: 0 0 14px;
+  line-height: 1.4;
+}
+
+.ideal-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.ideal-actions-row .btn-gold {
+  flex: 1 1 220px;
+  min-height: 44px;
+}
+
+.ideal-id-tag {
+  font-size: 0.75em;
+  color: var(--text3);
+}
+
+.settings-diagnostics {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg1);
+  border: 1px solid var(--bg4);
+}
+
+.settings-diagnostics summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text2);
+  list-style: none;
+}
+
+.settings-diagnostics summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-diagnostics summary::before {
+  content: '▸ ';
+  color: var(--text3);
+}
+
+.settings-diagnostics[open] summary::before {
+  content: '▾ ';
+}
+
+.settings-diagnostics .btn {
+  margin-top: 10px;
+}
+
+.card--ideal {
+  border: 1px solid rgba(197, 165, 90, 0.2);
 }
 
 /* ── PRINT ── */

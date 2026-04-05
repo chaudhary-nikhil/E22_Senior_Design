@@ -50,12 +50,12 @@ typedef struct _goldenform_ImuSample {
     float deviation_score; /* Deviation from ideal stroke (0.0 = perfect) */
     /* Multi-device metadata */
     uint32_t device_id; /* Unique device identifier (from Kconfig) */
-    uint32_t device_role; /* 0=wrist, 1=ankle, 2=waist */
+    uint32_t device_role; /* 0=right wrist, 4=left wrist */
     /* Session running counts */
     uint32_t stroke_count; /* Running stroke count for this session */
     uint32_t turn_count; /* Running turn count for this session */
-    /* Head device breathing (stretch goal) */
-    uint32_t breath_count; /* Running breath count (head device only) */
+    /* Legacy field; always 0 in current firmware */
+    uint32_t breath_count;
     /* Angle of attack at water entry */
     float entry_angle; /* Hand pitch angle at stroke start (degrees) */
     /* Haptic feedback detailed reason (added for coaching) */

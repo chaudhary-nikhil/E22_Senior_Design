@@ -32,6 +32,7 @@ esp-idf/
 
 # Logs and temporary files
 *.log
+/log
 *.tmp
 .cache/
 

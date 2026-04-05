@@ -152,6 +152,14 @@ config GOLDENFORM_ENABLE_STORAGE
 
 menu "Storage & PSRAM Configuration"
 
+    config GOLDENFORM_REQUIRE_SD
+        bool "Require SD card for recording (PDP)"
+        default y
+        help
+            GoldenForm PDP uses SD for sessions and Wi‑Fi for sync to the dashboard — no UART data path.
+            When enabled, the device refuses to enter recording if the SD card is not mounted.
+            Disable only for bring-up without an SD socket.
+
     config PSRAM_BUFFER_CAPACITY_SAMPLES
         int "PSRAM ring buffer capacity (samples)"
         range 1000 100000
@@ -208,22 +216,14 @@ menu "Multi-Device Configuration (Stretch Goal)"
             ID 0 = AP SSID is only "GoldenForm" — do not use for multiple units at once (name clash).
 
     choice
-        prompt "Device body placement"
+        prompt "Wearable placement (left or right wrist only)"
         default GOLDENFORM_DEVICE_ROLE_WRIST
         help
-            Body placement determines which stroke metrics this device captures.
+            GoldenForm supports two wrist modules (PDP stretch: modular dual-wrist). Flash each ESP32 with a unique DEVICE_ID.
     config GOLDENFORM_DEVICE_ROLE_WRIST
-        bool "Wrist/Hand (primary stroke detection)"
+        bool "Right wrist / hand"
     config GOLDENFORM_DEVICE_ROLE_WRIST_LEFT
-        bool "Left Wrist/Hand (stroke detection, dual-arm)"
-    config GOLDENFORM_DEVICE_ROLE_HEAD
-        bool "Head (breathing detection)"
-    config GOLDENFORM_DEVICE_ROLE_ANKLE
-        bool "Ankle (kick detection)"
-    config GOLDENFORM_DEVICE_ROLE_ANKLE_LEFT
-        bool "Left Ankle (kick detection, dual-leg)"
-    config GOLDENFORM_DEVICE_ROLE_WAIST
-        bool "Waist/Hip (body roll)"
+        bool "Left wrist / hand"
     endchoice
 
     config GOLDENFORM_DEVICE_NAME

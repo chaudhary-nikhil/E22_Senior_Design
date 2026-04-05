@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include <dirent.h>
 #include <inttypes.h>
@@ -26,6 +27,64 @@
 #include "stroke_detector.h"
 
 static const char *TAG = "WIFI_SERVER";
+
+/** 0 = right wrist (protobuf 0), 1 = left wrist (protobuf 4). Persisted in NVS key "wrist_left". */
+static uint8_t s_wrist_left = 0;
+
+static void wrist_role_load_from_nvs(void) {
+#if defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST_LEFT)
+  const uint8_t factory_default = 1;
+#else
+  const uint8_t factory_default = 0;
+#endif
+  s_wrist_left = factory_default;
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READONLY, &nvs) != ESP_OK) {
+    return;
+  }
+  uint8_t v = 255;
+  esp_err_t e = nvs_get_u8(nvs, "wrist_left", &v);
+  nvs_close(nvs);
+  if (e == ESP_OK && v <= 1) {
+    s_wrist_left = v;
+    return;
+  }
+  if (nvs_open("goldenform", NVS_READWRITE, &nvs) == ESP_OK) {
+    nvs_set_u8(nvs, "wrist_left", factory_default);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+  }
+}
+
+uint32_t goldenform_device_role_pb(void) { return s_wrist_left ? 4u : 0u; }
+
+esp_err_t goldenform_set_device_role_str(const char *role) {
+  if (!role) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  uint8_t left;
+  if (strcmp(role, "wrist_left") == 0) {
+    left = 1;
+  } else if (strcmp(role, "wrist_right") == 0) {
+    left = 0;
+  } else {
+    return ESP_ERR_INVALID_ARG;
+  }
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READWRITE, &nvs) != ESP_OK) {
+    return ESP_FAIL;
+  }
+  esp_err_t e = nvs_set_u8(nvs, "wrist_left", left);
+  if (e == ESP_OK) {
+    e = nvs_commit(nvs);
+  }
+  nvs_close(nvs);
+  if (e == ESP_OK) {
+    s_wrist_left = left;
+    ESP_LOGI(TAG, "Wrist role saved: %s", left ? "wrist_left" : "wrist_right");
+  }
+  return e;
+}
 
 // Global state
 static wifi_server_state_t current_state = WIFI_SERVER_STATE_IDLE;
@@ -153,6 +212,13 @@ static esp_err_t user_config_post_handler(httpd_req_t *req);
 static esp_err_t ideal_stroke_get_handler(httpd_req_t *req);
 static esp_err_t ideal_stroke_delete_handler(httpd_req_t *req);
 static esp_err_t test_buzz_handler(httpd_req_t *req);
+static esp_err_t registration_done_post_handler(httpd_req_t *req);
+
+static void (*s_registration_done_cb)(void) = NULL;
+
+void wifi_server_set_registration_done_callback(void (*cb)(void)) {
+  s_registration_done_cb = cb;
+}
 
 // URI definitions
 static const httpd_uri_t root_uri = {
@@ -208,6 +274,12 @@ static const httpd_uri_t test_buzz_post_uri = {.uri = "/api/test_buzz",
                                                .method = HTTP_POST,
                                                .handler = test_buzz_handler,
                                                .user_ctx = NULL};
+
+static const httpd_uri_t registration_done_post_uri = {
+    .uri = "/api/registration_done",
+    .method = HTTP_POST,
+    .handler = registration_done_post_handler,
+    .user_ctx = NULL};
 
 // WiFi event handler
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -319,6 +391,7 @@ static esp_err_t start_http_server(void) {
     httpd_register_uri_handler(server, &ideal_stroke_get_uri);
     httpd_register_uri_handler(server, &ideal_stroke_delete_uri);
     httpd_register_uri_handler(server, &test_buzz_post_uri);
+    httpd_register_uri_handler(server, &registration_done_post_uri);
     // Register catch-all handler LAST (lowest priority) to suppress warnings
     httpd_register_uri_handler(server, &catch_all_uri);
     ESP_LOGI(TAG, "HTTP server started on port %d (stack: %d)",
@@ -1120,6 +1193,10 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
   cJSON *wingspan = cJSON_GetObjectItem(root, "wingspan_cm");
   cJSON *skill_str = cJSON_GetObjectItem(root, "skill_level");
   cJSON *height = cJSON_GetObjectItem(root, "height_cm");
+  cJSON *role_json = cJSON_GetObjectItem(root, "device_role");
+  if (!role_json || !cJSON_IsString(role_json)) {
+    role_json = cJSON_GetObjectItem(root, "wrist_role");
+  }
 
   float w_cm = wingspan ? (float)wingspan->valuedouble : 180.0f;
   float h_cm = height ? (float)height->valuedouble : 180.0f;
@@ -1128,6 +1205,15 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
   int skill_val = 1; // intermediate
   if (strcmp(skill, "beginner") == 0) skill_val = 0;
   else if (strcmp(skill, "advanced") == 0) skill_val = 2;
+
+  if (role_json && cJSON_IsString(role_json) && role_json->valuestring) {
+    esp_err_t re = goldenform_set_device_role_str(role_json->valuestring);
+    if (re != ESP_OK) {
+      cJSON_Delete(root);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid device_role");
+      return ESP_FAIL;
+    }
+  }
 
   cJSON_Delete(root);
 
@@ -1149,6 +1235,42 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_send(req, resp, strlen(resp));
+  return ESP_OK;
+}
+
+/** POST /api/registration_done — dashboard calls after saving the wearable; stops registration LED linger + AP. */
+static esp_err_t registration_done_post_handler(httpd_req_t *req) {
+  int total_len = req->content_len;
+  if (total_len > 2048) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body too large");
+    return ESP_FAIL;
+  }
+  if (total_len > 0) {
+    char *buf = malloc((size_t)total_len + 1);
+    if (!buf) {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+      return ESP_FAIL;
+    }
+    int received = 0;
+    while (received < total_len) {
+      int ret = httpd_req_recv(req, buf + received, total_len - received);
+      if (ret <= 0) {
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive error");
+        return ESP_FAIL;
+      }
+      received += ret;
+    }
+    free(buf);
+  }
+
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
+  if (s_registration_done_cb) {
+    s_registration_done_cb();
+  }
+  ESP_LOGI(TAG, "registration_done acknowledged");
   return ESP_OK;
 }
 
@@ -1176,38 +1298,28 @@ static esp_err_t test_buzz_handler(httpd_req_t *req) {
 static esp_err_t device_status_handler(httpd_req_t *req) {
   extern bool haptic_is_available(void);
   extern bool stroke_detector_has_ideal(void);
-  extern esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys, uint8_t *gyro, uint8_t *accel, uint8_t *mag);
+  extern void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
+                                         uint8_t *mag);
 
-  // Read BNO055 status
+  /* Same cal nibbles as the IMU sampling loop (serial), not a second I2C read (avoids contention). */
   uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
-  bno055_get_calibration_status(I2C_NUM_0, BNO055_ADDR_A, &sys, &gyro, &accel, &mag);
+  bno055_get_last_calibration(&sys, &gyro, &accel, &mag);
 
-  char json[512];
+  const char *role_str = s_wrist_left ? "wrist_left" : "wrist_right";
+  char json[640];
   snprintf(json, sizeof(json),
            "{\"device_id\":%d,\"device_role\":\"%s\","
            "\"haptic_available\":%s,\"ideal_loaded\":%s,"
+           "\"storage_ok\":%s,"
            "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d},"
            "\"firmware\":\"GoldenForm v1.0\",\"mcu\":\"ESP32-S3-WROOM-1\","
            "\"ssid\":\"%s\","
            "\"sample_hz\":%d,\"multi_device\":%s}",
            CONFIG_GOLDENFORM_DEVICE_ID,
-#if defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST)
-           "wrist_right",
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WRIST_LEFT)
-           "wrist_left",
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_HEAD)
-           "head",
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_ANKLE)
-           "ankle_right",
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_ANKLE_LEFT)
-           "ankle_left",
-#elif defined(CONFIG_GOLDENFORM_DEVICE_ROLE_WAIST)
-           "waist",
-#else
-           "wrist_right",
-#endif
+           role_str,
            haptic_is_available() ? "true" : "false",
            stroke_detector_has_ideal() ? "true" : "false",
+           storage_is_available() ? "true" : "false",
            sys, gyro, accel, mag,
            s_ap_ssid,
            CONFIG_GOLDENFORM_SAMPLE_HZ,
@@ -1238,6 +1350,8 @@ esp_err_t wifi_server_init(void) {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+
+  wrist_role_load_from_nvs();
 
   ESP_ERROR_CHECK(esp_netif_init());
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -1277,6 +1391,10 @@ esp_err_t wifi_server_start_ap(void) {
   current_state = WIFI_SERVER_STATE_RUNNING;
   ESP_LOGI(TAG, "WiFi AP + HTTP server started: http://192.168.4.1");
   return ESP_OK;
+}
+
+const char *wifi_server_get_ap_ssid(void) {
+  return (s_ap_ssid[0] != '\0') ? s_ap_ssid : WIFI_AP_SSID_BASE;
 }
 
 esp_err_t wifi_server_stop_ap(void) {

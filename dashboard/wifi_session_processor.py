@@ -10,16 +10,59 @@ import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import os
 import sys
+import uuid
+import argparse
 
 sys.path.insert(0, os.path.dirname(__file__))
-from simple_imu_visualizer import StrokeProcessor, SimpleKalmanFilter, BreathingDetector, align_sessions_by_hop
+from simple_imu_visualizer import StrokeProcessor, align_sessions_by_hop
 import database as db
 
 ESP32_URL = 'http://192.168.4.1'
 CACHE_DIR = os.path.join(os.path.dirname(__file__), '.session_cache')
 RAW_CACHE = os.path.join(CACHE_DIR, 'last_raw.json')
 PROCESSED_CACHE = os.path.join(CACHE_DIR, 'last_processed.json')
+INSTANCE_ID_PATH = os.path.join(CACHE_DIR, 'gf_instance_id')
+IDEAL_CACHE_FILE = os.path.join(CACHE_DIR, 'ideal_stroke.json')
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+# Set in start_server — used by /api/bootstrap
+SERVER_INSTANCE_ID = ''
+DEMO_MODE = False
+
+
+def _get_instance_id(demo: bool) -> str:
+    """Demo: always new id. Normal: stable id across restarts (persisted file)."""
+    if demo:
+        iid = str(uuid.uuid4())
+        with open(INSTANCE_ID_PATH, 'w', encoding='utf-8') as f:
+            f.write(iid)
+        return iid
+    if os.path.isfile(INSTANCE_ID_PATH):
+        with open(INSTANCE_ID_PATH, 'r', encoding='utf-8') as f:
+            s = f.read().strip()
+            if s:
+                return s
+    iid = str(uuid.uuid4())
+    with open(INSTANCE_ID_PATH, 'w', encoding='utf-8') as f:
+        f.write(iid)
+    return iid
+
+
+def _prepare_server_state(demo: bool) -> None:
+    """Demo: wipe DB + file caches, new instance id. Normal: init DB only."""
+    global SERVER_INSTANCE_ID, DEMO_MODE
+    DEMO_MODE = demo
+    if demo:
+        for fn in (RAW_CACHE, PROCESSED_CACHE, IDEAL_CACHE_FILE):
+            try:
+                if os.path.isfile(fn):
+                    os.remove(fn)
+            except OSError:
+                pass
+        db.wipe_database_file()
+    else:
+        db.init_db()
+    SERVER_INSTANCE_ID = _get_instance_id(demo=demo)
 
 
 class WiFiSessionHandler(BaseHTTPRequestHandler):
@@ -35,12 +78,24 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._serve_static('app.css', 'text/css')
         elif self.path == '/app.js':
             self._serve_static('app.js', 'application/javascript')
+        elif self.path.startswith('/js/') and self.path.endswith('.js'):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            rel = self.path.lstrip('/')
+            full = os.path.normpath(os.path.join(base_dir, rel))
+            try:
+                if os.path.commonpath([base_dir, full]) != base_dir:
+                    raise ValueError('path escape')
+            except ValueError:
+                self.send_response(403)
+                self.end_headers()
+                return
+            if os.path.isfile(full):
+                self._serve_static(rel, 'application/javascript')
+            else:
+                self.send_response(404)
+                self.end_headers()
         elif self.path == '/process':
             self._process_wifi_session()
-        elif self.path == '/cached':
-            self._serve_cached()
-        elif self.path.startswith('/viz/'):
-            self._serve_viz_module(self.path[5:])
         elif self.path == '/api/user':
             self._get_user_profile()
         elif self.path == '/api/ideal_stroke':
@@ -61,34 +116,37 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 self._get_sessions()
         elif self.path.startswith('/api/progress'):
             self._get_progress()
+        elif self.path == '/api/bootstrap':
+            self._get_bootstrap()
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        if self.path == '/reprocess':
-            self._reprocess_session()
-        elif self.path == '/api/register':
+        path = self.path.split('?', 1)[0]
+        if path == '/api/register':
             self._register_user()
-        elif self.path == '/api/ideal_stroke':
+        elif path == '/api/ideal_stroke':
             self._upload_ideal_stroke()
-        elif self.path == '/api/ideal_stroke/set_from_stroke':
+        elif path == '/api/ideal_stroke/set_from_stroke':
             self._set_ideal_from_stroke()
-        elif self.path == '/api/ideal_stroke/delete':
+        elif path == '/api/ideal_stroke/delete':
             self._delete_ideal_stroke()
-        elif self.path == '/api/ideal_stroke/push':
+        elif path == '/api/ideal_stroke/push':
             self._push_ideal_to_device()
-        elif self.path == '/api/user_config/push':
+        elif path == '/api/user_config/push':
             self._push_user_config_to_device()
-        elif self.path == '/api/test_buzz':
+        elif path == '/api/test_buzz':
             self._test_buzz()
-        elif self.path == '/api/devices/register':
+        elif path == '/api/devices/register':
             self._register_device()
-        elif self.path.startswith('/api/devices/delete'):
+        elif path == '/api/registration_done':
+            self._notify_registration_done()
+        elif path.startswith('/api/devices/delete'):
             self._delete_device()
-        elif self.path == '/api/sessions/save':
+        elif path == '/api/sessions/save':
             self._save_session()
-        elif self.path == '/api/sessions/merge':
+        elif path == '/api/sessions/merge':
             self._merge_sessions()
         else:
             self.send_response(404)
@@ -103,7 +161,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 name=body.get('name', 'Swimmer'),
                 height_cm=body.get('height_cm', 0),
                 wingspan_cm=body.get('wingspan_cm', 0),
-                skill_level=body.get('skill_level', 'beginner')
+                skill_level=body.get('skill_level', 'beginner'),
+                pool_length=float(body.get('pool_length', 25) or 25),
             )
             user = db.get_user()
             self._send_json({'status': 'ok', 'user_id': uid, 'profile': user})
@@ -129,6 +188,21 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._send_json({'status': 'ok', 'device_id': did})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
+
+    def _notify_registration_done(self):
+        """Forward to ESP32 so it clears registration linger + stops status LED + closes AP."""
+        try:
+            req = urllib.request.Request(
+                f'{ESP32_URL}/api/registration_done',
+                data=b'{}',
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            resp = urllib.request.urlopen(req, timeout=4)
+            json.loads(resp.read().decode())
+            self._send_json({'status': 'ok'})
+        except Exception as e:
+            self._send_json({'status': 'error', 'error': str(e)}, 502)
 
     def _delete_device(self):
         try:
@@ -252,7 +326,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         uid = user['id'] if user else None
         ideal = db.get_latest_ideal_stroke(uid)
         if ideal:
-            self._send_json({'samples': ideal['lia_data'], 'name': ideal['name'], 'num_samples': ideal['num_samples']})
+            self._send_json({
+                'samples': ideal['lia_data'],
+                'name': ideal['name'],
+                'num_samples': ideal['num_samples'],
+                'created_at': ideal.get('created_at'),
+                'id': ideal.get('id'),
+            })
         else:
             # Fall back to file cache
             ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
@@ -356,11 +436,18 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
     def _get_device_info(self):
         try:
-            resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=3)
+            # Short timeout: laptop is usually not on 192.168.4.1 — fail fast, no broken pipes from slow clients
+            resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=2.5)
             data = json.loads(resp.read().decode())
             self._send_json(data)
         except Exception:
             self._send_json({'status': 'disconnected', 'message': 'Device not reachable'})
+
+    def _get_bootstrap(self):
+        self._send_json({
+            'instance_id': SERVER_INSTANCE_ID,
+            'demo': DEMO_MODE,
+        })
 
     # ── Session Persistence ──
 
@@ -459,9 +546,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
                     lia_y = sample.get('lia_y', sample.get('ay', 0))
                     lia_z = sample.get('lia_z', sample.get('az', 0))
+                    mx = float(sample.get('mx', 0) or 0)
+                    my = float(sample.get('my', 0) or 0)
+                    mz = float(sample.get('mz', 0) or 0)
                     data_dict = {
                         't': sample.get('t', sample.get('timestamp', 0)),
                         'lia_x': lia_x, 'lia_y': lia_y, 'lia_z': lia_z,
+                        'mx': mx, 'my': my, 'mz': mz,
                         'gx': sample.get('gx', 0), 'gy': sample.get('gy', 0), 'gz': sample.get('gz', 0),
                         'qw': sample.get('qw', 1), 'qx': sample.get('qx', 0), 'qy': sample.get('qy', 0), 'qz': sample.get('qz', 0),
                         'haptic': sample.get('haptic', sample.get('haptic_fired', False)),
@@ -477,7 +568,9 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     }
                     result = processor.process_data(data_dict)
                     if result:
-                        p_data.append(json.loads(result))
+                        p = json.loads(result)
+                        p['magnetometer'] = {'mx': mx, 'my': my, 'mz': mz}
+                        p_data.append(p)
                 
                 metrics = self._calculate_stroke_metrics(p_data, processor)
                 duration = 0
@@ -502,60 +595,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send_json({"error": str(e)}, 500)
 
-    # ── Reprocess ──
-
-    def _reprocess_session(self):
-        try:
-            body = self._read_body()
-            raw_data = body.get('processedData', [])
-            if not raw_data:
-                self._send_json({"error": "No data provided"}, 400)
-                return
-
-            processor = StrokeProcessor(batch_mode=True)
-            processed_data = []
-            for sample in raw_data:
-                acc = sample.get('acceleration', {})
-                ang = sample.get('angular_velocity', {})
-                q = sample.get('quaternion', {})
-                cal = sample.get('calibration', {})
-                data_dict = {
-                    't': sample.get('timestamp', 0),
-                    'lia_x': acc.get('ax', 0), 'lia_y': acc.get('ay', 0), 'lia_z': acc.get('az', 0),
-                    'gx': ang.get('gx', 0), 'gy': ang.get('gy', 0), 'gz': ang.get('gz', 0),
-                    'qw': q.get('qw', 1), 'qx': q.get('qx', 0), 'qy': q.get('qy', 0), 'qz': q.get('qz', 0),
-                    'haptic': sample.get('haptic_fired', False),
-                    'deviation': sample.get('deviation_score', 0.0),
-                    'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
-                    'entry_angle': float(sample.get('entry_angle', 0) or 0),
-                    'dev_id': sample.get('device_id', 0),
-                    'dev_role': sample.get('device_role', 0),
-                    'cal': sample.get('cal', {
-                        'sys': cal.get('sys', 0), 'accel': cal.get('accel', 0),
-                        'gyro': cal.get('gyro', 0), 'mag': cal.get('mag', 0)
-                    })
-                }
-                result = processor.process_data(data_dict)
-                if result:
-                    processed_data.append(json.loads(result))
-
-            metrics = self._calculate_stroke_metrics(processed_data, processor)
-            self._send_json({
-                'processedData': processed_data,
-                'metrics': metrics
-            })
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self._send_json({"error": str(e)}, 500)
-
-    def _serve_cached(self):
-        if os.path.exists(PROCESSED_CACHE):
-            with open(PROCESSED_CACHE, 'r') as f:
-                self._send_json(json.load(f))
-        else:
-            self._send_json({"error": "No cached data available"}, 404)
-
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -571,15 +610,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         with open(html_path, 'rb') as f:
             self.wfile.write(f.read())
 
-
-    _ALLOWED_JS = {
-    'app.js',
-    'simple_imu_3d_viz.js',
-    'three.min.js',
-    'OrbitControls.js',
-    'chart.umd.min.js'
-}
-
     def _serve_static(self, filename, content_type):
         path = os.path.join(os.path.dirname(__file__), filename)
         if not os.path.exists(path):
@@ -593,24 +623,20 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         with open(path, 'rb') as f:
             self.wfile.write(f.read())
 
-    def _serve_viz_module(self, filename):
-        if filename in self._ALLOWED_JS:
-            self._serve_static(filename, 'application/javascript')
-        else:
-            self.send_response(404)
-            self.end_headers()
-
     def _read_body(self):
         length = int(self.headers.get('Content-Length', 0))
         return json.loads(self.rfile.read(length)) if length > 0 else {}
 
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
 
     def _process_wifi_session(self):
         """Fetch data from ESP32 and process each session independently."""
@@ -644,21 +670,20 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
                 actual_total += len(data)
                 processor = StrokeProcessor(batch_mode=True)
-                breath_detector = BreathingDetector()
                 processed_data = []
-                breath_events = []
-                session_has_head = any(
-                    int(s.get('dev_role', 0) or 0) == 3 for s in data
-                )
 
                 for sample in data:
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
                     lia_y = sample.get('lia_y', sample.get('ay', 0))
                     lia_z = sample.get('lia_z', sample.get('az', 0))
                     dev_role = int(sample.get('dev_role', 0) or 0)
+                    mx = float(sample.get('mx', 0) or 0)
+                    my = float(sample.get('my', 0) or 0)
+                    mz = float(sample.get('mz', 0) or 0)
                     data_dict = {
                         't': sample.get('t', 0),
                         'lia_x': lia_x, 'lia_y': lia_y, 'lia_z': lia_z,
+                        'mx': mx, 'my': my, 'mz': mz,
                         'gx': sample.get('gx', 0),
                         'gy': sample.get('gy', 0),
                         'gz': sample.get('gz', 0),
@@ -683,24 +708,11 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     processed_json = processor.process_data(data_dict)
                     if processed_json:
                         p = json.loads(processed_json)
-                        if session_has_head and dev_role == 3:
-                            q = p.get('quaternion', {})
-                            be = breath_detector.feed(
-                                data_dict['t'],
-                                q.get('qw', 1), q.get('qx', 0),
-                                q.get('qy', 0), q.get('qz', 0)
-                            )
-                            if be:
-                                breath_events.append(be)
-                                p['breath_event'] = be
-                            p['breath_count'] = breath_detector.breath_count
-                        else:
-                            p['breath_count'] = 0
+                        p.setdefault('breath_count', 0)
+                        p['magnetometer'] = {'mx': mx, 'my': my, 'mz': mz}
                         processed_data.append(p)
 
                 metrics = self._calculate_stroke_metrics(processed_data, processor)
-                breath_stats = breath_detector.get_stats() if session_has_head else {}
-                metrics['breathing'] = breath_stats
 
                 duration = 0
                 if len(processed_data) >= 2:
@@ -746,13 +758,32 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
             self._send_json(response)
 
-        except urllib.error.URLError as e:
-            print(f'[ESP32] Unreachable: {e}. Trying cache...')
-            if os.path.exists(PROCESSED_CACHE):
+        except urllib.error.HTTPError as e:
+            allow = os.environ.get('GOLDENFORM_ALLOW_STALE_CACHE', '').strip().lower() in ('1', 'true', 'yes')
+            hint = (
+                f'HTTP {e.code} from {ESP32_URL}/data.json — usually means this computer is not on the '
+                'GoldenForm hotspot (traffic went to a different device), or the band firmware is out of date.'
+            )
+            print(f'[ESP32] {hint} ({e})')
+            if allow and os.path.exists(PROCESSED_CACHE):
+                print('[ESP32] GOLDENFORM_ALLOW_STALE_CACHE set — serving last_processed.json (dev only).')
                 with open(PROCESSED_CACHE, 'r') as f:
                     self._send_json(json.load(f))
                 return
-            self._send_json({"error": f"ESP32 unreachable and no cache: {str(e)}"}, 500)
+            self._send_json({
+                'error': f'{hint} Join the correct GoldenForm Wi‑Fi on this computer, then tap Sync again.',
+            }, 503)
+        except urllib.error.URLError as e:
+            allow = os.environ.get('GOLDENFORM_ALLOW_STALE_CACHE', '').strip().lower() in ('1', 'true', 'yes')
+            print(f'[ESP32] Unreachable: {e}.')
+            if allow and os.path.exists(PROCESSED_CACHE):
+                print('[ESP32] GOLDENFORM_ALLOW_STALE_CACHE set — serving last_processed.json (dev only).')
+                with open(PROCESSED_CACHE, 'r') as f:
+                    self._send_json(json.load(f))
+                return
+            self._send_json({
+                "error": f"ESP32 unreachable: {str(e)}. Join the device Wi‑Fi and try Sync again."
+            }, 503)
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -929,11 +960,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         return round(max(0, min(10, score)), 1)
 
 
-def start_server(port=8004):
-    db.init_db()
+def start_server(port=8004, demo=False):
+    _prepare_server_state(demo)
     server = ThreadingHTTPServer(('0.0.0.0', port), WiFiSessionHandler)
     print(f'GoldenForm Session Processor running on http://localhost:{port}')
     print(f'Open: http://localhost:{port}/')
+    if demo:
+        print('Demo mode: fresh DB + caches; browser clears local data once to match this run.')
     print('Press Ctrl+C to stop')
     try:
         server.serve_forever()
@@ -943,5 +976,8 @@ def start_server(port=8004):
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8004))
-    start_server(port)
+    ap = argparse.ArgumentParser(description='GoldenForm dashboard + Wi‑Fi session processor')
+    ap.add_argument('--demo', action='store_true', help='Fresh database and caches for a clean demo; browser syncs on load.')
+    ap.add_argument('--port', type=int, default=int(os.environ.get('PORT', 8004)), help='HTTP port (default 8004)')
+    args = ap.parse_args()
+    start_server(port=args.port, demo=args.demo)

@@ -316,5 +316,15 @@ def get_progress(user_id, limit=50):
     return [dict(r) for r in rows]
 
 
+def wipe_database_file():
+    """Remove SQLite DB and recreate empty tables (used with session processor --demo)."""
+    try:
+        if os.path.isfile(DB_PATH):
+            os.remove(DB_PATH)
+    except OSError:
+        pass
+    init_db()
+
+
 # Initialize on import
 init_db()

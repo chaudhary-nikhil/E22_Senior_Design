@@ -10,6 +10,23 @@ static const char *TAG = "BNO055";
 // Session start time - resets to 0 on each boot
 static uint32_t session_start_time = 0;
 
+/* Updated only inside bno055_read_sample (sampling task). HTTP uses this instead of a concurrent I2C cal read. */
+static volatile uint8_t s_last_cal_sys = 0;
+static volatile uint8_t s_last_cal_gyro = 0;
+static volatile uint8_t s_last_cal_accel = 0;
+static volatile uint8_t s_last_cal_mag = 0;
+
+void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
+                                 uint8_t *mag) {
+  if (!sys || !gyro || !accel || !mag) {
+    return;
+  }
+  *sys = s_last_cal_sys;
+  *gyro = s_last_cal_gyro;
+  *accel = s_last_cal_accel;
+  *mag = s_last_cal_mag;
+}
+
 // Helper function to read 8-bit register with retry for clock stretching
 static esp_err_t bno055_read8(int port, uint8_t addr, uint8_t reg,
                               uint8_t *data) {
@@ -336,6 +353,10 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
   // Read calibration status
   bno055_get_calibration_status(port, addr, &out->sys_cal, &out->gyro_cal,
                                 &out->accel_cal, &out->mag_cal);
+  s_last_cal_sys = out->sys_cal;
+  s_last_cal_gyro = out->gyro_cal;
+  s_last_cal_accel = out->accel_cal;
+  s_last_cal_mag = out->mag_cal;
 
   // Heartbeat log for mode/status debugging (every 500 samples ~5s)
   static uint32_t hb_count = 0;
