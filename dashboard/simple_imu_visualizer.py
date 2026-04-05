@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-IMU Data Visualizer & Calibration Helper
+IMU Data Visualizer & Calibration Helper - FIXED VERSION
 
-Reads IMU data from ESP32, and provides clear, simple
-feedback in the terminal to help with sensor calibration.
+Key fix: Full-cycle integration (catch → pull → exit → recovery)
+- tracking_active stays True from stroke detection until NEXT stroke
+- Phase-adaptive filtering (tight for underwater, loose for recovery)
+- No arbitrary timeout cutting off trajectory mid-stroke
+
+Research basis: SwimBIT (PMC6915422), Frontiers fbioe.2021.793302
 """
 
 import serial
@@ -14,7 +18,6 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import sys
 import os
-import re
 import math
 
 # --- Global variables ---
@@ -24,226 +27,126 @@ clients = []
 serial_port = None
 last_cal_print_time = 0
 last_cal_status = {}
-stroke_processor_instance = None  # Will be set in main
+stroke_processor_instance = None
+
 
 class SimpleKalmanFilter:
-    """
-    A simplified 1D Kalman filter implementation for single-value signals (like acceleration).
-    Math:
-        x_est = x_pred + K * (meas - x_pred)
-    """
+    """1D Kalman filter for acceleration smoothing."""
     def __init__(self, process_noise, measurement_noise, estimation_error, initial_value):
-        self.Q = process_noise # Process noise covariance
-        self.R = measurement_noise # Measurement noise covariance
-        self.P = estimation_error # Estimation error covariance
-        self.X = initial_value # Value state estimate (x)
+        self.Q = process_noise
+        self.R = measurement_noise
+        self.P = estimation_error
+        self.X = initial_value
 
     def update(self, measurement):
-        # Prediction update (assume constant state)
         self.P = self.P + self.Q
-
-        # Measurement update
         K = self.P / (self.P + self.R)
         self.X = self.X + K * (measurement - self.X)
         self.P = (1 - K) * self.P
-        
         return self.X
 
-# --- This class contains your new logic ---
+
 class StrokeProcessor:
     """
-    Holds the state for velocity and position integration.
-    Detects strokes on DOWNWARD hand entry into water (catch phase).
-
-    Position path (dashboard + UART replay): Kalman-smoothed sensor LIA → quaternion rotation
-    to world frame → integrate only while ``stroke_integrating`` (pull-through window after impact).
-    This supersedes older gyro-threshold ``in_stroke`` gating from early branches; it is tuned to
-    match live JSON streams at reference
-    https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
-    and the integrated GoldenForm dashboard consumes ``position`` + ``tracking_active`` from here.
+    Full-cycle stroke position integration.
     
-    Research basis (SwimBIT & Frontiers IMU swimming papers):
-    - Water entry creates distinct deceleration spike (~1.5-2.5 m/s²)
-    - Recovery phase (arm up in air) has no water resistance spike
-    - Typical stroke rate: 40-80 strokes/min = 0.75-1.5s per stroke
-    - Downward motion shows negative vertical acceleration before impact
-    
-    Hardware: BNO055 IMU in junction box (e.g., B083H9D3P1) mounted on TOP of hand
-    - Box adds ~5-10mm offset but doesn't affect orientation significantly
-    - Waterproof enclosure protects sensor during submersion
-    
-    Coordinate System (BNO055 in NDOF fusion mode):
-    - world_az > 0: Accelerating UPWARD
-    - world_az < 0: Accelerating DOWNWARD
-    - At water impact: Upward deceleration force creates POSITIVE world_az spike
+    KEY CHANGE from original:
+    - stroke_cycle_active: True from stroke detection until NEXT stroke
+    - Frontend collects points continuously during entire cycle
+    - Position resets only when new stroke detected
+    - Phase-adaptive filtering reduces drift during recovery
     """
+    
     def __init__(self, batch_mode=False):
-        """
-        batch_mode: When True (post-session playback), use slightly more lenient thresholds
-        to improve stroke detection on recorded data which may differ from live stream.
-        """
-        self.position = [0.0, 0.0, 0.0]  # x, y, z
-        self.velocity = [0.0, 0.0, 0.0]  # vx, vy, vz
-        self.last_timestamp_ms = None
-        self.in_stroke = False
-        self.just_reset = False
         self.batch_mode = batch_mode
         
-        # Kalman Filters for Acceleration (X, Y, Z)
-        # TUNING for HUMAN MOTION:
-        # Q (Process Noise): 0.3 -> High because human motion changes accel rapidly.
-        # R (Measurement Noise): 0.1 -> Low because BNO055 is relatively precise.
+        # Position & velocity state
+        self.position = [0.0, 0.0, 0.0]
+        self.velocity = [0.0, 0.0, 0.0]
+        self.last_timestamp_ms = None
+        
+        # Kalman filters (Q=0.3 high for rapid human motion, R=0.1 low for BNO055 precision)
         self.kalman_ax = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_ay = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_az = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         
-        # High-pass filter: running average for DC-offset removal
-        # When accel is uncalibrated, LIA has gravity residual (DC bias)
-        # Subtract the slowly-moving average to get only dynamic acceleration
-        self.hp_alpha = 0.02  # Slow average: ~50 sample window at 50Hz = ~1s
+        # High-pass filter for gravity residual removal (uncalibrated accel)
+        self.hp_alpha = 0.02
         self.hp_avg = [0.0, 0.0, 0.0]
         
         # =====================================================================
-        # STROKE DETECTION: Downward Water Entry (Research-Backed Thresholds)
+        # STROKE DETECTION THRESHOLDS (research-backed)
         # =====================================================================
-        # Based on: SwimBIT (PMC6915422) and Frontiers macro-micro swimming analysis
-        #
-        # PHYSICS OF WATER ENTRY:
-        #   1. Before impact: Hand accelerating DOWN → world_az NEGATIVE
-        #   2. At impact: Water resistance creates UPWARD force → world_az spikes POSITIVE
-        #   3. This positive spike only occurs after downward motion (not during recovery)
-        #
-        # DETECTION STRATEGY:
-        #   - Check if PREVIOUS samples show downward motion (negative world_az)
-        #   - Detect CURRENT sample as impact (high accel magnitude + direction reversal)
-        #   - Verify with gyroscope (hand rotating during entry)
-        #
-        # IMU placement: Top of hand in waterproof junction box
-        # =====================================================================
+        self.WATER_ENTRY_ACCEL_THRESHOLD = 5.5 if batch_mode else 6.0
+        self.DOWNWARD_ACCEL_THRESHOLD = -0.8
+        self.DOWNWARD_SAMPLE_WINDOW = 8
+        self.DOWNWARD_REQUIRED_COUNT = 3 if batch_mode else 4
+        self.IMPACT_REVERSAL_THRESHOLD = 2.0
+        self.IMPACT_JERK_THRESHOLD = 250.0
+        self.IMPACT_DELTA_A_THRESHOLD = 4.0
+        self.ENTRY_GYRO_THRESHOLD = 0.6 if batch_mode else 0.8
+        self.MIN_STROKE_INTERVAL = 1.1  # Prevents counting recovery as stroke
         
-        # WATER ENTRY IMPACT DETECTION
-        # Research: SwimBIT uses ~1.6g envelope; Frontiers uses 0.9g for wrist
-        # Water entry produces a short, high-magnitude transient (impact/resistance).
-        # batch_mode: slightly lower to catch softer entries in post-session data
-        self.WATER_ENTRY_ACCEL_THRESHOLD = 5.5 if batch_mode else 6.0  # m/s² - total acceleration magnitude at impact
-        
-        # DOWNWARD MOTION VERIFICATION (checked BEFORE impact, not at impact)
-        # Must confirm hand WAS moving DOWN before counting impact as stroke
-        # Research: Prevents false positives from recovery phase (arm going up in air)
-        self.DOWNWARD_ACCEL_THRESHOLD = -0.8  # m/s² - world_az threshold for "moving down"
-        self.DOWNWARD_SAMPLE_WINDOW = 8  # Check last 8 samples (~80ms at 100Hz)
-        self.DOWNWARD_REQUIRED_COUNT = 3 if batch_mode else 4  # At least N of last 8 must show downward motion
-        
-        # DIRECTION REVERSAL DETECTION (key to detecting water impact)
-        # At impact: world_az changes from negative (down) to positive (deceleration)
-        # This reversal is the signature of hitting a resistant medium (water)
-        self.IMPACT_REVERSAL_THRESHOLD = 2.0  # m/s² - world_az must jump above this at impact
-
-        # SHARP CHANGE DETECTION (impact fallback)
-        # Frontiers macro-micro analysis explicitly uses "sharp change detection" as a common processing method.
-        # This makes stroke counting robust when the entry is messy and the vertical reversal isn't clean,
-        # while still being independent of where the arm ends after the stroke.
-        self.IMPACT_JERK_THRESHOLD = 250.0  # m/s^3  (jerk = d|a|/dt)
-        self.IMPACT_DELTA_A_THRESHOLD = 4.0  # m/s^2 (fallback if dt jitter)
-        
-        # ANGULAR VELOCITY FOR ENTRY DETECTION
-        # Hand rotating into water shows characteristic gyro pattern
-        # Research: SwimBIT uses roll angle; typical entry shows 1-3 rad/s rotation
-        # batch_mode: slightly lower for post-session data (may have different characteristics)
-        self.ENTRY_GYRO_THRESHOLD = 0.6 if batch_mode else 0.8  # rad/s - hand rotating during entry
-        
-        # STROKE TIMING CONSTRAINTS
-        # One physical stroke = pull + recovery. Recovery can produce a second
-        # accel/gyro peak; we must not count it. Minimum interval ensures only
-        # one stroke per arm cycle. Typical stroke 0.8-1.5s; fast ~0.7s.
-        self.MIN_STROKE_INTERVAL = 1.1  # seconds — avoids counting return/recovery as a stroke
-        
-        # TURN/WALL DETECTION (prevent false positives at wall)
-        # Flip turn: 20-40 m/s² impact. Open turn: 15-25 m/s² (hand contacts wall).
-        # Normal swimming strokes: 5-12 m/s². Vigorous dry-land strokes: up to 15 m/s².
-        # Must be well above stroke range to avoid false positives.
-        self.WALL_IMPACT_THRESHOLD = 34.0  # m/s² — above typical stroke LIA peaks; real wall push is higher
-        self.WALL_SUSTAINED_COUNT = 4  # require N consecutive high-accel samples (stricter than strokes)
-        self.STROKE_TURN_COOLDOWN_MS = 2000  # ignore wall/turn shortly after a stroke impact
-        self.TURN_LOCKOUT_DURATION = 2.5  # seconds
+        # Wall/turn detection
+        self.WALL_IMPACT_THRESHOLD = 34.0
+        self.WALL_SUSTAINED_COUNT = 4
+        self.STROKE_TURN_COOLDOWN_MS = 2000
+        self.TURN_LOCKOUT_DURATION = 2.5
         self.last_wall_impact_time_ms = 0
         self.wall_high_count = 0
         self.turn_count = 0
         
-        # Track recent world-frame vertical acceleration for downward motion detection
-        self.recent_world_az = []  # Ring buffer of recent world_az values
-        self.MAX_RECENT_SAMPLES = 12  # Keep last 12 samples (~120ms at 100Hz)
-        self.recent_accel_mag = []  # Ring buffer of accel magnitude for jerk/spike detection
+        # History buffers
+        self.recent_world_az = []
+        self.MAX_RECENT_SAMPLES = 12
+        self.recent_accel_mag = []
         self.prev_accel_mag = None
-        self.last_stroke_time_ms = 0  # Timestamp of last detected stroke
+        self.last_stroke_time_ms = 0
         
-        # GLIDE PHASE DETECTION (suppress strokes during glide after turn)
-        # During glide, acceleration is very low and steady
-        self.GLIDE_ACCEL_THRESHOLD = 1.5  # m/s² - below this is likely gliding
-        self.glide_sample_count = 0  # Count consecutive low-accel samples
-        self.GLIDE_SAMPLE_THRESHOLD = 20  # 20 consecutive low samples = gliding
+        # Glide detection
+        self.GLIDE_ACCEL_THRESHOLD = 1.5
+        self.glide_sample_count = 0
+        self.GLIDE_SAMPLE_THRESHOLD = 20
         self.is_gliding = False
         
-        # INTEGRATION WINDOW: Only integrate during active stroke pull-through.
-        # Typical arm pull: 0.3-0.5s. After that, hand exits water (recovery).
-        # We must NOT track recovery, only the underwater pull.
-        # Pull-through window: slightly longer when fusion is strong (matches live UART feel
-        # from commit 0401fbde — gyro-led tracking had longer apparent motion)
-        self.STROKE_INTEGRATION_TIMEOUT = 0.6  # default hard cutoff (seconds)
-        self.STROKE_INTEGRATION_TIMEOUT_WELL_CAL = 0.72  # when accel+gyro cal >= 2
-        self.STROKE_SETTLE_ACCEL = 0.8  # m/s² - accel below this = motion settling
-        self.STROKE_SETTLE_REQUIRED = 3  # consecutive quiet samples to end integration
-        self.stroke_settle_count = 0
-        self.stroke_integrating = False
-        self.stroke_integration_start = 0
+        # =====================================================================
+        # FULL-CYCLE INTEGRATION (THE KEY FIX)
+        # =====================================================================
+        # stroke_cycle_active: True from stroke detection until NEXT stroke
+        # This is what tracking_active sends to frontend
+        # Frontend collects points for ENTIRE cycle, not just 0.6s
+        self.stroke_cycle_active = False
+        self.stroke_start_time = 0
+        self.stroke_count = 0
+        self.just_reset = False
         
-        self.MIN_CAL_LEVEL = 0  # Relaxed: IMUPLUS mode makes 3/3 accel impossible while swimming
-        self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor (accel only)
-        self.ACCEL_DEADZONE_UNCAL = 1.0  # m/s² - larger deadzone for uncalibrated accel
-        # Legacy UART stream (0401fbde): world-frame integration used 0.98 / 0.80 with 0.2 deadzone
-        self.VELOCITY_DECAY = 0.97  # default — active stroke friction
-        self.STATIONARY_FRICTION = 0.85
-        self.VELOCITY_DECAY_WELL_CAL = 0.98
-        self.STATIONARY_FRICTION_WELL_CAL = 0.80
-        self.ACCEL_DEADZONE_WELL_CAL = 0.2  # m/s² — tight, like legacy live stream after BNO fusion
-
-        self.stroke_count = 0  # Track number of strokes
-        self.stroke_start_time = 0  # To track duration
-        # MIN_STROKE_DURATION removed - integration window uses settle detection instead
+        # Phase detection for adaptive filtering
+        self.current_phase = 'idle'
+        self.phase_start_time = 0
+        self.CATCH_DURATION_MS = 150
+        self.RECOVERY_GYRO_THRESHOLD = 1.5
+        self.RECOVERY_ACCEL_CEILING = 3.0
         
-        # ANGLE OF ATTACK (entry angle from quaternion pitch at stroke start)
-        # Research: eolab SwimBETTER tracks hand angle at water entry via gyroscope.
-        # We compute it from the quaternion pitch at the exact sample where stroke detected.
-        # Ideal freestyle entry angle: ~15-40 degrees (fingertips-first)
+        # Phase-adaptive integration parameters
+        # Pull phase: underwater, strong signal → tight deadzone, light decay
+        # Recovery phase: in air, noisy → wide deadzone, heavy decay
+        self.PHASE_PARAMS = {
+            'catch': {'deadzone': 0.2, 'decay': 0.98},
+            'pull': {'deadzone': 0.2, 'decay': 0.98},
+            'exit': {'deadzone': 0.25, 'decay': 0.96},
+            'recovery': {'deadzone': 0.5, 'decay': 0.92},  # Heavy damping for air
+            'glide': {'deadzone': 0.4, 'decay': 0.90},
+            'idle': {'deadzone': 0.3, 'decay': 0.95},
+        }
+        
+        # Entry angle tracking
         self.last_entry_angle = 0.0
-        self.entry_angles = []  # All entry angles this session
-        self.ideal_entry_angle = 30.0  # degrees, configurable per user
-        # Gyro ‖ω‖ (rad/s) at water-entry sample — PDP: angle of attack + rotation at impact
+        self.entry_angles = []
+        self.ideal_entry_angle = 30.0
         self.last_entry_gyro_mag = 0.0
         self.last_entry_gx = self.last_entry_gy = self.last_entry_gz = 0.0
         
-        # STROKE PHASE TRACKING (Research: IEEE Swimming Phase Segmentation,
-        # Frontiers fbioe.2021.793302 — gyroscope angular velocity is the primary
-        # discriminator between underwater (catch/pull) and aerial (recovery) phases)
-        #
-        # Phases: catch, pull, recovery, glide
-        #   catch: hand entering water — high gyro + downward accel (short ~0.1s)
-        #   pull: hand pulling through water — moderate gyro, high LIA, integration active
-        #   recovery: arm swinging above water — high gyro, low accel (no water resistance)
-        #   glide: low accel + low gyro, streamline position
-        #
-        # Key insight: during recovery the hand moves fast but through air, so accel
-        # magnitude is LOW despite HIGH gyro. During pull, water resistance creates
-        # HIGH accel with moderate gyro. This gyro/accel ratio distinguishes phases.
-        self.current_phase = 'idle'
-        self.phase_start_time = 0
-        self.phase_durations = {'glide': [], 'catch': [], 'pull': [], 'recovery': []}
-        self.last_phase_pcts = {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0}
-        self.CATCH_DURATION_MS = 150  # catch phase lasts ~100-200ms after stroke detection
-        self.RECOVERY_GYRO_THRESHOLD = 1.5  # rad/s — arm swinging above water
-        self.RECOVERY_ACCEL_CEILING = 3.0   # m/s² — low accel during aerial recovery
-        
-        # DEBUG: Track stroke detection state for troubleshooting
+        # Debug state
         self.debug_world_az = 0.0
         self.debug_accel_mag = 0.0
         self.debug_gyro_mag = 0.0
@@ -254,360 +157,197 @@ class StrokeProcessor:
         self.debug_in_turn_lockout = False
 
     def process_data(self, data_dict):
-        """
-        Processes a full data dictionary from the sensor.
-        `data_dict` should be the parsed JSON from the ESP32.
-        """
+        """Process sensor data, detect strokes, integrate position."""
         
-        # 1. Get timestamp and calculate delta-time (dt)
+        # 1. Timestamp & delta-time
         t_ms = data_dict['t']
         if self.last_timestamp_ms is None:
             self.last_timestamp_ms = t_ms
             return None
         
-        dt = (t_ms - self.last_timestamp_ms) / 1000.0  # dt in seconds
+        dt = (t_ms - self.last_timestamp_ms) / 1000.0
         self.last_timestamp_ms = t_ms
         
         if dt <= 0 or dt > 0.5:
-            self.last_timestamp_ms = t_ms 
             return None
 
-        # 2. Get necessary data from the JSON
+        # 2. Extract sensor data
         try:
-            lia_x = data_dict['lia_x']
-            lia_y = data_dict['lia_y']
-            lia_z = data_dict['lia_z']
-            
-            quat_w = data_dict['qw']
-            quat_x = data_dict['qx']
-            quat_y = data_dict['qy']
-            quat_z = data_dict['qz']
-
-            gyro_y = data_dict['gy'] 
+            lia_x, lia_y, lia_z = data_dict['lia_x'], data_dict['lia_y'], data_dict['lia_z']
+            qw, qx, qy, qz = data_dict['qw'], data_dict['qx'], data_dict['qy'], data_dict['qz']
+            gx, gy, gz = data_dict['gx'], data_dict['gy'], data_dict['gz']
             
             calibration = data_dict.get('cal') or data_dict.get('calibration', {})
-            cal_sys = calibration.get('sys', 0)
             cal_accel = calibration.get('accel', 0)
             cal_gyro = calibration.get('gyro', 0)
-            cal_mag = calibration.get('mag', 0)
-
         except KeyError as e:
-            print(f"ERROR: Missing key {e}. Check sensor data format.")
+            print(f"ERROR: Missing key {e}")
             return None
 
-        # 3. --- Check Calibration BEFORE doing any logic ---
-        # BNO055 TIP: "System" status (sys) often drops to 0 during movement.
-        # We should NOT stop tracking just because SYS=0, provided Accel/Gyro are good.
-        if (
-            cal_accel < self.MIN_CAL_LEVEL
-            or cal_gyro < self.MIN_CAL_LEVEL
-        ):
-            self.in_stroke = False
-            self.stroke_integrating = False
-            self.velocity = [0.0, 0.0, 0.0]
+        # 3. Compute magnitudes and world-frame acceleration
+        raw_accel_mag = math.sqrt(lia_x**2 + lia_y**2 + lia_z**2)
+        gyro_mag = math.sqrt(gx**2 + gy**2 + gz**2)
+        
+        # Quaternion rotation to world frame
+        ww, xx, yy, zz = qw*qw, qx*qx, qy*qy, qz*qz
+        wx, wy, wz = qw*qx, qw*qy, qw*qz
+        xy, xz, yz = qx*qy, qx*qz, qy*qz
+        
+        world_ax = (ww + xx - yy - zz)*lia_x + 2*(xy - wz)*lia_y + 2*(xz + wy)*lia_z
+        world_ay = 2*(xy + wz)*lia_x + (ww - xx + yy - zz)*lia_y + 2*(yz - wx)*lia_z
+        world_az = 2*(xz - wy)*lia_x + 2*(yz + wx)*lia_y + (ww - xx - yy + zz)*lia_z
+        
+        # Kalman-smoothed for integration
+        smooth_x = self.kalman_ax.update(lia_x)
+        smooth_y = self.kalman_ay.update(lia_y)
+        smooth_z = self.kalman_az.update(lia_z)
+        
+        # =====================================================================
+        # 4. STROKE DETECTION
+        # =====================================================================
+        time_since_wall = (t_ms - self.last_wall_impact_time_ms) / 1000.0 if self.last_wall_impact_time_ms else 999.0
+        in_turn_lockout = self.last_wall_impact_time_ms > 0 and time_since_wall < self.TURN_LOCKOUT_DURATION
+        
+        # Glide detection
+        if raw_accel_mag < self.GLIDE_ACCEL_THRESHOLD and gyro_mag < 0.5:
+            self.glide_sample_count += 1
+            if self.glide_sample_count >= self.GLIDE_SAMPLE_THRESHOLD:
+                self.is_gliding = True
         else:
-            # --- System is sufficiently calibrated, run stroke logic ---
-            # Compute stroke detection on RAW LIA (need sharp peaks for impact detection)
-            raw_accel_mag = math.sqrt(lia_x * lia_x + lia_y * lia_y + lia_z * lia_z)
+            self.glide_sample_count = 0
+            self.is_gliding = False
+        
+        # Update history buffers
+        self.recent_world_az.append(world_az)
+        if len(self.recent_world_az) > self.MAX_RECENT_SAMPLES:
+            self.recent_world_az.pop(0)
+        
+        if self.prev_accel_mag is None:
+            self.prev_accel_mag = raw_accel_mag
+        accel_delta = raw_accel_mag - self.prev_accel_mag
+        jerk = accel_delta / dt if dt > 0 else 0.0
+        self.prev_accel_mag = raw_accel_mag
+        
+        # Check downward motion history
+        was_moving_downward = False
+        if len(self.recent_world_az) > self.DOWNWARD_SAMPLE_WINDOW:
+            history = self.recent_world_az[-(self.DOWNWARD_SAMPLE_WINDOW + 1):-1]
+            downward_count = sum(1 for az in history if az < self.DOWNWARD_ACCEL_THRESHOLD)
+            was_moving_downward = downward_count >= self.DOWNWARD_REQUIRED_COUNT
+        
+        # Impact detection
+        is_impact_spike = (
+            raw_accel_mag > self.WATER_ENTRY_ACCEL_THRESHOLD
+            and world_az > self.IMPACT_REVERSAL_THRESHOLD
+        )
+        is_impact_by_jerk = (
+            raw_accel_mag > self.WATER_ENTRY_ACCEL_THRESHOLD
+            and (jerk > self.IMPACT_JERK_THRESHOLD or accel_delta > self.IMPACT_DELTA_A_THRESHOLD)
+        )
+        
+        time_since_last_stroke = (t_ms - self.last_stroke_time_ms) / 1000.0
+        interval_ok = time_since_last_stroke >= self.MIN_STROKE_INTERVAL
+        has_entry_rotation = gyro_mag > self.ENTRY_GYRO_THRESHOLD
+        
+        impact_detected = is_impact_spike or is_impact_by_jerk
+        stroke_detected = (
+            impact_detected
+            and interval_ok
+            and has_entry_rotation
+            and not in_turn_lockout
+            and not self.is_gliding
+            and (was_moving_downward or is_impact_by_jerk)
+        )
+        
+        # Store debug values
+        self.debug_world_az = world_az
+        self.debug_accel_mag = raw_accel_mag
+        self.debug_gyro_mag = gyro_mag
+        self.debug_was_downward = was_moving_downward
+        self.debug_is_impact = is_impact_spike
+        self.debug_jerk = jerk
+        self.debug_is_impact_by_jerk = is_impact_by_jerk
+        self.debug_in_turn_lockout = in_turn_lockout
+        
+        # =====================================================================
+        # 5. NEW STROKE DETECTED → RESET & START NEW CYCLE
+        # =====================================================================
+        if stroke_detected:
+            self.stroke_count += 1
+            self.last_stroke_time_ms = t_ms
+            self.wall_high_count = 0
+            self.recent_world_az.clear()
+            self.glide_sample_count = 0
             
-            # Apply Kalman Filter for position integration (smoothed)
-            smooth_x = self.kalman_ax.update(lia_x)
-            smooth_y = self.kalman_ay.update(lia_y)
-            smooth_z = self.kalman_az.update(lia_z)
-
-            # Use RAW magnitude for stroke detection, SMOOTHED for integration
-            accel_mag = raw_accel_mag
+            # RESET position & velocity for new stroke
+            self.position = [0.0, 0.0, 0.0]
+            self.velocity = [0.0, 0.0, 0.0]
+            self.hp_avg = [0.0, 0.0, 0.0]
             
-            # =================================================================
-            # COMPUTE WORLD-FRAME ACCELERATION (needed for stroke detection)
-            # =================================================================
-            # Transform sensor-frame linear acceleration to world frame using quaternion
-            # This gives us true vertical acceleration regardless of hand orientation
-            qw, qx, qy, qz = quat_w, quat_x, quat_y, quat_z
-            ax, ay, az = lia_x, lia_y, lia_z  # Use raw for world-frame detection
-
-            ww = qw * qw
-            xx = qx * qx
-            yy = qy * qy
-            zz = qz * qz
-            wx = qw * qx
-            wy = qw * qy
-            wz = qw * qz
-            xy = qx * qy
-            xz = qx * qz
-            yz = qy * qz
-
-            world_ax = (ww + xx - yy - zz) * ax + 2 * (xy - wz) * ay + 2 * (xz + wy) * az
-            world_ay = 2 * (xy + wz) * ax + (ww - xx + yy - zz) * ay + 2 * (yz - wx) * az
-            world_az = 2 * (xz - wy) * ax + 2 * (yz + wx) * ay + (ww - xx - yy + zz) * az
+            # START new cycle (stays True until NEXT stroke)
+            self.stroke_cycle_active = True
+            self.stroke_start_time = t_ms
             
-            # Gyroscope magnitude for rotation detection
-            gyro_mag = math.sqrt(data_dict['gx']**2 + data_dict['gy']**2 + data_dict['gz']**2)
-            
-            # =================================================================
-            # 4. STROKE DETECTION: Downward Water Entry
-            # =================================================================
-            # Research basis: SwimBIT & Frontiers swimming analysis papers
-            # 
-            # PHYSICS OF HAND WATER ENTRY:
-            #   Timeline:
-            #   t-80ms: Hand swinging down, world_az ≈ -2 to -5 m/s² (accelerating down)
-            #   t-40ms: Hand approaching water, world_az ≈ -1 to -3 m/s²
-            #   t=0:    IMPACT! Water resistance → world_az spikes to +5 to +15 m/s²
-            #   t+40ms: Hand in water, pulling, world_az settles
-            #
-            # DETECTION STRATEGY:
-            #   1. Check if PREVIOUS samples (before current) show downward motion
-            #   2. Detect CURRENT sample as impact (high magnitude + positive world_az)
-            #   3. Verify with gyroscope (hand rotating during entry)
-            #   4. Filter out wall impacts and gliding phases
-            #
-            # This PREVENTS false positives from:
-            #   - Recovery phase (arm going UP in air - no downward history)
-            #   - Wall/turn impacts (filtered by extreme magnitude + lockout)
-            #   - Gliding phases (filtered by low sustained acceleration)
-            # =================================================================
-            
-            time_since_wall = (t_ms - self.last_wall_impact_time_ms) / 1000.0 if self.last_wall_impact_time_ms else 999.0
-            in_turn_lockout = (self.last_wall_impact_time_ms > 0 and time_since_wall < self.TURN_LOCKOUT_DURATION)
-            
-            # --- GLIDE PHASE DETECTION ---
-            # During glide, acceleration is very low and steady
-            if accel_mag < self.GLIDE_ACCEL_THRESHOLD and gyro_mag < 0.5:
-                self.glide_sample_count += 1
-                if self.glide_sample_count >= self.GLIDE_SAMPLE_THRESHOLD:
-                    self.is_gliding = True
-            else:
-                # Any significant motion ends glide detection
-                self.glide_sample_count = 0
-                self.is_gliding = False
-            
-            # --- UPDATE HISTORY BUFFER ---
-            # Add current world_az to buffer BEFORE checking (we check previous samples)
-            self.recent_world_az.append(world_az)
-            if len(self.recent_world_az) > self.MAX_RECENT_SAMPLES:
-                self.recent_world_az.pop(0)
-
-            # Track acceleration magnitude history for impact jerk/spike detection
-            if self.prev_accel_mag is None:
-                self.prev_accel_mag = accel_mag
-            accel_delta = accel_mag - self.prev_accel_mag
-            jerk = accel_delta / dt if dt > 0 else 0.0
-            self.prev_accel_mag = accel_mag
-
-            self.recent_accel_mag.append(accel_mag)
-            if len(self.recent_accel_mag) > self.MAX_RECENT_SAMPLES:
-                self.recent_accel_mag.pop(0)
-            
-            # --- CHECK DOWNWARD MOTION HISTORY (excluding current sample) ---
-            # Look at samples BEFORE the current one to verify hand was moving down
-            # Need at least WINDOW+1 samples: WINDOW for history + 1 for current
-            was_moving_downward = False
-            if len(self.recent_world_az) > self.DOWNWARD_SAMPLE_WINDOW:
-                # Check samples [-(WINDOW+1) to -1), excluding the current sample [-1]
-                # This looks at the motion BEFORE the potential impact
-                # Example: buffer=[...old, -2, -3, -1, +5], we check [-2, -3, -1] not +5
-                history_samples = self.recent_world_az[-(self.DOWNWARD_SAMPLE_WINDOW + 1):-1]
-                downward_count = sum(1 for az_val in history_samples 
-                                    if az_val < self.DOWNWARD_ACCEL_THRESHOLD)
-                was_moving_downward = (downward_count >= self.DOWNWARD_REQUIRED_COUNT)
-            
-            # --- CHECK FOR IMPACT SIGNATURE ---
-            # Water impact: high acceleration magnitude + direction reversal (now positive)
-            # The reversal from negative (down) to positive (deceleration) is key
-            is_impact_spike = (
-                accel_mag > self.WATER_ENTRY_ACCEL_THRESHOLD
-                and world_az > self.IMPACT_REVERSAL_THRESHOLD  # Now decelerating (positive)
-            )
-
-            # --- IMPACT FALLBACK: SHARP CHANGE DETECTION (axis-agnostic) ---
-            # If a swimmer has poor form and enters at an odd angle, the vertical reversal may be weaker.
-            # However, the *impact* still produces a sharp change in acceleration magnitude.
-            # We only allow this path when:
-            # - magnitude is already above the entry threshold
-            # - jerk (or delta) is large (sharp-change)
-            # - hand is rotating (entry motion)
-            # - NOT in wall/turn lockout and NOT gliding
-            # This stays independent of the hand's end position (sideways drift doesn't matter).
-            is_impact_by_jerk = (
-                accel_mag > self.WATER_ENTRY_ACCEL_THRESHOLD
-                and (jerk > self.IMPACT_JERK_THRESHOLD or accel_delta > self.IMPACT_DELTA_A_THRESHOLD)
-            )
-            
-            # --- CHECK STROKE INTERVAL ---
-            time_since_last_stroke = (t_ms - self.last_stroke_time_ms) / 1000.0
-            interval_ok = (time_since_last_stroke >= self.MIN_STROKE_INTERVAL)
-            
-            # --- CHECK GYROSCOPE ROTATION ---
-            # Hand rotating into water shows characteristic angular velocity
-            has_entry_rotation = (gyro_mag > self.ENTRY_GYRO_THRESHOLD)
-            
-            # --- FINAL STROKE DETECTION ---
-            # ALL conditions must be true:
-            #   1. was_moving_downward: Hand WAS going down before impact
-            #   2. is_impact_spike: Current sample shows water impact signature
-            #   3. interval_ok: Enough time since last stroke (avoids counting return/recovery)
-            #   4. has_entry_rotation: Hand is rotating (entry motion)
-            #   5. NOT in turn lockout: Not immediately after wall impact
-            #   6. NOT gliding: Not in passive glide phase
-            #   7. NOT still in current stroke: No double-count during same arm cycle
-            impact_detected = is_impact_spike or is_impact_by_jerk
-
-            # Primary path: clean downward history + vertical reversal impact
-            # Fallback path: sharp-change impact + rotation (handles messy entries)
-            stroke_detected = (
-                impact_detected
-                and interval_ok
-                and has_entry_rotation
-                and not in_turn_lockout
-                and not self.is_gliding
-                and not self.stroke_integrating  # ignore peaks during pull-through/recovery of same stroke
-                and (was_moving_downward or is_impact_by_jerk)
-            )
-            
-            # Store debug values for troubleshooting output
-            self.debug_world_az = world_az
-            self.debug_accel_mag = accel_mag
-            self.debug_gyro_mag = gyro_mag
-            self.debug_was_downward = was_moving_downward
-            self.debug_is_impact = is_impact_spike
-            self.debug_jerk = jerk
-            self.debug_is_impact_by_jerk = is_impact_by_jerk
-            self.debug_in_turn_lockout = in_turn_lockout
-            
-            if stroke_detected:
-                self.stroke_count += 1
-                self.last_stroke_time_ms = t_ms
-                self.wall_high_count = 0
-                self.recent_world_az.clear()
-                self.glide_sample_count = 0
-                self.position = [0.0, 0.0, 0.0]
-                self.velocity = [0.0, 0.0, 0.0]
-                self.hp_avg = [0.0, 0.0, 0.0]
-                self.in_stroke = True
-                self.stroke_start_time = t_ms
-                self.stroke_integrating = True
-                self.stroke_integration_start = t_ms
-                self.stroke_settle_count = 0
-                
-                # ANGLE OF ATTACK: compute hand pitch from quaternion at entry
-                # Euler pitch from quaternion: pitch = asin(2*(qw*qy - qz*qx))
-                sinp = 2.0 * (qw * qy - qz * qx)
-                sinp = max(-1.0, min(1.0, sinp))  # clamp for asin
-                pitch_rad = math.asin(sinp)
-                self.last_entry_angle = abs(math.degrees(pitch_rad))
-                self.entry_angles.append(self.last_entry_angle)
-                self.last_entry_gyro_mag = gyro_mag
-                self.last_entry_gx = float(data_dict.get('gx', 0) or 0)
-                self.last_entry_gy = float(data_dict.get('gy', 0) or 0)
-                self.last_entry_gz = float(data_dict.get('gz', 0) or 0)
-
-            # --- WALL/TURN (after stroke): vigorous strokes must not register as turns ---
-            since_stroke_ms = (t_ms - self.last_stroke_time_ms) if self.last_stroke_time_ms else self.STROKE_TURN_COOLDOWN_MS + 1
-            if since_stroke_ms >= self.STROKE_TURN_COOLDOWN_MS:
-                if accel_mag > self.WALL_IMPACT_THRESHOLD:
-                    self.wall_high_count += 1
-                    if self.wall_high_count >= self.WALL_SUSTAINED_COUNT:
-                        if (t_ms - self.last_wall_impact_time_ms) / 1000.0 > self.TURN_LOCKOUT_DURATION:
-                            self.turn_count += 1
-                        self.last_wall_impact_time_ms = t_ms
-                        self.recent_world_az.clear()
-                        self.wall_high_count = 0
-                else:
+            # Entry angle from quaternion pitch
+            sinp = 2.0 * (qw * qy - qz * qx)
+            sinp = max(-1.0, min(1.0, sinp))
+            self.last_entry_angle = abs(math.degrees(math.asin(sinp)))
+            self.entry_angles.append(self.last_entry_angle)
+            self.last_entry_gyro_mag = gyro_mag
+            self.last_entry_gx, self.last_entry_gy, self.last_entry_gz = gx, gy, gz
+        
+        # Wall/turn detection (after cooldown from stroke)
+        since_stroke_ms = t_ms - self.last_stroke_time_ms if self.last_stroke_time_ms else self.STROKE_TURN_COOLDOWN_MS + 1
+        if since_stroke_ms >= self.STROKE_TURN_COOLDOWN_MS:
+            if raw_accel_mag > self.WALL_IMPACT_THRESHOLD:
+                self.wall_high_count += 1
+                if self.wall_high_count >= self.WALL_SUSTAINED_COUNT:
+                    if time_since_wall > self.TURN_LOCKOUT_DURATION:
+                        self.turn_count += 1
+                    self.last_wall_impact_time_ms = t_ms
+                    self.recent_world_az.clear()
                     self.wall_high_count = 0
             else:
                 self.wall_high_count = 0
+        else:
+            self.wall_high_count = 0
+        
+        # =====================================================================
+        # 6. PHASE DETECTION (for adaptive filtering)
+        # =====================================================================
+        time_since_stroke_ms = t_ms - self.stroke_start_time if self.stroke_start_time > 0 else 999999
+        
+        if self.is_gliding:
+            new_phase = 'glide'
+        elif self.stroke_cycle_active and time_since_stroke_ms < self.CATCH_DURATION_MS:
+            new_phase = 'catch'
+        elif self.stroke_cycle_active and time_since_stroke_ms < 500:  # ~0.5s underwater
+            new_phase = 'pull'
+        elif self.stroke_cycle_active and time_since_stroke_ms < 700:  # Exit water
+            new_phase = 'exit'
+        elif self.stroke_cycle_active and gyro_mag > self.RECOVERY_GYRO_THRESHOLD:
+            new_phase = 'recovery'
+        elif self.stroke_cycle_active and raw_accel_mag < self.RECOVERY_ACCEL_CEILING:
+            new_phase = 'recovery'
+        elif self.stroke_cycle_active:
+            new_phase = 'recovery'  # Default to recovery if in cycle but not underwater
+        else:
+            new_phase = 'idle'
+        
+        if new_phase != self.current_phase:
+            self.phase_start_time = t_ms
+        self.current_phase = new_phase
+        
+        # =====================================================================
+        # 7. POSITION INTEGRATION (full cycle, phase-adaptive)
+        # =====================================================================
+        if self.stroke_cycle_active:
+            # World-frame transform of smoothed acceleration
+            int_ax = (ww + xx - yy - zz)*smooth_x + 2*(xy - wz)*smooth_y + 2*(xz + wy)*smooth_z
+            int_ay = 2*(xy + wz)*smooth_x + (ww - xx + yy - zz)*smooth_y + 2*(yz - wx)*smooth_z
+            int_az = 2*(xz - wy)*smooth_x + 2*(yz + wx)*smooth_y + (ww - xx - yy + zz)*smooth_z
             
-            # --- STROKE PHASE TRACKING (gyroscope-enhanced, runs AFTER stroke
-            # detection so stroke_integrating/stroke_start_time are up-to-date) ---
-            # Research: IEEE Swimming Phase Segmentation (2020), Frontiers
-            # fbioe.2021.793302 — gyroscope angular velocity is the primary
-            # discriminator between underwater and aerial phases.
-            prev_phase = self.current_phase
-            time_since_stroke_ms = (t_ms - self.stroke_start_time) if self.stroke_start_time > 0 else 999999
-            RECOVERY_MAX_MS = 600  # recovery lasts at most ~0.6s after pull ends
-
-            if self.is_gliding and not self.stroke_integrating:
-                new_phase = 'glide'
-            elif self.stroke_integrating and time_since_stroke_ms < self.CATCH_DURATION_MS:
-                new_phase = 'catch'
-            elif self.stroke_integrating:
-                new_phase = 'pull'
-            elif (self.stroke_count > 0
-                  and not self.stroke_integrating
-                  and not self.is_gliding
-                  and gyro_mag > self.RECOVERY_GYRO_THRESHOLD
-                  and time_since_stroke_ms < (self.STROKE_INTEGRATION_TIMEOUT * 1000 + RECOVERY_MAX_MS)):
-                new_phase = 'recovery'
-            elif (self.stroke_count > 0
-                  and not self.stroke_integrating
-                  and not self.is_gliding
-                  and time_since_stroke_ms < (self.STROKE_INTEGRATION_TIMEOUT * 1000 + RECOVERY_MAX_MS)
-                  and accel_mag < self.RECOVERY_ACCEL_CEILING):
-                new_phase = 'recovery'
-            elif self.stroke_count > 0 and not self.stroke_integrating:
-                new_phase = 'glide'
-            else:
-                new_phase = 'idle'
-
-            if new_phase != prev_phase and prev_phase in ('glide', 'catch', 'pull', 'recovery'):
-                phase_dur = (t_ms - self.phase_start_time) / 1000.0
-                if phase_dur > 0.05:
-                    self.phase_durations[prev_phase].append(phase_dur)
-                self.phase_start_time = t_ms
-            elif new_phase != prev_phase:
-                self.phase_start_time = t_ms
-            self.current_phase = new_phase
-
-            recent_n = 5
-            total_dur = 0
-            for ph in ('glide', 'catch', 'pull', 'recovery'):
-                durs = self.phase_durations[ph][-recent_n:]
-                total_dur += sum(durs)
-            if total_dur > 0:
-                for ph in ('glide', 'catch', 'pull', 'recovery'):
-                    durs = self.phase_durations[ph][-recent_n:]
-                    self.last_phase_pcts[ph] = round(sum(durs) / total_dur * 100, 1)
-
-            # =================================================================
-            # INTEGRATION WINDOW MANAGEMENT
-            # Only integrate during the active pull-through phase of a stroke.
-            # Starts at stroke detection (impact). Ends when acceleration
-            # settles for N consecutive samples, or hard timeout (0.6s).
-            # Gyro is NOT used for ending (recovery rotation ≠ position motion).
-            # =================================================================
-            if self.stroke_integrating:
-                time_since_stroke = (t_ms - self.stroke_integration_start) / 1000.0
-                well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
-                t_limit = (
-                    self.STROKE_INTEGRATION_TIMEOUT_WELL_CAL
-                    if well_cal_integrate
-                    else self.STROKE_INTEGRATION_TIMEOUT
-                )
-                if time_since_stroke > t_limit:
-                    self.stroke_integrating = False
-                    self.in_stroke = False
-                    self.stroke_settle_count = 0
-                elif time_since_stroke > 0.15:
-                    if accel_mag < self.STROKE_SETTLE_ACCEL:
-                        self.stroke_settle_count += 1
-                        if self.stroke_settle_count >= self.STROKE_SETTLE_REQUIRED:
-                            self.stroke_integrating = False
-                            self.in_stroke = False
-                    else:
-                        self.stroke_settle_count = 0
-            else:
-                self.in_stroke = False
-            
-            # 5. Integration Logic
-            # ONLY integrate during the stroke pull-through window.
-            # Between strokes: position is frozen, velocity is zero.
-            # World-frame R * Kalman(LIA) — same physics as legacy UART stream (0401fbde).
-            int_ax = (ww + xx - yy - zz) * smooth_x + 2 * (xy - wz) * smooth_y + 2 * (xz + wy) * smooth_z
-            int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
-            int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
-            
-            # High-pass filter: remove DC bias from gravity residual (uncalibrated accel)
+            # High-pass filter for uncalibrated accel
             if cal_accel < 2:
                 self.hp_avg[0] += self.hp_alpha * (int_ax - self.hp_avg[0])
                 self.hp_avg[1] += self.hp_alpha * (int_ay - self.hp_avg[1])
@@ -615,116 +355,78 @@ class StrokeProcessor:
                 int_ax -= self.hp_avg[0]
                 int_ay -= self.hp_avg[1]
                 int_az -= self.hp_avg[2]
-
-            if self.stroke_integrating:
-                # Legacy UART (0401fbde): with accel+gyro fusion >= 2, use tight deadzone and
-                # light decay — same world-frame path as Wi‑Fi/SD replay (R * Kalman-smoothed LIA).
-                well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
-                if well_cal_integrate:
-                    deadzone = self.ACCEL_DEADZONE_WELL_CAL
-                    decay_act = self.VELOCITY_DECAY_WELL_CAL
-                    decay_stat = self.STATIONARY_FRICTION_WELL_CAL
-                else:
-                    deadzone = (
-                        self.ACCEL_DEADZONE if cal_accel >= 2 else self.ACCEL_DEADZONE_UNCAL
-                    )
-                    decay_act = self.VELOCITY_DECAY
-                    decay_stat = self.STATIONARY_FRICTION
-
-                is_accelerating = False
-                # Vector deadzone when well calibrated: avoids false "motion" from one noisy
-                # axis drifting the integrator diagonally (common IMU double-integration issue).
-                if well_cal_integrate:
-                    w_mag = math.sqrt(int_ax * int_ax + int_ay * int_ay + int_az * int_az)
-                    if w_mag < deadzone:
-                        int_ax = 0.0
-                        int_ay = 0.0
-                        int_az = 0.0
-                    else:
-                        is_accelerating = True
-                else:
-                    if abs(int_ax) < deadzone:
-                        int_ax = 0.0
-                    else:
-                        is_accelerating = True
-                    if abs(int_ay) < deadzone:
-                        int_ay = 0.0
-                    else:
-                        is_accelerating = True
-                    if abs(int_az) < deadzone:
-                        int_az = 0.0
-                    else:
-                        is_accelerating = True
-
-                self.velocity[0] += int_ax * dt
-                self.velocity[1] += int_ay * dt
-                self.velocity[2] += int_az * dt
-
-                decay = decay_act if is_accelerating else decay_stat
-                self.velocity[0] *= decay
-                self.velocity[1] *= decay
-                self.velocity[2] *= decay
-
-                # Bleed residual velocity when acceleration is near quiet (reduces slow drift
-                # in one direction while still tracking real pull transients).
-                if well_cal_integrate and accel_mag < 0.5:
-                    vb = 0.92
-                    self.velocity[0] *= vb
-                    self.velocity[1] *= vb
-                    self.velocity[2] *= vb
-                
-                self.position[0] += self.velocity[0] * dt
-                self.position[1] += self.velocity[1] * dt
-                self.position[2] += self.velocity[2] * dt
-                
-                # Clamp position: realistic arm pull-through reach ~0.6m
-                pos_mag = math.sqrt(sum(p*p for p in self.position))
-                if pos_mag > 0.6:
-                    scale = 0.6 / pos_mag
-                    self.position = [p * scale for p in self.position]
-                    self.velocity = [v * 0.3 for v in self.velocity]
-            else:
-                self.velocity = [0.0, 0.0, 0.0]
-
-        stroke_vel_ms = math.sqrt(self.velocity[0]**2 + self.velocity[1]**2 + self.velocity[2]**2)
+            
+            # Phase-adaptive parameters
+            params = self.PHASE_PARAMS.get(self.current_phase, self.PHASE_PARAMS['idle'])
+            deadzone = params['deadzone']
+            decay = params['decay']
+            
+            # Vector magnitude deadzone (prevents diagonal drift)
+            int_mag = math.sqrt(int_ax**2 + int_ay**2 + int_az**2)
+            if int_mag < deadzone:
+                int_ax = int_ay = int_az = 0.0
+            
+            # Integrate velocity
+            self.velocity[0] += int_ax * dt
+            self.velocity[1] += int_ay * dt
+            self.velocity[2] += int_az * dt
+            
+            # Apply decay
+            self.velocity[0] *= decay
+            self.velocity[1] *= decay
+            self.velocity[2] *= decay
+            
+            # Integrate position
+            self.position[0] += self.velocity[0] * dt
+            self.position[1] += self.velocity[1] * dt
+            self.position[2] += self.velocity[2] * dt
+            
+            # Soft clamp (gradual braking, preserves shape)
+            # Only activates if position gets unreasonably large (>1m)
+            pos_mag = math.sqrt(sum(p*p for p in self.position))
+            if pos_mag > 1.0:
+                brake = 0.95
+                self.velocity = [v * brake for v in self.velocity]
+        else:
+            self.velocity = [0.0, 0.0, 0.0]
         
-        # Calculate phase progress
-        phase_progress = 0.0
-        if self.current_phase != 'idle':
-            current_duration = (t_ms - self.phase_start_time) / 1000.0
-            history = self.phase_durations[self.current_phase][-5:]
-            if history:
-                avg_dur = sum(history) / len(history)
-                phase_progress = min(1.0, current_duration / avg_dur)
-            else:
-                fallbacks = {'catch': 0.15, 'pull': 0.4, 'recovery': 0.5, 'glide': 1.0}
-                phase_progress = min(1.0, current_duration / fallbacks.get(self.current_phase, 1.0))
-
-        # 6. Create the final JSON for the visualizer
+        # =====================================================================
+        # 8. BUILD OUTPUT JSON
+        # =====================================================================
+        stroke_vel = math.sqrt(sum(v*v for v in self.velocity))
         avg_entry = sum(self.entry_angles) / len(self.entry_angles) if self.entry_angles else 0
+        
+        # Firmware-reported values (passthrough)
         fw_entry = float(data_dict.get('entry_angle', 0) or 0)
-        display_entry = round(fw_entry, 1) if fw_entry > 0.05 else round(self.last_entry_angle, 1)
         fw_strokes = int(data_dict.get('strokes', 0) or 0)
+        display_entry = round(fw_entry, 1) if fw_entry > 0.05 else round(self.last_entry_angle, 1)
+        
         vis_data = {
             "timestamp": t_ms,
-            "quaternion": {"qw": quat_w, "qx": quat_x, "qy": quat_y, "qz": quat_z},
+            "quaternion": {"qw": qw, "qx": qx, "qy": qy, "qz": qz},
             "position": {"px": self.position[0], "py": self.position[1], "pz": self.position[2]},
-            "calibration": calibration,  # Pass full calibration status to UI
+            "calibration": calibration,
             
-            "acceleration": {"ax": lia_x, "ay": lia_y, "az": lia_z},  # Use linear acceleration (LIA)
-            "angular_velocity": {"gx": data_dict['gx'], "gy": data_dict['gy'], "gz": data_dict['gz']},
+            "acceleration": {"ax": lia_x, "ay": lia_y, "az": lia_z},
+            "angular_velocity": {"gx": gx, "gy": gy, "gz": gz},
             "magnetometer": {
                 "mx": float(data_dict.get('mx', 0) or 0),
                 "my": float(data_dict.get('my', 0) or 0),
                 "mz": float(data_dict.get('mz', 0) or 0),
             },
-            "tracking_active": self.stroke_integrating,
+            
+            # THE KEY FIX: tracking_active = stroke_cycle_active (full cycle)
+            "tracking_active": self.stroke_cycle_active,
             "stroke_count": self.stroke_count,
-            "strokes": fw_strokes,
+            "strokes": fw_strokes,  # Firmware-reported stroke count
             "turn_count": self.turn_count,
             "just_reset": self.just_reset,
             
-            # Angle of attack (prefer firmware-reported angle at impact)
+            # Phase info
+            "stroke_phase": self.current_phase,
+            "stroke_velocity_ms": round(stroke_vel, 3),
+            
+            # Entry angle
             "entry_angle": display_entry,
             "avg_entry_angle": round(avg_entry, 1),
             "ideal_entry_angle": self.ideal_entry_angle,
@@ -735,27 +437,17 @@ class StrokeProcessor:
                 "gz": round(self.last_entry_gz, 4),
             },
             
-            # Stroke phase & Signal processing
-            "stroke_phase": self.current_phase,
-            "phase_pcts": dict(self.last_phase_pcts),
-            "phase_progress": round(phase_progress, 3),
-            "stroke_velocity_ms": round(stroke_vel_ms, 3),
-            # World-frame LIA integration tuning (matches live UART @ 0401fbde when fusion strong)
-            "position_integration": (
-                "legacy_uart_match"
-                if (cal_accel >= 2 and cal_gyro >= 2)
-                else ("hp_gravity_residual" if cal_accel < 2 else "standard")
-            ),
-            
+            # Haptic feedback passthrough (from firmware)
             "haptic_fired": data_dict.get('haptic_fired', data_dict.get('haptic', False)),
             "deviation_score": data_dict.get('deviation_score', data_dict.get('deviation', 0.0)),
             "haptic_reason": data_dict.get('haptic_reason', 0),
             "pull_duration_ms": data_dict.get('pull_duration_ms', 0.0),
             
-            # Module/Device ID 
+            # Device identification
             "device_id": data_dict.get('dev_id', 0),
             "device_role": data_dict.get('dev_role', 0),
             
+            # Debug
             "stroke_debug": {
                 "world_az": round(self.debug_world_az, 2),
                 "accel_mag": round(self.debug_accel_mag, 2),
@@ -769,88 +461,19 @@ class StrokeProcessor:
             }
         }
         
-        # Clear the reset flag after sending once
         if self.just_reset:
             self.just_reset = False
         
         return json.dumps(vis_data)
 
 
-def align_sessions_by_hop(sessions):
-    """
-    Align multiple device sessions by detecting a synchronization hop/jump.
-    
-    Each device's data should contain a deliberate high acceleration spike
-    (hop) in the first 30 seconds. We find the peak LIA magnitude for each
-    session, compute timestamp offsets relative to the first session,
-    and shift all timestamps accordingly.
-    
-    Args:
-        sessions: list of dicts, each with 'data' (list of sample dicts with 't', 'lia_x', 'lia_y', 'lia_z')
-    
-    Returns:
-        list of sessions with aligned timestamps, plus alignment metadata
-    """
-    if len(sessions) < 2:
-        return sessions, {'aligned': False, 'reason': 'Need at least 2 sessions'}
-
-    hop_times = []
-    hop_mags = []
-    WINDOW_MS = 30000  # Search first 30 seconds
-
-    for sess in sessions:
-        data = sess.get('data', [])
-        if not data:
-            hop_times.append(0)
-            hop_mags.append(0)
-            continue
-
-        t0 = data[0].get('t', 0)
-        peak_mag = 0
-        peak_time = t0
-
-        for s in data:
-            t = s.get('t', 0)
-            if (t - t0) > WINDOW_MS:
-                break
-            lx = s.get('lia_x', s.get('ax', 0))
-            ly = s.get('lia_y', s.get('ay', 0))
-            lz = s.get('lia_z', s.get('az', 0))
-            mag = math.sqrt(lx * lx + ly * ly + lz * lz)
-            if mag > peak_mag:
-                peak_mag = mag
-                peak_time = t
-
-        hop_times.append(peak_time)
-        hop_mags.append(peak_mag)
-
-    # Compute offsets relative to first session
-    reference_time = hop_times[0]
-    offsets = [ht - reference_time for ht in hop_times]
-
-    # Apply offsets
-    aligned_sessions = []
-    for i, sess in enumerate(sessions):
-        new_sess = dict(sess)
-        new_data = []
-        for s in sess.get('data', []):
-            ns = dict(s)
-            ns['t'] = s.get('t', 0) - offsets[i]
-            new_data.append(ns)
-        new_sess['data'] = new_data
-        aligned_sessions.append(new_sess)
-
-    meta = {
-        'aligned': True,
-        'offsets_ms': offsets,
-        'hop_magnitudes': [round(m, 2) for m in hop_mags],
-        'quality': 'good' if all(m > 5.0 for m in hop_mags) else 'weak'
-    }
-    return aligned_sessions, meta
-
-
-# --- HTTP Server (Unchanged) ---
+# =============================================================================
+# HTTP SERVER (unchanged)
+# =============================================================================
 class SSEHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # Suppress HTTP logs
+    
     def do_GET(self):
         if self.path == '/events':
             self.handle_sse()
@@ -859,18 +482,13 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             html_path = os.path.join(os.path.dirname(__file__), 'simple_imu_3d.html')
-
-            html_path = os.path.join(os.path.dirname(__file__), 'simple_imu_3d.html')
             try:
                 with open(html_path, 'rb') as f:
                     self.wfile.write(f.read())
+            except FileNotFoundError:
+                self.wfile.write(b"Error: simple_imu_3d.html not found")
             except (BrokenPipeError, ConnectionResetError, OSError):
                 pass
-            except FileNotFoundError:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b"Error: 'simple_imu_3d.html' not found in this directory.")
-                print("ERROR: 'simple_imu_3d.html' not found.", flush=True)
         else:
             self.send_response(404)
             self.end_headers()
@@ -882,15 +500,14 @@ class SSEHandler(BaseHTTPRequestHandler):
                 stroke_processor_instance.stroke_count = 0
                 stroke_processor_instance.position = [0.0, 0.0, 0.0]
                 stroke_processor_instance.velocity = [0.0, 0.0, 0.0]
-                stroke_processor_instance.in_stroke = False
-                stroke_processor_instance.stroke_integrating = False
+                stroke_processor_instance.stroke_cycle_active = False
                 stroke_processor_instance.recent_world_az.clear()
-                stroke_processor_instance.recent_accel_mag.clear()
                 stroke_processor_instance.prev_accel_mag = None
                 stroke_processor_instance.last_stroke_time_ms = 0
                 stroke_processor_instance.last_wall_impact_time_ms = 0
                 stroke_processor_instance.glide_sample_count = 0
                 stroke_processor_instance.is_gliding = False
+                stroke_processor_instance.just_reset = True
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -909,8 +526,6 @@ class SSEHandler(BaseHTTPRequestHandler):
         self.end_headers()
         
         clients.append(self)
-        print(f"Client connected. Total clients: {len(clients)}", flush=True)
-        
         try:
             while True:
                 with data_lock:
@@ -919,17 +534,14 @@ class SSEHandler(BaseHTTPRequestHandler):
                             self.wfile.write(f"data: {latest_data_json}\n\n".encode())
                             self.wfile.flush()
                         except (BrokenPipeError, ConnectionResetError, OSError):
-                            # Client disconnected
                             break
-                time.sleep(0.01) # ~100Hz
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            pass # Client disconnected
-        except Exception as e:
-            print(f"SSE error: {e}", flush=True)
+                time.sleep(0.01)
+        except:
+            pass
         finally:
             if self in clients:
                 clients.remove(self)
-            print(f"Client disconnected. Total clients: {len(clients)}", flush=True)
+
 
 def broadcast_data(json_data):
     if json_data is None:
@@ -938,69 +550,48 @@ def broadcast_data(json_data):
         global latest_data_json
         latest_data_json = json_data
 
+
 def get_serial_port_list():
-    """Discover serial ports, excluding Bluetooth. Prefer known USB-serial (ESP32)."""
-    # Skip Bluetooth and virtual ports that are never the ESP32
-    skip_substrings = (
-        "Bluetooth", "BLTH", "Bluetooth-Incoming", "BTSerial",
-        "debug", "Dial-in", "modem", "rfcomm",
-    )
-    def is_likely_esp32(port_path):
-        p = port_path.upper()
-        for skip in skip_substrings:
-            if skip.upper() in p:
-                return False
-        return True
-    ports = [p.device for p in serial.tools.list_ports.comports() if is_likely_esp32(p.device)]
-    # Prefer known USB-serial adapters (idf.py / ESP32 typical names)
+    """Find USB-serial ports, excluding Bluetooth."""
+    skip = ("Bluetooth", "BLTH", "debug", "modem", "rfcomm")
+    ports = [p.device for p in serial.tools.list_ports.comports()
+             if not any(s.upper() in p.device.upper() for s in skip)]
+    
     def priority(path):
-        if "SLAB_USBtoUART" in path or "usbserial" in path or "wchusbserial" in path:
+        if any(x in path for x in ("SLAB_USBtoUART", "usbserial", "wchusbserial")):
             return 0
         if sys.platform == "darwin" and path.startswith("/dev/cu."):
             return 1
         return 2
+    
     ports.sort(key=lambda x: (priority(x), x))
     return ports
 
 
-# --- Serial Receiver (MODIFIED to be quiet) ---
-def serial_receiver(processor: StrokeProcessor, preferred_port=None):
+def serial_receiver(processor, preferred_port=None):
+    """Read IMU data from ESP32 serial port."""
     global serial_port, last_cal_print_time, last_cal_status
-
+    
     while True:
         if serial_port is None:
-            if preferred_port:
-                possible_ports = [preferred_port]
-                print(f"Using port: {preferred_port}", flush=True)
-            else:
-                possible_ports = get_serial_port_list()
-            print("Attempting to connect to ESP32...", flush=True)
-            if not possible_ports:
-                print("No serial ports found. Is the ESP32 plugged in (USB data cable)?", flush=True)
-            else:
-                print(f"Trying ports: {possible_ports}", flush=True)
-            for port in possible_ports:
+            ports = [preferred_port] if preferred_port else get_serial_port_list()
+            print(f"Trying ports: {ports}")
+            
+            for port in ports:
                 try:
                     serial_port = serial.Serial(port, 115200, timeout=1)
-                    print(f"Connected to ESP32 on {port}", flush=True)
+                    print(f"Connected: {port}")
                     break
-                except serial.SerialException as e:
-                    print(f"  {port}: {e}", flush=True)
-                    serial_port = None
                 except Exception as e:
-                    print(f"  {port}: {e}", flush=True)
+                    print(f"  {port}: {e}")
                     serial_port = None
-
+            
             if serial_port is None:
-                print("ERROR: Could not open any port. Unplug other serial apps (monitor, Arduino IDE) or specify port: python3 simple_imu_visualizer.py <port>", flush=True)
-                print("Retrying in 5 seconds.", flush=True)
+                print("No ESP32 found. Retrying in 5s...")
                 time.sleep(5)
                 continue
-    
-        # If we are here, we have a serial_port connection
-        print("Reading IMU data from ESP32...")
-        print("--- WAITING FOR CALIBRATION ---")
-        print("Please move the sensor to calibrate it (see instructions).")
+        
+        print("Reading IMU data...")
         
         while True:
             try:
@@ -1009,107 +600,68 @@ def serial_receiver(processor: StrokeProcessor, preferred_port=None):
                     time.sleep(0.01)
                     continue
                 
-                # Try to decode as UTF-8, ignore invalid bytes
                 try:
                     line = raw_line.decode('utf-8').strip()
                 except UnicodeDecodeError:
-                    # Skip binary data or corrupted bytes
                     continue
                 
                 if line:
                     try:
-                        data_dict = json.loads(line)
-                        
-                        # Ensure data_dict is a dictionary before checking keys
-                        if isinstance(data_dict, dict) and 't' in data_dict and 'lia_x' in data_dict:
-                            # Process the data (integrates, checks cal, etc.)
-                            json_to_broadcast = processor.process_data(data_dict)
-                            if json_to_broadcast:
-                                broadcast_data(json_to_broadcast)
+                        data = json.loads(line)
+                        if isinstance(data, dict) and 't' in data and 'lia_x' in data:
+                            result = processor.process_data(data)
+                            if result:
+                                broadcast_data(result)
                             
-                            # --- THIS IS THE NEW "SLOW" PRINTING LOGIC ---
-                            current_time = time.time()
-                            cal_status = data_dict.get('cal', {})
-                            
-                            # Print an update only once per second OR if status changes
-                            if (current_time - last_cal_print_time > 1.0) or (cal_status != last_cal_status):
-                                cal_sys = cal_status.get('sys', 0)
-                                cal_gyro = cal_status.get('gyro', 0)
-                                cal_accel = cal_status.get('accel', 0)
-                                cal_mag = cal_status.get('mag', 0)
-                                
-                                # Provide helpful hints based on missing calibration
-                                hint = ""
-                                if cal_accel < 3:
-                                    hint = "[TIP: Place sensor in 6 different stable positions for ACCEL]"
-                                elif cal_mag < 3:
-                                    hint = "[TIP: Move in figure-8 for MAG]"
-                                elif cal_gyro < 3:
-                                    hint = "[TIP: Leave sensor completely still for GYRO]"
-                                
-                                # Stroke status with debug info
-                                status_str = "ACTIVE" if processor.in_stroke else "IDLE"
-                                count_str = f"Strokes: {processor.stroke_count}"
-                                
-                                # Show stroke detection state for debugging
-                                az_str = f"wAz:{processor.debug_world_az:+.1f}"
-                                down_str = "DOWN" if processor.debug_was_downward else "----"
-                                impact_str = "IMPACT" if processor.debug_is_impact else "------"
-                                lock_str = "LOCK" if processor.debug_in_turn_lockout else "----"
-                                
-                                # Use print() with carriage return to update in-place
-                                print(f"CAL: S={cal_sys} G={cal_gyro} A={cal_accel} | {count_str} | {az_str} {down_str} {impact_str} {lock_str} | {hint}          ", end='\r', flush=True)
-                                
-                                last_cal_print_time = current_time
-                                last_cal_status = cal_status
-                                
-                                if cal_accel >= 2 and cal_gyro >= 2:
-                                    print(f"\n--- SENSORS READY (A={cal_accel} G={cal_gyro}) [{status_str}] ---", flush=True)
-                                elif cal_accel < 2:
-                                    print("\n--- Waiting for Accelerometer (Rotate Sensor) ---", flush=True)
-
+                            # Periodic status print
+                            now = time.time()
+                            cal = data.get('cal', {})
+                            if now - last_cal_print_time > 1.0 or cal != last_cal_status:
+                                phase = processor.current_phase
+                                active = "ACTIVE" if processor.stroke_cycle_active else "IDLE"
+                                print(f"CAL: A={cal.get('accel',0)} G={cal.get('gyro',0)} | "
+                                      f"Strokes: {processor.stroke_count} | "
+                                      f"Phase: {phase} | {active}", end='\r')
+                                last_cal_print_time = now
+                                last_cal_status = cal
                     except json.JSONDecodeError:
-                        pass # Ignore non-JSON lines
-                    
+                        pass
+                        
             except serial.SerialException as e:
-                print(f"\nSerial read error (device disconnected?): {e}", flush=True)
+                print(f"\nSerial error: {e}")
                 serial_port.close()
                 serial_port = None
-                print("Connection lost. Will attempt to reconnect...", flush=True)
-                last_cal_status = {} # Reset cal status
-                break 
-            except UnicodeDecodeError:
-                # Already handled above, skip
-                continue
+                last_cal_status = {}
+                break
             except Exception as e:
-                # Only print unexpected errors (not connection issues)
                 if not isinstance(e, (BrokenPipeError, ConnectionResetError, OSError)):
-                    print(f"\nUnhandled serial read error: {e}", flush=True)
+                    print(f"\nError: {e}")
                 time.sleep(0.1)
 
-# --- (start_web_server and __main__ are unchanged from the previous file) ---
+
 def start_web_server(port):
-    """Start the web server"""
+    """Start HTTP server."""
     try:
         server = HTTPServer(('0.0.0.0', port), SSEHandler)
-        print(f"Web server started on http://localhost:{port}", flush=True)
+        print(f"Web server: http://localhost:{port}")
         server.serve_forever()
     except OSError as e:
-        print(f"\nERROR: Could not start web server on port {port}. Is it already in use?")
-        print(e)
+        print(f"Port {port} in use: {e}")
         sys.exit(1)
 
+
 if __name__ == "__main__":
-    print("ESP32 IMU 3D Visualizer - Stroke Integration Version")
-    print("===================================================", flush=True)
+    print("=" * 60)
+    print("IMU Visualizer - FIXED (Full-Cycle Integration)")
+    print("=" * 60)
     
-    default_http_port = 8003
-    http_port = int(os.environ.get("PORT", default_http_port))
+    http_port = int(os.environ.get("PORT", 8003))
     serial_port_arg = None
+    
     if len(sys.argv) >= 2:
-        arg1 = sys.argv[1]
-        if arg1.startswith("/dev/") or arg1.upper().startswith("COM"):
-            serial_port_arg = arg1
+        arg = sys.argv[1]
+        if arg.startswith("/dev/") or arg.upper().startswith("COM"):
+            serial_port_arg = arg
             if len(sys.argv) >= 3:
                 try:
                     http_port = int(sys.argv[2])
@@ -1117,14 +669,14 @@ if __name__ == "__main__":
                     pass
         else:
             try:
-                http_port = int(arg1)
+                http_port = int(arg)
             except ValueError:
-                print(f"Invalid argument '{arg1}'. Use: python3 simple_imu_visualizer.py [serial_port] [http_port]", flush=True)
+                print(f"Usage: python3 {sys.argv[0]} [serial_port] [http_port]")
     
-    stroke_processor = StrokeProcessor()
-    stroke_processor_instance = stroke_processor
+    processor = StrokeProcessor()
+    stroke_processor_instance = processor
     
-    receiver_thread = threading.Thread(target=serial_receiver, args=(stroke_processor, serial_port_arg), daemon=True)
-    receiver_thread.start()
+    receiver = threading.Thread(target=serial_receiver, args=(processor, serial_port_arg), daemon=True)
+    receiver.start()
     
     start_web_server(http_port)
