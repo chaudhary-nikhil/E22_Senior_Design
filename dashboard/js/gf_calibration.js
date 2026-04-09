@@ -34,7 +34,7 @@ function calQualityPercentFromNormalized(n, payloadOrMode = null) {
     /* NDOF (0x0C) system-cal nibble is volatile and commonly drops during motion even when
      * fusion is practically stable. For user-facing readiness and the “shut AP off” policy,
      * treat Gyro+Accel+Mag as the relevant channels (9 points). */
-    return Math.round((n.gyro + n.accel + n.mag) / 9 * 100);
+    return Math.round((n.sys + n.gyro + n.accel + n.mag) / 12 * 100);
 }
 
 /** True when fusion is strong enough to trust before a swim.
@@ -50,8 +50,8 @@ function isCalibrationSwimReady(cal, payload = null) {
         /* Match firmware/AP policy: full 3/3 on gyro + accel before “ready to log”. */
         return (n.gyro >= 3 && n.accel >= 3);
     }
-    /* NDOF / full fusion: Sys can bounce; treat G/A/M as the swim-critical set. */
-    return (n.gyro >= 3 && n.accel >= 3 && n.mag >= 3);
+    /* NDOF / full fusion: require all four registers at 3/3 to match firmware NVS save policy. */
+    return (n.sys >= 3 && n.gyro >= 3 && n.accel >= 3 && n.mag >= 3);
 }
 
 /** Setup journey: step complete when saved snapshot qualifies (stable after you disconnect). */
@@ -87,30 +87,10 @@ function updateNavCalPill(res) {
     const el = document.getElementById('nav-cal-pill');
     if (!el) return;
     let cal = null;
-    let saved = null;
-    if (res && res.cal) cal = normalizeCal(res.cal);
-    // If we have a saved snapshot for this device, never let the UI regress below it.
-    try {
-        const devId = res && res.device_id != null ? Number(res.device_id) : null;
-        if (devId != null && Number.isFinite(devId) && devId > 0) {
-            const rawMap = localStorage.getItem(LS_CAL_MAP_KEY);
-            if (rawMap) {
-                const map = JSON.parse(rawMap) || {};
-                saved = normalizeCal(map[String(devId)]);
-            }
-        }
-        if (!saved) {
-            const raw = localStorage.getItem(LS_CAL_KEY);
-            if (raw) saved = normalizeCal(JSON.parse(raw));
-        }
-    } catch { /* ignore */ }
-    if (cal && saved) {
-        cal = {
-            sys: Math.max(cal.sys || 0, saved.sys || 0),
-            gyro: Math.max(cal.gyro || 0, saved.gyro || 0),
-            accel: Math.max(cal.accel || 0, saved.accel || 0),
-            mag: Math.max(cal.mag || 0, saved.mag || 0),
-        };
+    let source = 'saved';
+    if (res && res.cal) {
+        cal = normalizeCal(res.cal);
+        source = 'live';
     }
     if (!cal) {
         try {
@@ -124,6 +104,26 @@ function updateNavCalPill(res) {
         el.title = 'Connect wearable. Calibration updates live here.';
         return;
     }
+
+    let sessionMinNote = '';
+    const pd = typeof processedData !== 'undefined' && processedData ? processedData : [];
+    if (pd.length > 10) {
+        let mins = { sys: 3, gyro: 3, accel: 3, mag: 3 };
+        let n = 0;
+        for (const p of pd) {
+            const c = p.calibration || p.cal;
+            if (!c || typeof c !== 'object') continue;
+            mins.sys = Math.min(mins.sys, Math.min(3, Math.max(0, Number(c.sys) || 0)));
+            mins.gyro = Math.min(mins.gyro, Math.min(3, Math.max(0, Number(c.gyro) || 0)));
+            mins.accel = Math.min(mins.accel, Math.min(3, Math.max(0, Number(c.accel) || 0)));
+            mins.mag = Math.min(mins.mag, Math.min(3, Math.max(0, Number(c.mag) || 0)));
+            n++;
+        }
+        if (n > 0) {
+            sessionMinNote = ' | Rec min: S' + mins.sys + ' G' + mins.gyro + ' A' + mins.accel + ' M' + mins.mag;
+        }
+    }
+
     const pct = calQualityPercentFromNormalized(cal, res || cal);
     const imuPlus = _isImuPlusMode(res);
     const imuPlusLikely = (cal.mag === 0 && cal.sys === 0 && (cal.gyro >= 2 || cal.accel >= 2));
@@ -133,7 +133,8 @@ function updateNavCalPill(res) {
     el.textContent = 'Cal ' + pct + '%';
     el.className = 'nav-cal-pill ' + (weak ? 'nav-cal-pill--warn' : 'nav-cal-pill--ok');
     const modeHint = (imuPlus || (!res && imuPlusLikely)) ? 'IMUPLUS' : 'NDOF';
-    el.title = modeHint + ' · S' + cal.sys + ' G' + cal.gyro + ' A' + cal.accel + ' M' + cal.mag + ' (tap → Session)';
+    const srcLabel = source === 'live' ? 'Live' : 'Saved';
+    el.title = srcLabel + ' · ' + modeHint + ' · S' + cal.sys + ' G' + cal.gyro + ' A' + cal.accel + ' M' + cal.mag + sessionMinNote;
 }
 
 /**
@@ -173,11 +174,10 @@ function updateSessionCalBanner() {
         page.classList.remove('page-session--weak-cal');
         return;
     }
-    // Mode-aware weak fusion: Sys can be volatile (esp. NDOF) and IMUPLUS doesn't use Mag.
     const imuPlusLikely = (mins.mag === 0 && mins.sys === 0 && (mins.gyro >= 2 || mins.accel >= 2));
     const weak = imuPlusLikely
         ? (mins.gyro < 3 || mins.accel < 3)
-        : (mins.gyro < 2 || mins.accel < 2 || mins.mag < 2);
+        : (mins.sys < 3 || mins.gyro < 2 || mins.accel < 2 || mins.mag < 2);
     page.classList.toggle('page-session--weak-cal', weak);
     const minTag = 'min S' + mins.sys + ' G' + mins.gyro + ' A' + mins.accel + ' M' + mins.mag;
     if (weak) {
@@ -267,10 +267,9 @@ function maybeAutoSaveCalibrationFromPoll(res) {
     const score = imuPlus ? (n.gyro + n.accel) : (n.sys + n.gyro + n.accel + n.mag);
     const prevImuPlus = _isImuPlusMode(prev);
     const prevScore = prev && typeof prev === 'object'
-        ? (prevImuPlus ? ((prev.gyro || 0) + (prev.accel || 0)) : ((prev.gyro || 0) + (prev.accel || 0) + (prev.mag || 0)))
+        ? (prevImuPlus ? ((prev.gyro || 0) + (prev.accel || 0)) : ((prev.sys || 0) + (prev.gyro || 0) + (prev.accel || 0) + (prev.mag || 0)))
         : -1;
-    const ndofScore = (n.gyro + n.accel + n.mag);
-    const scoreFinal = imuPlus ? score : ndofScore;
+    const scoreFinal = score;
     const wasReady = prev && typeof prev === 'object' && isCalibrationSwimReady(prev, prev);
     const nowReady = isCalibrationSwimReady(n, res);
     if (scoreFinal > prevScore || (nowReady && !wasReady)) {
@@ -344,14 +343,16 @@ function updateCalibrationDisplay(d) {
         const imuPlusLikely = (mag === 0 && sys === 0 && (gyro >= 2 || accel >= 2));
         if (isCalibrationSwimReady(cal, d)) {
             hintEl.textContent = (imuPlus || imuPlusLikely)
-                ? 'Good to swim (IMUPLUS): gyro + accel are solid. Mag/System are not used for fusion in this mode.'
-                : 'Good to swim (NDOF): gyro + accel + mag are solid. System may bounce during motion.';
+                ? 'Good to swim (IMUPLUS): gyro + accel are solid. Mag/System are not used in this mode.'
+                : 'Good to swim (NDOF): all registers at 3/3. Calibration saved to device.';
         } else if ((imuPlus || imuPlusLikely) && (gyro < 3 || accel < 3)) {
             hintEl.textContent = 'IMUPLUS mode: bring Gyro and Accel to 3/3 (then you are ready to log).';
+        } else if (sys < 3 && gyro >= 3 && accel >= 3 && mag >= 3) {
+            hintEl.textContent = 'NDOF: System still at ' + sys + '/3. Slow rotations in all axes to lock in System calibration.';
         } else if (mag < 2) hintEl.textContent = 'Mag: wide figure 8, away from metal, aim for 3/3.';
         else if (gyro < 2) hintEl.textContent = 'Gyro: rest flat on the table, aim for 3/3.';
         else if (accel < 2) hintEl.textContent = 'Accel: six faces, slow and flat, aim for 3/3.';
-        else if (!imuPlus && quality >= 75) hintEl.textContent = 'Close. Push any yellow channel to 3/3.';
+        else if (!imuPlus && sys < 3) hintEl.textContent = 'System at ' + sys + '/3. Slow rotations to bring System to 3/3 — device saves calibration only when all registers reach 3/3.';
         else hintEl.textContent = 'Bring each channel toward 3/3 using the guide.';
     }
 

@@ -48,7 +48,8 @@ static const char *TAG = "STROKE_DET";
 // Ideal stroke comparison
 #define MAX_IDEAL_SAMPLES 200   // max samples for ideal stroke (~2s at 100Hz)
 #define MAX_CURRENT_SAMPLES 200 // max samples to accumulate per stroke
-#define DEFAULT_HAPTIC_THRESHOLD 0.5f // deviation score threshold
+#define DEFAULT_HAPTIC_THRESHOLD 0.65f // deviation score threshold
+#define HAPTIC_WARMUP_STROKES 2       // skip haptic on first N strokes of a session
 
 // History buffer
 #define MAX_RECENT_SAMPLES 12
@@ -369,7 +370,8 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
                    event.deviation_score, s_state.latched_entry_angle, s_state.ideal_entry_angle, 
                    s_state.haptic_threshold, (unsigned)time_in_stroke, event.haptic_reason);
 
-          if (s_state.haptic_enabled && haptic_is_available() && (technique_bad || entry_bad)) {
+          bool past_warmup = (s_state.stroke_count > HAPTIC_WARMUP_STROKES);
+          if (s_state.haptic_enabled && haptic_is_available() && past_warmup && (technique_bad || entry_bad)) {
             if (event.deviation_score > (s_state.haptic_threshold + 0.3f) || entry_bad) {
               haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE);
               event.haptic_fired = true;
@@ -462,19 +464,18 @@ void stroke_detector_set_user_params(float wingspan_cm, haptic_skill_level_t ski
   }
   s_state.skill_level = skill_level;
 
-  // Update threshold based on skill level
   switch (skill_level) {
   case HAPTIC_SKILL_BEGINNER:
-    s_state.haptic_threshold = 0.80f;
+    s_state.haptic_threshold = 1.00f;
     break;
   case HAPTIC_SKILL_INTERMEDIATE:
-    s_state.haptic_threshold = 0.50f;
+    s_state.haptic_threshold = 0.65f;
     break;
   case HAPTIC_SKILL_ADVANCED:
-    s_state.haptic_threshold = 0.30f;
+    s_state.haptic_threshold = 0.38f;
     break;
   default:
-    s_state.haptic_threshold = 0.50f;
+    s_state.haptic_threshold = 0.65f;
   }
 
   ESP_LOGI(TAG, "User params updated: wingspan=%.1fcm, skill=%d, haptic_threshold=%.2f",

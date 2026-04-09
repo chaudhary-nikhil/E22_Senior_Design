@@ -79,8 +79,8 @@ function gfIdealCompareChartStats(actualLIA, idealLIA) {
     const similarityPct = Math.max(0, Math.min(100, (1 - sumDiff / (sumIdeal || 1)) * 100));
     const meanIdeal = sumIdeal / targetLen;
     const mae = sumDiff / targetLen;
-    const denom = meanIdeal * 0.28 + 0.04;
-    const deviation = Math.min(1.5, mae / denom);
+    const denom = Math.max(meanIdeal * 0.5, 0.1);
+    const deviation = mae / denom;
     return { similarityPct, deviation, targetLen, actualRs, idealRs };
 }
 
@@ -278,14 +278,16 @@ function setIdealCompareStroke(num, streamKey) {
     if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'stroke';
     const sel = document.getElementById('ideal-compare-mode');
     if (sel) sel.value = 'stroke';
-    if (typeof buildIdealComparison === 'function') buildIdealComparison();
+    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
+    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
 }
 
 function onIdealCompareModeChange(v) {
     if (typeof idealCompareMode !== 'undefined') {
         idealCompareMode = (v === 'session') ? 'session' : 'stroke';
     }
-    if (typeof buildIdealComparison === 'function') buildIdealComparison();
+    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
+    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
 }
 
 /** Row click on Analysis per-stroke table: compare this stroke + sync playback. */

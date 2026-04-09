@@ -14,4 +14,4 @@ const LS_READY_TO_LOG_SHOWN = 'goldenform_ready_to_log_shown_v1';
 const LS_USER_PROFILE_CACHE = 'gf_user_profile_cache_v1';
 
 /** Above this vs-ideal LIA deviation, Analysis “Haptic” column shows ⚡ (cue vs your saved baseline). */
-const GF_VS_IDEAL_HAPTIC_THRESH = 0.32;
+const GF_VS_IDEAL_HAPTIC_THRESH = 0.45;

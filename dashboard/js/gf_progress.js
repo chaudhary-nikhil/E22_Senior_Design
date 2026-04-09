@@ -2,6 +2,8 @@
  * GoldenForm — Progress / Insights charts from stored sessions.
  */
 // ── PROGRESS / INSIGHTS ──
+let _progressDataHash = '';
+
 function buildLocalProgressFromSessions() {
     const rows = [];
     for (let i = 0; i < savedSessions.length; i++) {
@@ -26,7 +28,6 @@ async function loadProgress() {
     if (!data.length && hasSavedSessions()) {
         data = buildLocalProgressFromSessions();
     }
-    // Sanitize so charts never explode (NaN/undefined) and keep points in-bounds.
     data = (data || []).map((d) => {
         const num = (x, def = 0) => {
             const v = Number(x);
@@ -44,9 +45,15 @@ async function loadProgress() {
             try { window._progressChart.destroy(); } catch (e) { /* ignore */ }
             window._progressChart = null;
         }
+        _progressDataHash = '';
         setText('insights-empty', 'Sync a swim session. The progress chart fills from the server or saved sessions on this device.');
         return;
     }
+
+    const hash = JSON.stringify(data.map(d => [d.form_score, d.consistency, d.stroke_rate]));
+    if (hash === _progressDataHash && window._progressChart) return;
+    _progressDataHash = hash;
+
     setText('insights-empty', data.length && !((res && res.progress) || []).length
         ? 'Trends from this browser; server sync merges history when available.'
         : '');
@@ -63,6 +70,7 @@ async function loadProgress() {
             ]
         }, options: {
             responsive: true, maintainAspectRatio: false,
+            animation: false,
             plugins: { legend: { labels: { color: '#aaa', font: { size: 12 } } } },
             scales: {
                 x: { ticks: { color: '#666' }, grid: { color: '#1a1a25' } },
@@ -73,4 +81,3 @@ async function loadProgress() {
         }
     });
 }
-

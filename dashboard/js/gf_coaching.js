@@ -1,7 +1,10 @@
 /**
  * GoldenForm — Coaching insight text generation.
+ * Sections: Session Consistency (heatmap), Per-Stroke Issues (diagnosis), Top Coaching Priorities.
  */
 // ── COACHING INSIGHTS ──
+let _coachingDataHash = '';
+
 function setInsightsSourceHint(mode) {
     const el = document.getElementById('insights-source-hint');
     if (!el) return;
@@ -12,6 +15,59 @@ function setInsightsSourceHint(mode) {
         el.hidden = true;
         el.textContent = '';
     }
+}
+
+/** Extract rich per-stroke analytics from processedData + strokeBoundaries. */
+function _buildStrokeAnalytics() {
+    const analytics = [];
+    if (!strokeBoundaries || !strokeBoundaries.length) return analytics;
+    const startTime = processedData[0] ? (processedData[0].timestamp || 0) : 0;
+    for (let b = 0; b < strokeBoundaries.length; b++) {
+        const sb = strokeBoundaries[b];
+        const start = sb.index;
+        const end = (b + 1 < strokeBoundaries.length) ? strokeBoundaries[b + 1].index - 1 : processedData.length - 1;
+        let entryAngle = 0, maxLia = 0, hapticFired = false, hapticReason = 0;
+        let devScore = 0, pullDur = 0, liaMags = [];
+        for (let i = start; i <= end; i++) {
+            const d = processedData[i];
+            const lia = typeof gfLiaMagFromProcessed === 'function' ? gfLiaMagFromProcessed(d) : 0;
+            liaMags.push(lia);
+            if (lia > maxLia) maxLia = lia;
+            if (d.entry_angle > 0 && entryAngle === 0) entryAngle = d.entry_angle;
+            if (d.haptic_fired) {
+                hapticFired = true;
+                hapticReason = d.haptic_reason || 0;
+                if (d.deviation_score > devScore) devScore = d.deviation_score;
+                if (d.pull_duration_ms > 0) pullDur = d.pull_duration_ms;
+            }
+            if (d.deviation_score > devScore && !hapticFired) devScore = d.deviation_score;
+        }
+        const tStart = processedData[start] ? (processedData[start].timestamp || 0) : 0;
+        const tEnd = processedData[end] ? (processedData[end].timestamp || 0) : 0;
+        const durationMs = tEnd - tStart;
+        analytics.push({
+            num: sb.strokeNum,
+            streamKey: sb.streamKey,
+            label: sb.label || ('#' + sb.strokeNum),
+            entryAngle,
+            maxLia,
+            durationMs,
+            hapticFired,
+            hapticReason,
+            devScore,
+            pullDur,
+            sampleCount: end - start + 1,
+            liaMean: liaMags.length ? liaMags.reduce((a, b) => a + b, 0) / liaMags.length : 0
+        });
+    }
+    return analytics;
+}
+
+function _mean(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+function _stddev(arr) {
+    if (arr.length < 2) return 0;
+    const m = _mean(arr);
+    return Math.sqrt(arr.reduce((s, v) => s + (v - m) * (v - m), 0) / arr.length);
 }
 
 function updateCoachingInsights() {
@@ -33,6 +89,12 @@ function updateCoachingInsights() {
         setText('consistency-heatmap', '');
         return;
     }
+
+    const hash = String(insightPd.length) + ':' + String(insightMetrics.stroke_count || 0) + ':' +
+        String(insightMetrics.avg_deviation || 0) + ':' + String(insightMetrics.avg_entry_angle || 0);
+    if (hash === _coachingDataHash) return;
+    _coachingDataHash = hash;
+
     setInsightsSourceHint((viewerHasData || !usedLocalFallback) ? 'off' : 'local');
 
     const _pdBack = processedData;
@@ -45,120 +107,287 @@ function updateCoachingInsights() {
     const diagBox = document.getElementById('stroke-diagnosis-list');
     const heatBox = document.getElementById('consistency-heatmap');
 
-    let htmlPriorities = '';
-    let htmlDiag = '';
-    let htmlHeat = '';
-
-    const strokes = [];
     const _sbBack = strokeBoundaries.map(b => ({ index: b.index, strokeNum: b.strokeNum, streamKey: b.streamKey, label: b.label }));
 
     try {
-    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
-    computeStrokeBoundaries();
-    for (let b = 0; b < strokeBoundaries.length; b++) {
-        const sb = strokeBoundaries[b];
-        const start = sb.index;
-        const end = (b + 1 < strokeBoundaries.length) ? strokeBoundaries[b + 1].index - 1 : processedData.length - 1;
-        const seg = { num: sb.strokeNum, streamKey: sb.streamKey, label: sb.label || ('#' + sb.strokeNum), events: [], maxDev: 0 };
-        for (let i = start; i <= end; i++) {
-            const d = processedData[i];
-            if (d.haptic_fired) {
-                seg.events.push({
-                    reason: d.haptic_reason || 0,
-                    dev: d.deviation_score || 0,
-                    dur: d.pull_duration_ms || 0
-                });
-                if (d.deviation_score > seg.maxDev) seg.maxDev = d.deviation_score;
-            }
-        }
-        strokes.push(seg);
-    }
+        if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
+        computeStrokeBoundaries();
+        const strokes = _buildStrokeAnalytics();
 
-    // Heatmap (prefer vs-ideal when baseline loaded; else firmware haptic deviation)
-    if (strokes.length > 0) {
-        strokes.forEach(s => {
-            let color = 'var(--green)';
-            const jk = s.streamKey ? `, ${JSON.stringify(s.streamKey)}` : '';
-            const key = String(s.num) + '::' + String(s.streamKey || '');
-            const vi = (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal && gfVsIdealMetrics.byStroke)
-                ? gfVsIdealMetrics.byStroke.get(key)
-                : null;
-            if (vi) {
-                if (vi.vsIdealAlert) {
-                    color = vi.deviation > 0.8 ? 'var(--red)' : 'var(--amber)';
-                }
-            } else if (s.events.length > 0) {
-                if (s.maxDev > 0.8) color = 'var(--red)';
-                else color = 'var(--amber)';
-            }
-            htmlHeat += `<div title="${(s.label || ('Stroke ' + s.num)).replace(/"/g, '&quot;')}" style="width:14px;height:14px;border-radius:2px;background-color:${color};cursor:pointer;" onclick="switchTab('session'); setTimeout(()=>jumpToStroke(${s.num}${jk}), 50);"></div>`;
-        });
-    } else {
-        htmlHeat = '<p style="color:var(--text3); font-size:12px;">No strokes recorded.</p>';
-    }
-    if(heatBox) heatBox.innerHTML = htmlHeat;
+        _renderConsistencyHeatmap(heatBox, strokes);
+        _renderPerStrokeIssues(diagBox, strokes, insightMetrics);
+        _renderCoachingPriorities(priorityBox, strokes, insightMetrics);
 
-    // Diagnostics
-    let hapticCount = 0;
-    let reasonCounts = { 'Pull Too Fast': 0, 'Bad Entry Angle': 0, 'Path Deviation': 0 };
-
-    strokes.forEach(s => {
-        if (s.events.length > 0) {
-            hapticCount++;
-            const ev = s.events[0];
-            let msg = '';
-            
-            // haptic_reason bitfield: 0x01 = DEV_HIGH, 0x02 = ENTRY_BAD, 0x04 = PULL_FAST
-            const r = ev.reason;
-            if (r & 0x04) { msg = 'Pull phase too fast (' + ev.dur.toFixed(0) + 'ms)'; reasonCounts['Pull Too Fast']++; }
-            else if (r & 0x02) { msg = 'Hand entry too shallow/steep'; reasonCounts['Bad Entry Angle']++; }
-            else if (r & 0x01) { msg = 'Stroke path deviated highly'; reasonCounts['Path Deviation']++; }
-            else if (ev.dev > 0.75) { msg = 'High deviation vs ideal stroke path'; reasonCounts['Path Deviation']++; }
-            else if (ev.dev > 0.4) { msg = 'Moderate path deviation. Refine pull line.'; reasonCounts['Path Deviation']++; }
-            else if (ev.dev > 0.15) { msg = 'Entry or timing cue. Check angle of attack.'; reasonCounts['Bad Entry Angle']++; }
-            else { msg = 'Form cue: alignment and rhythm.'; reasonCounts['Bad Entry Angle']++; }
-
-            const jk2 = s.streamKey ? `, ${JSON.stringify(s.streamKey)}` : '';
-            htmlDiag += `
-                <div style="background:var(--bg3); padding:8px 10px; border-radius:6px; margin-bottom:6px; font-size:0.85em;">
-                    <strong style="color:var(--text1);">${s.label || ('Stroke ' + s.num)}</strong>: <span style="color:var(--amber);">${msg}</span>
-                    <button class="btn btn-outline btn-sm" style="float:right; padding:2px 8px; font-size:0.8em;" onclick="switchTab('session'); setTimeout(()=>jumpToStroke(${s.num}${jk2}), 50)">View</button>
-                    <div style="clear:both;"></div>
-                </div>`;
-        }
-    });
-    if (!htmlDiag) htmlDiag = '<p style="color:var(--text3); font-size:0.9em;">Perfect! No issues detected in this session.</p>';
-    if(diagBox) diagBox.innerHTML = htmlDiag;
-
-    // Priorities
-    if (hapticCount === 0) {
-        htmlPriorities = `<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">Your form is looking solid. Keep focusing on consistency!</div>`;
-    } else {
-        const topIssue = Object.keys(reasonCounts).reduce((a, b) => reasonCounts[a] > reasonCounts[b] ? a : b);
-        let advice = '';
-        if (topIssue === 'Pull Too Fast') advice = 'Slow down your pull phase to engage more water. Rushing the pull drops your efficiency.';
-        else if (topIssue === 'Bad Entry Angle') advice = 'Focus on a clean, fingertips-first entry. Keep your elbow high as you pierce the water.';
-        else if (topIssue === 'Path Deviation') advice = 'Your hand is drifting from the ideal straight-line pull under your body. Keep it anchored.';
-        else advice = 'Focus on fingertips-first entry and a steady catch–pull line.';
-
-        let numBadStrokes = strokes.filter(s => s.events.length > 0).length;
-        htmlPriorities = `
-            <div style="padding:10px; background:var(--bg3); border-left:3px solid var(--amber); border-radius:4px; margin-bottom:6px;">
-                <h4 style="margin:0 0 4px 0; color:var(--text1); font-size:1em;">1. ${topIssue}</h4>
-                <p style="margin:0; font-size:0.85em; color:var(--text2);">${advice}</p>
-            </div>
-            <div style="font-size:0.85em; color:var(--text3); margin-top:8px;">
-                Affected ${numBadStrokes} of ${strokes.length} strokes (${Math.round((numBadStrokes/strokes.length)*100)}%).
-            </div>
-        `;
-    }
-    if(priorityBox) priorityBox.innerHTML = htmlPriorities;
+        _autoTriggerAiInsights();
     } finally {
-    processedData = _pdBack;
-    sessionMetrics = _smBack;
-    strokeBoundaries = _sbBack;
-    refreshStrokeFieldMode();
-  }
+        processedData = _pdBack;
+        sessionMetrics = _smBack;
+        strokeBoundaries = _sbBack;
+        refreshStrokeFieldMode();
+    }
+}
+
+// ── SESSION CONSISTENCY HEATMAP ──
+// Compares each stroke to the session mean across entry angle, duration, and LIA peak.
+function _renderConsistencyHeatmap(heatBox, strokes) {
+    if (!heatBox) return;
+    if (!strokes.length) {
+        heatBox.innerHTML = '<p style="color:var(--text3); font-size:12px;">No strokes recorded.</p>';
+        return;
+    }
+    const angles = strokes.map(s => s.entryAngle).filter(a => a > 0);
+    const durations = strokes.map(s => s.durationMs).filter(d => d > 0);
+    const peaks = strokes.map(s => s.maxLia);
+
+    const mAngle = _mean(angles), sdAngle = _stddev(angles) || 1;
+    const mDur = _mean(durations), sdDur = _stddev(durations) || 1;
+    const mPeak = _mean(peaks), sdPeak = _stddev(peaks) || 0.1;
+
+    let html = '';
+    let goodCount = 0;
+    strokes.forEach(s => {
+        const zAngle = s.entryAngle > 0 ? Math.abs(s.entryAngle - mAngle) / sdAngle : 0;
+        const zDur = s.durationMs > 0 ? Math.abs(s.durationMs - mDur) / sdDur : 0;
+        const zPeak = Math.abs(s.maxLia - mPeak) / sdPeak;
+        const zMax = Math.max(zAngle, zDur, zPeak);
+
+        let color = 'var(--green)';
+        if (zMax > 2.0) color = 'var(--red)';
+        else if (zMax > 1.0) color = 'var(--amber)';
+        else goodCount++;
+
+        let tooltipParts = [(s.label || ('Stroke ' + s.num))];
+        if (zAngle > 1) tooltipParts.push('angle ' + s.entryAngle.toFixed(0) + '° (avg ' + mAngle.toFixed(0) + '°)');
+        if (zDur > 1) tooltipParts.push('timing ' + (s.durationMs / 1000).toFixed(1) + 's (avg ' + (mDur / 1000).toFixed(1) + 's)');
+        if (zPeak > 1) tooltipParts.push('peak accel ' + s.maxLia.toFixed(1) + ' (avg ' + mPeak.toFixed(1) + ')');
+        if (s.hapticFired) tooltipParts.push('⚡ band cued');
+        if (tooltipParts.length === 1) tooltipParts.push('consistent');
+        const tooltip = tooltipParts.join(' · ');
+
+        const jk = s.streamKey ? `, ${JSON.stringify(s.streamKey)}` : '';
+        html += `<div title="${tooltip.replace(/"/g, '&quot;')}" style="width:14px;height:14px;border-radius:2px;background-color:${color};cursor:pointer;" onclick="switchTab('session'); setTimeout(()=>jumpToStroke(${s.num}${jk}), 50);"></div>`;
+    });
+
+    const pctGood = Math.round(goodCount / strokes.length * 100);
+    html += `<div style="width:100%;font-size:0.75em;color:var(--text3);margin-top:4px;">${goodCount}/${strokes.length} strokes consistent (${pctGood}%). Green=consistent, Yellow=minor variation, Red=outlier vs session average.</div>`;
+    heatBox.innerHTML = html;
+}
+
+// ── PER-STROKE PATTERNS ──
+// Summarizes stroke-level patterns for coaching; individual stroke breakdown lives in Analysis tab.
+function _renderPerStrokeIssues(diagBox, strokes, metrics) {
+    if (!diagBox) return;
+    if (!strokes.length) {
+        diagBox.innerHTML = '<p style="color:var(--text3);font-size:0.9em;">No strokes to analyze.</p>';
+        return;
+    }
+
+    const hapticStrokes = strokes.filter(s => s.hapticFired);
+    const durations = strokes.map(s => s.durationMs).filter(d => d > 0);
+    const meanDur = _mean(durations);
+    const durSd = _stddev(durations);
+    const angles = strokes.map(s => s.entryAngle).filter(a => a > 0);
+    const avgAngle = _mean(angles);
+    const angleSd = _stddev(angles);
+    const peaks = strokes.map(s => s.maxLia);
+    const peakSd = _stddev(peaks);
+    const rushed = strokes.filter(s => meanDur > 0 && s.durationMs > 0 && (s.durationMs - meanDur) / meanDur < -0.30);
+    const slow = strokes.filter(s => meanDur > 0 && s.durationMs > 0 && (s.durationMs - meanDur) / meanDur > 0.30);
+
+    let html = '';
+    const patterns = [];
+
+    if (hapticStrokes.length > 0) {
+        const consecutive = _findConsecutiveRuns(hapticStrokes.map(s => s.num));
+        const runDesc = consecutive.length ? consecutive.map(r => r.length > 1 ? (r[0] + '–' + r[r.length - 1]) : String(r[0])).join(', ') : hapticStrokes.map(s => s.num).join(', ');
+        patterns.push({
+            color: 'var(--red)',
+            title: 'Band cued on ' + hapticStrokes.length + ' of ' + strokes.length + ' strokes',
+            detail: 'Strokes: ' + runDesc + '. Avg deviation: ' + _mean(hapticStrokes.map(s => s.devScore)).toFixed(2) + '. See the Analysis tab for per-stroke deviation and entry angles.'
+        });
+    }
+
+    if (angleSd > 8 && angles.length >= 3) {
+        patterns.push({
+            color: 'var(--amber)',
+            title: 'Entry angle varies widely (±' + angleSd.toFixed(0) + '°)',
+            detail: 'Range: ' + Math.min(...angles).toFixed(0) + '°–' + Math.max(...angles).toFixed(0) + '°. A consistent entry angle sets up a better catch.'
+        });
+    }
+
+    if (rushed.length > 0 || slow.length > 0) {
+        const parts = [];
+        if (rushed.length) parts.push(rushed.length + ' rushed (>' + (meanDur * 0.7 / 1000).toFixed(1) + 's faster)');
+        if (slow.length) parts.push(slow.length + ' slow');
+        patterns.push({
+            color: 'var(--amber)',
+            title: 'Timing inconsistency: ' + parts.join(', '),
+            detail: 'Avg stroke: ' + (meanDur / 1000).toFixed(1) + 's ± ' + (durSd / 1000).toFixed(1) + 's. Consistent rhythm improves efficiency.'
+        });
+    }
+
+    if (peakSd > 3 && peaks.length >= 3) {
+        patterns.push({
+            color: 'var(--amber)',
+            title: 'Power output varies between strokes',
+            detail: 'Peak acceleration ranges from ' + Math.min(...peaks).toFixed(1) + ' to ' + Math.max(...peaks).toFixed(1) + ' m/s². Aim for even effort across all strokes.'
+        });
+    }
+
+    if (patterns.length === 0) {
+        if (hapticStrokes.length === 0) {
+            html = '<p style="color:var(--green);font-size:0.9em;margin:0;">No band cues fired and stroke patterns are consistent. Solid session.</p>';
+        } else {
+            html = '<p style="color:var(--green);font-size:0.9em;margin:0;">No major patterns detected. Check the Analysis tab for stroke-by-stroke details.</p>';
+        }
+    } else {
+        html = patterns.map(p =>
+            `<div style="background:var(--bg3);padding:8px 10px;border-left:3px solid ${p.color};border-radius:4px;margin-bottom:6px;font-size:0.85em;">
+                <strong style="color:var(--text1);">${p.title}</strong>
+                <div style="color:var(--text2);margin-top:3px;font-size:0.9em;">${p.detail}</div>
+            </div>`
+        ).join('');
+    }
+    diagBox.innerHTML = html;
+}
+
+function _findConsecutiveRuns(nums) {
+    if (!nums.length) return [];
+    const sorted = [...nums].sort((a, b) => a - b);
+    const runs = [[sorted[0]]];
+    for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i] === sorted[i - 1] + 1) runs[runs.length - 1].push(sorted[i]);
+        else runs.push([sorted[i]]);
+    }
+    return runs;
+}
+
+// ── TOP COACHING PRIORITIES ──
+// Ranked, quantified priorities that synthesize across all strokes.
+function _renderCoachingPriorities(priorityBox, strokes, metrics) {
+    if (!priorityBox) return;
+    if (!strokes.length) {
+        priorityBox.innerHTML = '<p style="color:var(--text3);">No strokes to analyze.</p>';
+        return;
+    }
+
+    const m = metrics || {};
+    const priorities = [];
+
+    const angles = strokes.map(s => s.entryAngle).filter(a => a > 0);
+    const avgAngle = _mean(angles);
+    const angleSd = _stddev(angles);
+    if (avgAngle > 0 && (avgAngle < 15 || avgAngle > 40)) {
+        const dir = avgAngle < 15 ? 'too flat' : 'too steep';
+        priorities.push({
+            severity: Math.abs(avgAngle - 27.5) / 12.5,
+            title: 'Entry Angle',
+            detail: `Your average entry angle is ${avgAngle.toFixed(0)}° (${dir}). The target range is 15–40°, with 25–35° being optimal for freestyle. ${angleSd > 8 ? 'Your angle also varies a lot (±' + angleSd.toFixed(0) + '°) — work on a repeatable fingertips-first entry.' : 'Focus on a cleaner catch with a higher elbow.'}`
+        });
+    } else if (angleSd > 10 && angles.length >= 3) {
+        priorities.push({
+            severity: angleSd / 10,
+            title: 'Entry Angle Consistency',
+            detail: `Your entry angle varies widely (±${angleSd.toFixed(0)}°, range ${Math.min(...angles).toFixed(0)}–${Math.max(...angles).toFixed(0)}°). A consistent entry sets up a better catch. Practice a repeatable arm extension.`
+        });
+    }
+
+    const fwDevs = strokes.map(s => s.devScore).filter(d => d > 0);
+    const avgFwDev = _mean(fwDevs);
+    const hapticCount = strokes.filter(s => s.hapticFired).length;
+    if (hapticCount > 0) {
+        const pctHaptic = Math.round(hapticCount / strokes.length * 100);
+        priorities.push({
+            severity: avgFwDev > 0 ? avgFwDev : 1.0,
+            title: 'Stroke Form Deviation',
+            detail: `Band buzzed on ${hapticCount} of ${strokes.length} strokes (${pctHaptic}%). Average firmware deviation: ${avgFwDev.toFixed(2)}. Focus on matching the acceleration pattern you set as your baseline — smooth catch, steady pull, clean recovery.`
+        });
+    }
+
+    const durations = strokes.map(s => s.durationMs).filter(d => d > 0);
+    const meanDur = _mean(durations);
+    const durSd = _stddev(durations);
+    if (meanDur > 0 && durSd / meanDur > 0.25 && durations.length >= 3) {
+        priorities.push({
+            severity: durSd / meanDur * 2,
+            title: 'Stroke Timing',
+            detail: `Your stroke-to-stroke timing varies by ${(durSd / meanDur * 100).toFixed(0)}% (avg ${(meanDur / 1000).toFixed(1)}s ± ${(durSd / 1000).toFixed(1)}s). Consistent rhythm improves efficiency. Try counting or pacing with breathing.`
+        });
+    }
+
+    const sr = m.stroke_rate || 0;
+    if (sr > 0 && (sr < 10 || sr > 50)) {
+        priorities.push({
+            severity: 0.6,
+            title: 'Stroke Rate',
+            detail: sr < 10
+                ? `Your stroke rate of ${sr.toFixed(0)} strokes/min is quite low. For distance freestyle, 20–30 is typical. Increase your tempo without sacrificing form.`
+                : `Your stroke rate of ${sr.toFixed(0)} strokes/min is very high. Rushing reduces distance per stroke. Slow down and extend your glide.`
+        });
+    }
+
+    const pcts = m.phase_pcts || {};
+    const pullPct = pcts.pull || 0, recovPct = pcts.recovery || 0, glidePct = pcts.glide || 0;
+    if (pullPct > 0 && recovPct > 0) {
+        if (pullPct < 15) {
+            priorities.push({
+                severity: 0.7,
+                title: 'Pull Phase Too Short',
+                detail: `Your pull phase is only ${pullPct.toFixed(0)}% of the stroke cycle (typical is 20–30%). A longer, more engaged pull generates more propulsion. Focus on a full S-curve pull through.`
+            });
+        }
+        if (recovPct > 35) {
+            priorities.push({
+                severity: 0.5,
+                title: 'Recovery Phase Long',
+                detail: `Recovery takes ${recovPct.toFixed(0)}% of your cycle (typical 15–25%). A quicker arm recovery above water lets you spend more time in propulsive phases.`
+            });
+        }
+        if (glidePct > 60) {
+            priorities.push({
+                severity: 0.5,
+                title: 'Excessive Glide',
+                detail: `Glide is ${glidePct.toFixed(0)}% of your cycle. Some glide is good, but over 50% can mean you are decelerating too much between strokes. Initiate the catch earlier.`
+            });
+        }
+    }
+
+    priorities.sort((a, b) => b.severity - a.severity);
+    const top = priorities.slice(0, 3);
+
+    if (top.length === 0) {
+        const cons = m.consistency || 0;
+        const noHaptics = hapticCount === 0;
+        if (cons >= 80 && noHaptics) {
+            priorityBox.innerHTML = '<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">Session looks solid across all metrics — no band cues fired. Keep this consistency and consider setting a more challenging ideal baseline.</div>';
+        } else {
+            priorityBox.innerHTML = '<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">No major issues. ' + (cons < 80 ? 'Work on stroke-to-stroke consistency (' + cons.toFixed(0) + '%).' : 'Maintain this form.') + '</div>';
+        }
+        return;
+    }
+
+    let html = '';
+    top.forEach((p, i) => {
+        const borderColor = i === 0 ? 'var(--red)' : 'var(--amber)';
+        html += `<div style="padding:10px; background:var(--bg3); border-left:3px solid ${borderColor}; border-radius:4px; margin-bottom:8px;">
+            <h4 style="margin:0 0 4px 0; color:var(--text1); font-size:0.95em;">${i + 1}. ${p.title}</h4>
+            <p style="margin:0; font-size:0.84em; color:var(--text2); line-height:1.45;">${p.detail}</p>
+        </div>`;
+    });
+    priorityBox.innerHTML = html;
+}
+
+let _aiInsightsSessionKey = '';
+function _autoTriggerAiInsights() {
+    const key = String(sessionMetrics ? (sessionMetrics.stroke_count || 0) : 0) + ':' +
+        String(processedData ? processedData.length : 0);
+    if (key === _aiInsightsSessionKey || key === '0:0') return;
+    _aiInsightsSessionKey = key;
+    const body = document.getElementById('ai-coaching-body');
+    if (body && (!body.textContent || body.textContent === 'Generating…' ||
+        body.textContent.startsWith('Load a session') || body.textContent.startsWith('No response'))) {
+        setTimeout(() => refreshAiCoachingInsights(), 200);
+    }
 }
 
 /**
@@ -178,7 +407,6 @@ function gfFormatInsightInline(s) {
     return x;
 }
 
-/** Turn Gemini markdown-style output into readable HTML (headings, lists, bold). */
 function gfFormatInsightMarkdown(text) {
     if (!text) return '';
     const lines = String(text).split(/\r?\n/);
@@ -188,28 +416,16 @@ function gfFormatInsightMarkdown(text) {
         const line = lines[i];
         const t = line.trim();
         if (/^###\s+/.test(t)) {
-            if (inList) {
-                parts.push('</ul>');
-                inList = false;
-            }
+            if (inList) { parts.push('</ul>'); inList = false; }
             parts.push('<h4 class="coaching-md-h">' + gfEscapeHtmlInsight(t.replace(/^###\s+/, '')) + '</h4>');
         } else if (/^[-*]\s+/.test(t)) {
-            if (!inList) {
-                parts.push('<ul class="coaching-md-ul">');
-                inList = true;
-            }
+            if (!inList) { parts.push('<ul class="coaching-md-ul">'); inList = true; }
             parts.push('<li>' + gfFormatInsightInline(t.replace(/^[-*]\s+/, '')) + '</li>');
         } else if (t === '') {
-            if (inList) {
-                parts.push('</ul>');
-                inList = false;
-            }
+            if (inList) { parts.push('</ul>'); inList = false; }
             parts.push('<br/>');
         } else {
-            if (inList) {
-                parts.push('</ul>');
-                inList = false;
-            }
+            if (inList) { parts.push('</ul>'); inList = false; }
             parts.push('<p class="coaching-md-p">' + gfFormatInsightInline(t) + '</p>');
         }
     }
@@ -222,17 +438,13 @@ async function refreshAiCoachingInsights() {
     const metaEl = document.getElementById('ai-coaching-meta');
     const btn = document.getElementById('ai-coaching-btn');
     if (!bodyEl) return;
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = '…';
-    }
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
     bodyEl.innerHTML = '';
     bodyEl.textContent = 'Generating…';
     if (metaEl) metaEl.textContent = '';
 
     const insightPd = (typeof processedData !== 'undefined' && processedData && processedData.length)
-        ? processedData
-        : null;
+        ? processedData : null;
     const insightMetrics = sessionMetrics;
     if (!insightMetrics || !insightPd || !insightPd.length) {
         bodyEl.textContent = 'Load a session on the Session tab first.';
@@ -247,17 +459,22 @@ async function refreshAiCoachingInsights() {
     for (let b = 0; b < strokeBoundaries.length; b++) {
         const sb = strokeBoundaries[b];
         const start = sb.index;
+        const end = (b + 1 < strokeBoundaries.length) ? strokeBoundaries[b + 1].index - 1 : insightPd.length - 1;
         const p = insightPd[start] || {};
-        const key = String(sb.strokeNum) + '::' + String(sb.streamKey || '');
-        const vi = (gfVsIdealMetrics && gfVsIdealMetrics.byStroke)
-            ? gfVsIdealMetrics.byStroke.get(key)
-            : null;
+        let entryAngle = Number(p.entry_angle) || 0;
+        let devScore = Number(p.deviation_score) || 0;
+        let hapticFired = !!p.haptic_fired;
+        for (let j = start + 1; j <= Math.min(end, start + 120); j++) {
+            const q = insightPd[j] || {};
+            if (q.entry_angle > 0 && entryAngle === 0) entryAngle = Number(q.entry_angle);
+            if (q.deviation_score > devScore) devScore = Number(q.deviation_score);
+            if (q.haptic_fired) hapticFired = true;
+        }
         strokes.push({
             stroke_num: sb.strokeNum,
-            entry_angle: Number(p.entry_angle) || 0,
-            deviation_vs_ideal: vi ? vi.deviation : 0,
-            device_haptic: vi ? vi.deviceHaptic : false,
-            vs_ideal_alert: vi ? vi.vsIdealAlert : false
+            entry_angle: entryAngle,
+            firmware_deviation: devScore,
+            device_haptic: hapticFired
         });
     }
 
@@ -274,26 +491,11 @@ async function refreshAiCoachingInsights() {
         }
     } catch (e) { /* ignore */ }
     const res = await apiPost('/api/coaching/insights', payload, { headers: extraHeaders });
-    if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Generate insights';
-    }
-    if (!res) {
-        bodyEl.textContent = 'No response from server. Is the dashboard running?';
-        return;
-    }
-    if (res.status === 'unconfigured') {
-        bodyEl.textContent = res.message || 'Set GEMINI_API_KEY in dashboard/.env on the server.';
-        return;
-    }
-    if (res.httpStatus === 429 || res.rate_limited) {
-        bodyEl.textContent = res.error || 'Too many AI requests. Wait a few minutes and try again.';
-        return;
-    }
-    if (res.status === 'error' || res._httpError) {
-        bodyEl.textContent = res.error || res.detail || 'AI request failed.';
-        return;
-    }
+    if (btn) { btn.disabled = false; btn.textContent = 'Generate insights'; }
+    if (!res) { bodyEl.textContent = 'No response from server. Is the dashboard running?'; return; }
+    if (res.status === 'unconfigured') { bodyEl.textContent = res.message || 'Set GEMINI_API_KEY in dashboard/.env on the server.'; return; }
+    if (res.httpStatus === 429 || res.rate_limited) { bodyEl.textContent = res.error || 'Too many AI requests. Wait a few minutes and try again.'; return; }
+    if (res.status === 'error' || res._httpError) { bodyEl.textContent = res.error || res.detail || 'AI request failed.'; return; }
     if (res.status === 'ok' && res.text) {
         bodyEl.innerHTML = gfFormatInsightMarkdown(res.text);
         if (metaEl) metaEl.textContent = res.model ? ('Model: ' + res.model) : '';
@@ -301,4 +503,3 @@ async function refreshAiCoachingInsights() {
     }
     bodyEl.textContent = 'Unexpected response.';
 }
-

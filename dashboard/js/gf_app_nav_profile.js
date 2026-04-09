@@ -91,6 +91,17 @@ function switchTab(tab, opts = {}) {
     try { if (typeof refreshSetupJourneyStepVisuals === 'function') refreshSetupJourneyStepVisuals(); } catch (e) { /* ignore */ }
 }
 
+function togglePasswordVisibility(inputId, btn) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    const show = el.type === 'password';
+    el.type = show ? 'text' : 'password';
+    if (btn) {
+        btn.textContent = show ? '🙈' : '👁';
+        btn.title = show ? 'Hide password' : 'Show password';
+    }
+}
+
 // apiGet, apiPost, showToast — dashboard/js/gf_api.js
 
 // ── USER PROFILE ──
@@ -319,8 +330,19 @@ async function logoutUser() {
     userProfile = null;
     try { localStorage.removeItem(LS_USER_PROFILE_CACHE); } catch (e) { /* ignore */ }
     try { if (typeof stopRealtimeEvents === 'function') stopRealtimeEvents(); } catch (e) { /* ignore */ }
+
+    ['login-email', 'login-password', 'reg-name', 'reg-email', 'reg-password',
+     'reg-height', 'reg-wingspan', 'reg-pool-length'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+    const regSkill = document.getElementById('reg-skill');
+    if (regSkill) regSkill.value = 'beginner';
+    const regWc = document.getElementById('reg-wearable-count');
+    if (regWc) regWc.value = '1';
+
     updateLogoutVisibility();
-    showAuthModal(window.GF_DEMO_MODE ? 'register' : 'login');
+    showAuthModal('login');
     showToast('Signed out', 'info');
     if (typeof loadSavedSessions === 'function') await loadSavedSessions();
     if (typeof loadDevices === 'function') await loadDevices();

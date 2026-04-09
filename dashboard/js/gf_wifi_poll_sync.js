@@ -178,7 +178,7 @@ function _metricsFromProcessed(pd) {
         if (Number.isFinite(d) && d > 0) { devSum += d; devN++; }
         const a = Number(p.entry_angle || 0);
         if (Number.isFinite(a) && a > 0) { angleSum += a; angleN++; }
-        if (Number(p.haptic_fired || 0)) hN++;
+        if (Number(p.haptic_fired || 0) && (i === 0 || !Number(pd[i - 1].haptic_fired || 0))) hN++;
     }
     const segCount = _countStrokeSegmentsFromProcessed(pd);
     m.stroke_count = Math.max(lastStroke, segCount);

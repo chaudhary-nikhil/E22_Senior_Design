@@ -39,10 +39,10 @@ function startLiveRefreshLoop() {
     if (gfLiveInterval) clearInterval(gfLiveInterval);
     gfLiveInterval = setInterval(() => {
         const now = Date.now();
-        if (now - gfLastLiveTick < 3500) return;
+        if (now - gfLastLiveTick < 8000) return;
         gfLastLiveTick = now;
         _scheduleRefresh();
-    }, 1500);
+    }, 5000);
 }
 
 function stopLiveRefreshLoop() {

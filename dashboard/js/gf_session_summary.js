@@ -11,6 +11,7 @@ function resetSessionSummaryPlaceholders() {
     setText('sum-duration', dash);
     setText('sum-rate', dash);
     setText('sum-consistency', dash);
+    setText('sum-haptic', dash);
     setText('sum-samples', dash);
 }
 
@@ -19,6 +20,7 @@ function resetHomeStatsPlaceholders() {
     setText('home-last-strokes', dash);
     setText('home-last-rate', dash);
     setText('home-last-consistency', dash);
+    setText('home-last-haptic', dash);
     setText('home-last-distance', dash);
 }
 
@@ -43,12 +45,14 @@ function updateSessionSummary() {
     setText('sum-duration', formatTime(m.duration));
     setText('sum-rate', m.stroke_rate ? m.stroke_rate.toFixed(1) + '/min' : '--');
     setText('sum-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '--');
+    setText('sum-haptic', m.haptic_count != null ? m.haptic_count : 0);
     setText('sum-samples', processedData.length);
     
     if (activeSessionIdx >= 0 && savedSessions[activeSessionIdx]) {
         setText('home-last-strokes', m.stroke_count || 0);
         setText('home-last-rate', m.stroke_rate ? m.stroke_rate.toFixed(1) : '-');
         setText('home-last-consistency', m.consistency ? m.consistency.toFixed(0) + '%' : '-');
+        setText('home-last-haptic', m.haptic_count != null ? m.haptic_count : '-');
         setText('home-last-distance', totalDist + 'm');
     }
 }

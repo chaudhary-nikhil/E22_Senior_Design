@@ -50,30 +50,10 @@ function updateAnalysis() {
     setText('phase-recovery-pct', (pcts.recovery || 0).toFixed(0) + '%');
 
     const hintEl = document.getElementById('haptic-card-hint');
-    const sessionCompare = typeof idealCompareMode !== 'undefined' && idealCompareMode === 'session';
-    if (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal) {
-        if (sessionCompare) {
-            setText('haptic-count', gfVsIdealMetrics.sessionVsIdealAlert ? 1 : 0);
-            if (hintEl) hintEl.textContent = 'Whole session vs ideal (matches chart)';
-        } else {
-            setText('haptic-count', gfVsIdealMetrics.vsIdealAlertCount != null ? gfVsIdealMetrics.vsIdealAlertCount : 0);
-            if (hintEl) hintEl.textContent = 'Strokes over vs-ideal threshold (see table)';
-        }
-    } else {
-        setText('haptic-count', m.haptic_count || 0);
-        if (hintEl) hintEl.textContent = 'Band buzzes during swim';
-    }
+    setText('haptic-count', m.haptic_count || 0);
+    if (hintEl) hintEl.textContent = 'Band buzzes during swim';
 
     let avgDev = m.avg_deviation != null ? m.avg_deviation : 0;
-    if (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal) {
-        if (sessionCompare && gfVsIdealMetrics.sessionChartDeviation != null) {
-            avgDev = gfVsIdealMetrics.sessionChartDeviation;
-        } else if (!sessionCompare && gfVsIdealMetrics.selectedStrokeDeviation != null) {
-            avgDev = gfVsIdealMetrics.selectedStrokeDeviation;
-        } else if (gfVsIdealMetrics.avgDeviation != null) {
-            avgDev = gfVsIdealMetrics.avgDeviation;
-        }
-    }
     setText('avg-deviation', (typeof avgDev === 'number' ? avgDev : 0).toFixed(3));
 
     const score = computeFormScore(m, { avgDeviationOverride: avgDev });
@@ -103,15 +83,31 @@ function gfLookupVsIdealForStroke(num, streamKey) {
 }
 
 function computeFormScore(m, opts = null) {
-    let s = 5;
-    s += Math.min((m.consistency || 0) / 100 * 3, 3);
+    let s = 4;
+    s += Math.min((m.consistency || 0) / 100 * 2.5, 2.5);
     const dev = (opts && typeof opts.avgDeviationOverride === 'number')
         ? opts.avgDeviationOverride
         : (m.avg_deviation || 0);
-    if (dev < 0.3) s += 2; else if (dev < 0.7) s += 1; else if (dev > 1) s -= 1;
+    if (dev < 0.2) s += 2;
+    else if (dev < 0.4) s += 1.5;
+    else if (dev < 0.7) s += 0.5;
+    else if (dev > 1) s -= 1;
+
     const angle = m.avg_entry_angle || 0;
-    if (angle >= 15 && angle <= 40) s += 1; else if (angle > 0) s -= 0.5;
-    return Math.max(0, Math.min(10, s));
+    if (angle >= 20 && angle <= 35) s += 1;
+    else if (angle >= 15 && angle <= 40) s += 0.5;
+    else if (angle > 0) s -= 0.5;
+
+    const sr = m.stroke_rate || 0;
+    if (sr >= 15 && sr <= 40) s += 0.5;
+    else if (sr > 0 && (sr < 10 || sr > 50)) s -= 0.5;
+
+    const pcts = m.phase_pcts || {};
+    const pull = pcts.pull || 0, glide = pcts.glide || 0;
+    if (pull >= 18 && pull <= 35 && glide >= 20 && glide <= 55) s += 0.5;
+    else if (pull < 10 || glide > 65) s -= 0.5;
+
+    return Math.max(0, Math.min(10, Math.round(s * 10) / 10));
 }
 
 function drawGauge(canvasId, value, min, max, idealLow, idealHigh) {
@@ -230,12 +226,14 @@ function buildStrokeTable() {
         const vi = (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal)
             ? gfLookupVsIdealForStroke(r.num, r.streamKey)
             : null;
-        const devShow = vi ? vi.deviation : r.deviation;
-        const bandBuzz = r.haptic;
-        const cueFire = vi ? vi.vsIdealAlert : bandBuzz;
-        const cueTitle = vi
-            ? ('vs ideal ' + devShow.toFixed(3) + (bandBuzz ? ' · band buzz' : ' · band quiet'))
-            : (bandBuzz ? 'Band haptic fired' : 'No band haptic');
+        const fwDev = r.deviation || 0;
+        const fwHaptic = !!r.haptic;
+        const clientDev = vi ? vi.deviation : 0;
+        const devShow = fwDev > 0 ? fwDev : (vi ? clientDev : 0);
+        const cueFire = fwHaptic;
+        const cueTitle = fwHaptic
+            ? ('Band haptic fired · dev ' + devShow.toFixed(3))
+            : (vi ? ('vs ideal ' + devShow.toFixed(3) + ' · no band buzz') : 'No band haptic');
         const rowClass = (cueFire ? 'row-haptic' : '') +
             (idealCompareStrokeNum === r.num && (idealCompareStreamKey || '') === (r.streamKey || '')
                 ? ' analysis-row-selected'

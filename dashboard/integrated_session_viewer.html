@@ -79,6 +79,11 @@
                 <div class="card-value" id="home-last-consistency">--</div>
             </div>
             <div class="card stat-card">
+                <div class="card-title">Band Cues</div>
+                <div class="card-value" id="home-last-haptic">--</div>
+                <div class="card-sub">haptic fired</div>
+            </div>
+            <div class="card stat-card">
                 <div class="card-title">Last Distance</div>
                 <div class="card-value" id="home-last-distance">--</div>
                 <div class="card-sub">meters</div>
@@ -219,6 +224,7 @@
                         <span>Duration: <strong id="sum-duration">-</strong></span>
                         <span>Rate: <strong id="sum-rate">-</strong></span>
                         <span>Consistency: <strong id="sum-consistency">-</strong></span>
+                        <span>Band cues: <strong id="sum-haptic">-</strong></span>
                         <span>Samples: <strong id="sum-samples">-</strong></span>
                     </div>
                 </div>
@@ -289,7 +295,7 @@
                         id="phase-recovery-pct">0%</span></div>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--text3);margin-top:6px;">
-                <span>🔵 Glide</span><span>🟢 Catch</span><span>🟡 Pull</span><span>🟣 Recovery</span>
+                <span>🔵 Glide</span><span>🟢 Catch</span><span>🔴 Pull</span><span>🟣 Recovery</span>
             </div>
         </div>
         <div class="card">
@@ -304,6 +310,7 @@
                     <option value="stroke">Selected stroke</option>
                     <option value="session">Full session (normalized)</option>
                 </select>
+                <button type="button" class="btn btn-gold btn-sm" style="padding:4px 10px;font-size:0.9em;" onclick="setCurrentAsIdeal()">Set session as ideal</button>
             </div>
             <div id="ideal-comparison-content">
                 <p id="ideal-compare-caption" style="display:none;font-size:0.82em;color:var(--text2);margin:0 0 10px;line-height:1.45;"></p>
@@ -322,8 +329,8 @@
                             <th>#</th>
                             <th>Time (rel. s)</th>
                             <th>Entry Angle</th>
-                            <th title="⚡ = band buzz on that stroke, or shape off vs your Set Ideal">Cue</th>
-                            <th title="Path difference vs saved ideal baseline (updates when you Set Ideal)">Deviation</th>
+                            <th title="⚡ = band haptic fired on that stroke during the swim">Cue</th>
+                            <th title="Firmware deviation score from ideal baseline on the device">Deviation</th>
                             <th>Action</th>
                         </tr>
                     </thead>
@@ -341,10 +348,10 @@
         <p id="insights-source-hint" class="insights-source-hint" hidden></p>
         <div class="card coaching-ai-card" style="margin-bottom:16px;">
             <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-                <span class="card-title">AI coaching (Gemini)</span>
-                <button type="button" class="btn btn-gold btn-sm" id="ai-coaching-btn" onclick="refreshAiCoachingInsights()">Generate insights</button>
+                <span class="card-title">AI Coaching (Gemini)</span>
+                <button type="button" class="btn btn-outline btn-sm" id="ai-coaching-btn" onclick="refreshAiCoachingInsights()" style="font-size:0.75em;padding:3px 8px;">Regenerate</button>
             </div>
-            <p style="font-size:0.8em;color:var(--text3);margin:0 0 10px;line-height:1.45;">Uses your loaded session metrics, per-stroke vs-ideal deviation, and band haptic flags. Requires the dashboard server and a configured API key.</p>
+            <p style="font-size:0.8em;color:var(--text3);margin:0 0 10px;line-height:1.45;">Personalized analysis from Gemini, generated automatically when a session is loaded.</p>
             <div id="ai-coaching-body" class="coaching-ai-body" style="min-height:48px;color:var(--text2);font-size:0.92em;line-height:1.55;"></div>
             <p id="ai-coaching-meta" style="font-size:0.72em;color:var(--text3);margin:10px 0 0;"></p>
         </div>
@@ -357,16 +364,16 @@
 
         <div class="grid-2" style="margin-bottom:16px;">
             <div class="card">
-                <div class="card-title">Per-Stroke Issues</div>
+                <div class="card-title">Stroke Patterns</div>
                 <div id="stroke-diagnosis-list" style="margin-top:12px; max-height: 400px; overflow-y: auto;">
-                    <p style="color:var(--text3); font-size:0.9em;">No issues detected yet.</p>
+                    <p style="color:var(--text3); font-size:0.9em;">Patterns appear after syncing a session.</p>
                 </div>
             </div>
             <div class="card">
                 <div class="card-title">Session Consistency</div>
                 <div id="consistency-heatmap" style="margin-top:12px; display:flex; flex-wrap:wrap; gap:4px;">
                 </div>
-                <p style="font-size:0.75em;color:var(--text3);margin-top:8px;">Each block is a stroke. Green=Good, Yellow=Minor deviation, Red=Major deviation.</p>
+                <p style="font-size:0.75em;color:var(--text3);margin-top:8px;">Each block = one stroke. Green=consistent with session average, Yellow=minor variation, Red=significant outlier.</p>
             </div>
         </div>
 
@@ -503,59 +510,133 @@
                     <label>Email</label>
                     <input type="email" id="login-email" autocomplete="username" required style="margin-bottom:10px;">
                     <label>Password</label>
-                    <input type="password" id="login-password" autocomplete="current-password" required style="margin-bottom:14px;">
+                    <div style="position:relative;margin-bottom:14px;">
+                        <input type="password" id="login-password" autocomplete="current-password" required style="width:100%;padding-right:40px;">
+                        <button type="button" class="pw-toggle" onclick="togglePasswordVisibility('login-password', this)" title="Show password" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:1.1em;padding:2px;">👁</button>
+                    </div>
                     <button class="btn btn-gold" type="submit" style="width:100%;">Sign in</button>
                 </form>
             </div>
             <div id="auth-panel-register" hidden>
-                <p style="color:var(--text2);margin-bottom:6px;font-size:0.88em;">Create an account — data is stored in SQLite on this computer (demo uses a separate empty DB each server restart).</p>
-                <form onsubmit="createAccountFromModal(event)">
+                <p style="color:var(--text2);margin-bottom:6px;font-size:0.84em;line-height:1.4;">Create an account — data is stored locally on this computer.</p>
+                <form onsubmit="createAccountFromModal(event)" style="font-size:0.92em;">
                     <label>Name <span style="color:var(--red);">*</span></label>
-                    <input type="text" id="reg-name" placeholder="Your name" required style="margin-bottom:10px;" minlength="2">
+                    <input type="text" id="reg-name" placeholder="Your name" required style="margin-bottom:6px;" minlength="2">
                     <label>Email <span style="color:var(--red);">*</span></label>
-                    <input type="email" id="reg-email" autocomplete="email" required style="margin-bottom:10px;">
+                    <input type="email" id="reg-email" autocomplete="email" required style="margin-bottom:6px;">
                     <label>Password <span style="color:var(--red);">*</span></label>
-                    <input type="password" id="reg-password" autocomplete="new-password" required minlength="6" style="margin-bottom:12px;">
-                    <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-                        <span>Units</span>
-                        <select id="reg-units" style="max-width:140px;">
-                            <option value="in">in / ft</option>
-                            <option value="cm">cm</option>
-                        </select>
-                    </label>
-                    <label>Height</label>
-                    <input type="text" id="reg-height" placeholder="5'10&quot;" style="margin-bottom:10px;">
-                    <label>Wingspan</label>
-                    <input type="text" id="reg-wingspan" placeholder="72" style="margin-bottom:10px;">
-                    <label>Skill Level</label>
-                    <select id="reg-skill" style="margin-bottom:10px;">
-                        <option value="beginner">Beginner</option>
-                        <option value="intermediate">Intermediate</option>
-                        <option value="advanced">Advanced</option>
-                        <option value="competitive">Competitive</option>
-                    </select>
-                    <label>Pool Length (m)</label>
-                    <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100" style="margin-bottom:10px;">
-                    <label>How many wearables?</label>
-                    <input type="number" id="reg-wearable-count" min="1" max="2" value="1" style="margin-bottom:12px;">
-                    <button class="btn btn-gold" type="submit" style="width:100%;">Create account</button>
+                    <div style="position:relative;margin-bottom:8px;">
+                        <input type="password" id="reg-password" autocomplete="new-password" required minlength="6" style="width:100%;padding-right:40px;">
+                        <button type="button" class="pw-toggle" onclick="togglePasswordVisibility('reg-password', this)" title="Show password" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:1.1em;padding:2px;">👁</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;">
+                        <div>
+                            <label style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                                <span>Units</span>
+                                <select id="reg-units" style="max-width:90px;font-size:0.9em;">
+                                    <option value="in">in / ft</option>
+                                    <option value="cm">cm</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div>
+                            <label>Skill</label>
+                            <select id="reg-skill" style="font-size:0.9em;">
+                                <option value="beginner">Beginner</option>
+                                <option value="intermediate">Intermediate</option>
+                                <option value="advanced">Advanced</option>
+                                <option value="competitive">Competitive</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Height</label>
+                            <input type="text" id="reg-height" placeholder="5'10&quot;">
+                        </div>
+                        <div>
+                            <label>Wingspan</label>
+                            <input type="text" id="reg-wingspan" placeholder="72">
+                        </div>
+                        <div>
+                            <label>Pool (m)</label>
+                            <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100">
+                        </div>
+                        <div>
+                            <label>Wearables</label>
+                            <input type="number" id="reg-wearable-count" min="1" max="2" value="1">
+                        </div>
+                    </div>
+                    <button class="btn btn-gold" type="submit" style="width:100%;margin-top:12px;">Create account</button>
                 </form>
             </div>
         </div>
     </div>
 
     <div id="cal-guide-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="cal-guide-title">
-        <div class="modal" style="max-width:440px;">
+        <div class="modal" style="max-width:540px;max-height:90vh;overflow-y:auto;">
             <div class="modal-brand">GoldenForm</div>
-            <h2 id="cal-guide-title" style="margin-bottom:10px;">IMU calibration guide</h2>
-            <p style="color:var(--text2);font-size:0.88em;margin-bottom:12px;">On wearable Wi‑Fi, badges update live. Suggested order:</p>
-            <ol style="margin:0 0 14px 18px;color:var(--text2);font-size:0.85em;line-height:1.5;">
-                <li style="margin-bottom:8px;"><strong style="color:var(--text1);">Gyro:</strong> still on table, 3/3</li>
-                <li style="margin-bottom:8px;"><strong style="color:var(--text1);">Accel:</strong> six faces flat</li>
-                <li style="margin-bottom:8px;"><strong style="color:var(--text1);">Mag:</strong> wide figure 8, away from metal, 3/3</li>
-                <li><strong style="color:var(--text1);">System:</strong> last; slow rotations</li>
-            </ol>
-            <p style="font-size:0.76em;color:var(--text3);margin-bottom:14px;"><strong>Save</strong> stores a snapshot in this browser (we also save when quality goes up). Fusion runs on the band.</p>
+            <h2 id="cal-guide-title" style="margin-bottom:6px;">Calibration Guide</h2>
+            <p style="color:var(--text2);font-size:0.86em;margin-bottom:14px;line-height:1.5;">Your wearable has a motion sensor (IMU) that needs to learn its surroundings before it can accurately track your strokes. This is called <strong>calibration</strong>. You only need to do this once — the device remembers it after all values reach 3/3.</p>
+
+            <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+                <p style="font-size:0.82em;color:var(--text1);margin:0 0 6px;font-weight:600;">Before you start</p>
+                <ul style="margin:0;padding:0 0 0 16px;color:var(--text2);font-size:0.82em;line-height:1.55;">
+                    <li>Make sure you are connected to the wearable's Wi-Fi network (it creates its own hotspot named <strong>GoldenForm_XXXX</strong>).</li>
+                    <li>The calibration badges on this page update in real time — watch them go from <span style="color:var(--red);">0/3</span> to <span style="color:var(--green);">3/3</span> as you move.</li>
+                    <li>Work on a desk or table, away from metal, magnets, and electronics.</li>
+                </ul>
+            </div>
+
+            <h3 style="font-size:0.9em;color:var(--text1);margin:0 0 10px;">Step-by-step (follow this order)</h3>
+
+            <div style="margin-bottom:14px;">
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                    <span style="font-size:1.4em;line-height:1;">1</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">Gyroscope (Gyro)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">Place the wearable <strong>flat on a table</strong> and leave it <strong>completely still</strong> for about 5 seconds. Don't touch the table — even small vibrations can reset progress. You should see Gyro jump to 3/3 quickly.</p>
+                    </div>
+                </div>
+
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                    <span style="font-size:1.4em;line-height:1;">2</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">Accelerometer (Accel)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">Pick up the wearable and <strong>slowly tilt it to rest on each of its 6 faces</strong> — think of it like a dice: top, bottom, left side, right side, front, back. Hold each position steady for 2–3 seconds before moving to the next. No need to rush.</p>
+                    </div>
+                </div>
+
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                    <span style="font-size:1.4em;line-height:1;">3</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">Magnetometer (Mag)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">Hold the wearable in front of you and <strong>draw a large figure-8 (infinity sign) in the air</strong>, about arm's length wide. Move smoothly and keep going for 10–15 seconds. Stay away from laptops, phones, metal furniture, and speakers — they interfere with the magnetic reading.</p>
+                    </div>
+                </div>
+
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;">
+                    <span style="font-size:1.4em;line-height:1;">4</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">System (Sys)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">This one fuses all three sensors together. <strong>Slowly rotate the wearable in random directions</strong> — imagine stirring a pot, then tilting the pot side to side, then flipping it. Mix pitch (nodding), roll (tilting), and yaw (turning). Smooth, deliberate movements for about 10 seconds. This is usually the last to lock in.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:10px;">
+                <p style="font-size:0.82em;color:var(--green);margin:0 0 4px;font-weight:600;">When you're done</p>
+                <p style="font-size:0.8em;color:var(--text2);margin:0;line-height:1.5;">Once all four badges show <strong style="color:var(--green);">3/3</strong>, the card will say "Good to swim" and the device permanently saves the calibration. You can disconnect from Wi-Fi and start logging your swim. If you power-cycle the device before all four reach 3/3, you'll need to calibrate again.</p>
+            </div>
+
+            <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:16px;">
+                <p style="font-size:0.82em;color:var(--amber);margin:0 0 4px;font-weight:600;">Troubleshooting</p>
+                <ul style="margin:0;padding:0 0 0 16px;color:var(--text2);font-size:0.8em;line-height:1.55;">
+                    <li><strong>Values stuck at 0/3?</strong> Make sure you're connected to the wearable's Wi-Fi. Refresh the page if badges aren't updating.</li>
+                    <li><strong>Mag won't reach 3/3?</strong> Move further from metal and electronics. Try a different room. The figure-8 motion should be wide and slow.</li>
+                    <li><strong>System keeps dropping?</strong> This is normal — the System register is sensitive during motion. Keep doing slow rotations and it will lock in.</li>
+                    <li><strong>Lost calibration after restart?</strong> The device only saves permanently once all four reach 3/3 in the same session. Try again from Step 1.</li>
+                </ul>
+            </div>
+
             <button type="button" class="btn btn-gold" style="width:100%;" onclick="closeCalibrationGuide()">Got it</button>
         </div>
     </div>

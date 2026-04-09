@@ -1321,9 +1321,19 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         return round(max(0, min(10, score)), 1)
 
 
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """Suppress noisy ConnectionResetError tracebacks from client disconnects."""
+    def handle_error(self, request, client_address):
+        import traceback, sys as _sys
+        exc = _sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def start_server(port=8004, demo=False, fresh=False):
     _prepare_server_state(demo, fresh)
-    server = ThreadingHTTPServer(('0.0.0.0', port), WiFiSessionHandler)
+    server = _QuietThreadingHTTPServer(('0.0.0.0', port), WiFiSessionHandler)
     print(f'GoldenForm Session Processor running on http://localhost:{port}')
     print(f'Open: http://localhost:{port}/')
     if demo:

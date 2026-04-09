@@ -1498,7 +1498,7 @@ body > * {
 }
 
 .phase-pull {
-  background: linear-gradient(135deg, #ea580c, #9a3412);
+  background: linear-gradient(135deg, #ef4444, #dc2626);
 }
 
 .phase-recovery {
@@ -1761,6 +1761,8 @@ input[type="range"]::-webkit-slider-thumb {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  padding: 20px;
+  overflow-y: auto;
 }
 
 .modal-overlay.show {
@@ -1805,6 +1807,8 @@ input[type="range"]::-webkit-slider-thumb {
   padding: 36px;
   width: 90%;
   max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
   animation: slideUp 0.4s ease;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 }
@@ -1960,6 +1964,7 @@ input[type="range"]::-webkit-slider-thumb {
   .modal {
     padding: 24px;
     margin: 12px;
+    max-height: 88vh;
   }
 
   .btn {

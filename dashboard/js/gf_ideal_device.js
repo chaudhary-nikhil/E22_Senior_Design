@@ -110,6 +110,8 @@ async function loadIdealStroke() {
 
 async function afterIdealSavedServer() {
     await loadIdealStroke();
+    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
+    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
     if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
     if (isDeviceOnline) pushIdealToDevice(true);
 }
@@ -153,10 +155,16 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
             sourceSessionName: meta.sourceSessionName
         };
         updateIdealStrokePanel();
+        if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
         buildIdealComparison();
         if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
         if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
-        showToast('Ideal saved on this device. Sync on dashboard Wi‑Fi to store on the server.', 'info');
+        if (isDeviceOnline) {
+            pushIdealToDevice(true);
+            showToast('Stroke ' + strokeNum + ' set as ideal — pushing to wearable', 'success');
+        } else {
+            showToast('Ideal saved on this device. Sync on dashboard Wi‑Fi to store on the server.', 'info');
+        }
         return;
     }
 
