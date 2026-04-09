@@ -55,6 +55,13 @@ function resetPlayback() {
     if (btn) btn.textContent = '▶';
     renderFrame(currentIndex);
 }
+
+/** Jump to range start and start playing (unlike reset, which stays paused). */
+function replayFromStart() {
+    if (!processedData.length) return;
+    resetPlayback();
+    togglePlayback();
+}
 function skipForward() {
     const b = getPlaybackBounds();
     currentIndex = Math.min(currentIndex + 30, b.end);

@@ -12,6 +12,7 @@ Object.assign(window, {
     mergeLatestSessions,
     togglePlayback,
     resetPlayback,
+    replayFromStart,
     skipBackward,
     skipForward,
     seekPlayback,
