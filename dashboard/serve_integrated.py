@@ -14,6 +14,27 @@ class CORSRequestHandler(SimpleHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         super().end_headers()
 
+    def _api_not_available(self):
+        import json
+        body = json.dumps({
+            'error': 'This static server does not support API routes. '
+                     'Run wifi_session_processor.py instead: '
+                     'python wifi_session_processor.py [--demo]'
+        }).encode()
+        self.send_response(501)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith('/api/') or self.path == '/process':
+            self._api_not_available()
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        self._api_not_available()
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.end_headers()

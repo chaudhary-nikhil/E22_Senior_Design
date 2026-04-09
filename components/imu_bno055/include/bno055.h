@@ -226,6 +226,12 @@ esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys,
  */
 void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
                                  uint8_t *mag);
+/**
+ * @brief Last operation mode requested via bno055_set_operation_mode().
+ *        Used by HTTP /api/device_info so the dashboard can interpret calibration
+ *        readiness correctly (e.g. IMUPLUS ignores magnetometer fusion).
+ */
+uint8_t bno055_get_last_opmode(void);
 esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out);
 esp_err_t bno055_reset(int port, uint8_t addr);
 esp_err_t bno055_start_calibration(int port, uint8_t addr);

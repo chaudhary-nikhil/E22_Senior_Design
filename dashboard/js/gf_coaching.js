@@ -53,6 +53,7 @@ function updateCoachingInsights() {
     const _sbBack = strokeBoundaries.map(b => ({ index: b.index, strokeNum: b.strokeNum, streamKey: b.streamKey, label: b.label }));
 
     try {
+    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
     computeStrokeBoundaries();
     for (let b = 0; b < strokeBoundaries.length; b++) {
         const sb = strokeBoundaries[b];
@@ -73,15 +74,23 @@ function updateCoachingInsights() {
         strokes.push(seg);
     }
 
-    // Heatmap
+    // Heatmap (prefer vs-ideal when baseline loaded; else firmware haptic deviation)
     if (strokes.length > 0) {
         strokes.forEach(s => {
             let color = 'var(--green)';
-            if (s.events.length > 0) {
+            const jk = s.streamKey ? `, ${JSON.stringify(s.streamKey)}` : '';
+            const key = String(s.num) + '::' + String(s.streamKey || '');
+            const vi = (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal && gfVsIdealMetrics.byStroke)
+                ? gfVsIdealMetrics.byStroke.get(key)
+                : null;
+            if (vi) {
+                if (vi.vsIdealAlert) {
+                    color = vi.deviation > 0.8 ? 'var(--red)' : 'var(--amber)';
+                }
+            } else if (s.events.length > 0) {
                 if (s.maxDev > 0.8) color = 'var(--red)';
                 else color = 'var(--amber)';
             }
-            const jk = s.streamKey ? `, ${JSON.stringify(s.streamKey)}` : '';
             htmlHeat += `<div title="${(s.label || ('Stroke ' + s.num)).replace(/"/g, '&quot;')}" style="width:14px;height:14px;border-radius:2px;background-color:${color};cursor:pointer;" onclick="switchTab('session'); setTimeout(()=>jumpToStroke(${s.num}${jk}), 50);"></div>`;
         });
     } else {
@@ -145,10 +154,151 @@ function updateCoachingInsights() {
     }
     if(priorityBox) priorityBox.innerHTML = htmlPriorities;
     } finally {
-        processedData = _pdBack;
-        sessionMetrics = _smBack;
-        strokeBoundaries = _sbBack;
-        refreshStrokeFieldMode();
+    processedData = _pdBack;
+    sessionMetrics = _smBack;
+    strokeBoundaries = _sbBack;
+    refreshStrokeFieldMode();
+  }
+}
+
+/**
+ * Server-side Gemini coaching (requires GEMINI_API_KEY on dashboard server).
+ */
+function gfEscapeHtmlInsight(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function gfFormatInsightInline(s) {
+    let x = gfEscapeHtmlInsight(s);
+    x = x.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return x;
+}
+
+/** Turn Gemini markdown-style output into readable HTML (headings, lists, bold). */
+function gfFormatInsightMarkdown(text) {
+    if (!text) return '';
+    const lines = String(text).split(/\r?\n/);
+    const parts = [];
+    let inList = false;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const t = line.trim();
+        if (/^###\s+/.test(t)) {
+            if (inList) {
+                parts.push('</ul>');
+                inList = false;
+            }
+            parts.push('<h4 class="coaching-md-h">' + gfEscapeHtmlInsight(t.replace(/^###\s+/, '')) + '</h4>');
+        } else if (/^[-*]\s+/.test(t)) {
+            if (!inList) {
+                parts.push('<ul class="coaching-md-ul">');
+                inList = true;
+            }
+            parts.push('<li>' + gfFormatInsightInline(t.replace(/^[-*]\s+/, '')) + '</li>');
+        } else if (t === '') {
+            if (inList) {
+                parts.push('</ul>');
+                inList = false;
+            }
+            parts.push('<br/>');
+        } else {
+            if (inList) {
+                parts.push('</ul>');
+                inList = false;
+            }
+            parts.push('<p class="coaching-md-p">' + gfFormatInsightInline(t) + '</p>');
+        }
     }
+    if (inList) parts.push('</ul>');
+    return '<div class="coaching-md">' + parts.join('') + '</div>';
+}
+
+async function refreshAiCoachingInsights() {
+    const bodyEl = document.getElementById('ai-coaching-body');
+    const metaEl = document.getElementById('ai-coaching-meta');
+    const btn = document.getElementById('ai-coaching-btn');
+    if (!bodyEl) return;
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '…';
+    }
+    bodyEl.innerHTML = '';
+    bodyEl.textContent = 'Generating…';
+    if (metaEl) metaEl.textContent = '';
+
+    const insightPd = (typeof processedData !== 'undefined' && processedData && processedData.length)
+        ? processedData
+        : null;
+    const insightMetrics = sessionMetrics;
+    if (!insightMetrics || !insightPd || !insightPd.length) {
+        bodyEl.textContent = 'Load a session on the Session tab first.';
+        if (btn) { btn.disabled = false; btn.textContent = 'Generate insights'; }
+        return;
+    }
+
+    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
+    if (typeof computeStrokeBoundaries === 'function') computeStrokeBoundaries();
+
+    const strokes = [];
+    for (let b = 0; b < strokeBoundaries.length; b++) {
+        const sb = strokeBoundaries[b];
+        const start = sb.index;
+        const p = insightPd[start] || {};
+        const key = String(sb.strokeNum) + '::' + String(sb.streamKey || '');
+        const vi = (gfVsIdealMetrics && gfVsIdealMetrics.byStroke)
+            ? gfVsIdealMetrics.byStroke.get(key)
+            : null;
+        strokes.push({
+            stroke_num: sb.strokeNum,
+            entry_angle: Number(p.entry_angle) || 0,
+            deviation_vs_ideal: vi ? vi.deviation : 0,
+            device_haptic: vi ? vi.deviceHaptic : false,
+            vs_ideal_alert: vi ? vi.vsIdealAlert : false
+        });
+    }
+
+    const payload = {
+        session_metrics: insightMetrics,
+        strokes,
+        ideal_loaded: !!(typeof idealStrokeData !== 'undefined' && idealStrokeData && idealStrokeData.length)
+    };
+
+    const extraHeaders = {};
+    try {
+        if (localStorage.getItem('gf_coaching_privacy_nolog') === '1') {
+            extraHeaders['X-GoldenForm-Coaching-NoLog'] = '1';
+        }
+    } catch (e) { /* ignore */ }
+    const res = await apiPost('/api/coaching/insights', payload, { headers: extraHeaders });
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Generate insights';
+    }
+    if (!res) {
+        bodyEl.textContent = 'No response from server. Is the dashboard running?';
+        return;
+    }
+    if (res.status === 'unconfigured') {
+        bodyEl.textContent = res.message || 'Set GEMINI_API_KEY in dashboard/.env on the server.';
+        return;
+    }
+    if (res.httpStatus === 429 || res.rate_limited) {
+        bodyEl.textContent = res.error || 'Too many AI requests. Wait a few minutes and try again.';
+        return;
+    }
+    if (res.status === 'error' || res._httpError) {
+        bodyEl.textContent = res.error || res.detail || 'AI request failed.';
+        return;
+    }
+    if (res.status === 'ok' && res.text) {
+        bodyEl.innerHTML = gfFormatInsightMarkdown(res.text);
+        if (metaEl) metaEl.textContent = res.model ? ('Model: ' + res.model) : '';
+        return;
+    }
+    bodyEl.textContent = 'Unexpected response.';
 }
 

@@ -16,12 +16,19 @@ function resetAnalysisPlaceholders() {
     setText('phase-pull-pct', dash);
     setText('phase-recovery-pct', dash);
     setText('haptic-count', dash);
+    const hh = document.getElementById('haptic-card-hint');
+    if (hh) hh.textContent = 'Band buzzes during swim';
     setText('avg-deviation', dash);
     setText('form-score', dash);
     const fs = document.getElementById('form-score');
     if (fs) fs.style.color = 'var(--text2)';
     const tbody = document.getElementById('stroke-table-body');
     if (tbody) tbody.innerHTML = '';
+    idealCompareStrokeNum = null;
+    idealCompareStreamKey = null;
+    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'stroke';
+    const icm = document.getElementById('ideal-compare-mode');
+    if (icm) icm.value = 'stroke';
 }
 
 function updateAnalysis() {
@@ -42,24 +49,65 @@ function updateAnalysis() {
     setText('phase-pull-pct', (pcts.pull || 0).toFixed(0) + '%');
     setText('phase-recovery-pct', (pcts.recovery || 0).toFixed(0) + '%');
 
-    setText('haptic-count', m.haptic_count || 0);
-    setText('avg-deviation', m.avg_deviation ? m.avg_deviation.toFixed(3) : '0.000');
+    const hintEl = document.getElementById('haptic-card-hint');
+    const sessionCompare = typeof idealCompareMode !== 'undefined' && idealCompareMode === 'session';
+    if (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal) {
+        if (sessionCompare) {
+            setText('haptic-count', gfVsIdealMetrics.sessionVsIdealAlert ? 1 : 0);
+            if (hintEl) hintEl.textContent = 'Whole session vs ideal (matches chart)';
+        } else {
+            setText('haptic-count', gfVsIdealMetrics.vsIdealAlertCount != null ? gfVsIdealMetrics.vsIdealAlertCount : 0);
+            if (hintEl) hintEl.textContent = 'Strokes over vs-ideal threshold (see table)';
+        }
+    } else {
+        setText('haptic-count', m.haptic_count || 0);
+        if (hintEl) hintEl.textContent = 'Band buzzes during swim';
+    }
 
-    const score = computeFormScore(m);
+    let avgDev = m.avg_deviation != null ? m.avg_deviation : 0;
+    if (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal) {
+        if (sessionCompare && gfVsIdealMetrics.sessionChartDeviation != null) {
+            avgDev = gfVsIdealMetrics.sessionChartDeviation;
+        } else if (!sessionCompare && gfVsIdealMetrics.selectedStrokeDeviation != null) {
+            avgDev = gfVsIdealMetrics.selectedStrokeDeviation;
+        } else if (gfVsIdealMetrics.avgDeviation != null) {
+            avgDev = gfVsIdealMetrics.avgDeviation;
+        }
+    }
+    setText('avg-deviation', (typeof avgDev === 'number' ? avgDev : 0).toFixed(3));
+
+    const score = computeFormScore(m, { avgDeviationOverride: avgDev });
     setText('form-score', score.toFixed(1));
     const scoreEl = document.getElementById('form-score');
     if (scoreEl) scoreEl.style.color = score >= 7 ? 'var(--green)' : score >= 5 ? 'var(--amber)' : 'var(--red)';
 
-    buildStrokeTable();
     buildIdealComparison();
+    buildStrokeTable();
 }
 
 function setWidth(id, pct) { const el = document.getElementById(id); if (el) el.style.width = Math.max(1, pct) + '%'; }
 
-function computeFormScore(m) {
+/** Resolve vs-ideal row when stream keys differ: metrics use "4::" but boundaries use "4::hw2". */
+function gfLookupVsIdealForStroke(num, streamKey) {
+    if (!gfVsIdealMetrics || !gfVsIdealMetrics.hasIdeal || !gfVsIdealMetrics.byStroke) return null;
+    const n = String(num);
+    const sk = streamKey != null ? String(streamKey) : '';
+    let vi = gfVsIdealMetrics.byStroke.get(n + '::' + sk);
+    if (vi) return vi;
+    vi = gfVsIdealMetrics.byStroke.get(n + '::');
+    if (vi) return vi;
+    for (const [k, v] of gfVsIdealMetrics.byStroke) {
+        if (k.startsWith(n + '::')) return v;
+    }
+    return null;
+}
+
+function computeFormScore(m, opts = null) {
     let s = 5;
     s += Math.min((m.consistency || 0) / 100 * 3, 3);
-    const dev = m.avg_deviation || 0;
+    const dev = (opts && typeof opts.avgDeviationOverride === 'number')
+        ? opts.avgDeviationOverride
+        : (m.avg_deviation || 0);
     if (dev < 0.3) s += 2; else if (dev < 0.7) s += 1; else if (dev > 1) s -= 1;
     const angle = m.avg_entry_angle || 0;
     if (angle >= 15 && angle <= 40) s += 1; else if (angle > 0) s -= 0.5;
@@ -93,18 +141,34 @@ function drawGauge(canvasId, value, min, max, idealLow, idealHigh) {
 function buildStrokeTable() {
     const tbody = document.getElementById('stroke-table-body');
     if (!tbody || !processedData.length) return;
+    if (typeof gfComputeVsIdealMetrics === 'function' && typeof idealStrokeData !== 'undefined' && idealStrokeData && idealStrokeData.length) {
+        gfComputeVsIdealMetrics();
+    }
+    if (typeof computeStrokeBoundaries === 'function') computeStrokeBoundaries();
+
     let rows = [];
     const startTime = processedData[0].timestamp || 0;
 
     if (sessionMetrics && sessionMetrics.stroke_breakdown && sessionMetrics.stroke_breakdown.length > 0) {
-        rows = sessionMetrics.stroke_breakdown.map(p => ({
-            num: p.number,
-            streamKey: '',
-            time: Math.max(0, p.timestamp_s - (startTime / 1000)).toFixed(1),
-            angle: p.entry_angle || 0,
-            haptic: p.haptic_fired,
-            deviation: p.deviation || 0
-        }));
+        rows = sessionMetrics.stroke_breakdown.map((p, idx) => {
+            let streamKey = '';
+            if (typeof strokeBoundaries !== 'undefined' && strokeBoundaries && strokeBoundaries.length) {
+                const b = strokeBoundaries[idx];
+                if (b && b.strokeNum === p.number) streamKey = b.streamKey || '';
+                else {
+                    const hit = strokeBoundaries.find((sb) => sb.strokeNum === p.number);
+                    if (hit) streamKey = hit.streamKey || '';
+                }
+            }
+            return {
+                num: p.number,
+                streamKey,
+                time: Math.max(0, p.timestamp_s - (startTime / 1000)).toFixed(1),
+                angle: p.entry_angle || 0,
+                haptic: p.haptic_fired,
+                deviation: p.deviation || 0
+            };
+        });
     } else if (typeof strokeBoundaries !== 'undefined' && strokeBoundaries && strokeBoundaries.length > 0) {
         for (let b = 0; b < strokeBoundaries.length; b++) {
             const sb = strokeBoundaries[b];
@@ -162,9 +226,26 @@ function buildStrokeTable() {
         }
     }
     tbody.innerHTML = rows.map(r => {
-        const skArg = r.streamKey ? `, ${JSON.stringify(r.streamKey)}` : '';
         const firstCol = r.label && r.label !== String(r.num) ? r.label : String(r.num);
-        return `<tr class="${r.haptic ? 'row-haptic' : ''}" style="cursor:pointer;" onclick="jumpToStroke(${r.num}${skArg})"><td>${firstCol}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${r.haptic ? '<span class="haptic-marker">⚡</span>' : '✓'}</td><td class="${r.deviation > 0.7 ? 'text-red' : r.deviation > 0.3 ? 'text-amber' : 'text-green'}">${r.deviation.toFixed(3)}</td><td onclick="event.stopPropagation(); setSingleStrokeAsIdeal(${r.num}, ${r.streamKey ? JSON.stringify(r.streamKey) : 'undefined'})"><button class="btn btn-gold btn-sm" style="padding:2px 6px; font-size:0.7em;">Set Ideal</button></td></tr>`;
+        const vi = (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal)
+            ? gfLookupVsIdealForStroke(r.num, r.streamKey)
+            : null;
+        const devShow = vi ? vi.deviation : r.deviation;
+        const bandBuzz = r.haptic;
+        const cueFire = vi ? vi.vsIdealAlert : bandBuzz;
+        const cueTitle = vi
+            ? ('vs ideal ' + devShow.toFixed(3) + (bandBuzz ? ' · band buzz' : ' · band quiet'))
+            : (bandBuzz ? 'Band haptic fired' : 'No band haptic');
+        const rowClass = (cueFire ? 'row-haptic' : '') +
+            (idealCompareStrokeNum === r.num && (idealCompareStreamKey || '') === (r.streamKey || '')
+                ? ' analysis-row-selected'
+                : '');
+        const cueCell = cueFire
+            ? `<span class="haptic-marker" title="${String(cueTitle).replace(/"/g, '&quot;')}">⚡</span>`
+            : `<span title="${String(cueTitle).replace(/"/g, '&quot;')}">✓</span>`;
+        const devClass = devShow > 0.7 ? 'text-red' : devShow > 0.3 ? 'text-amber' : 'text-green';
+        const skJson = (r.streamKey != null && r.streamKey !== '') ? JSON.stringify(r.streamKey) : 'null';
+        return `<tr class="${rowClass}" style="cursor:pointer;" onclick="analysisStrokeRowClick(event, ${r.num}, ${skJson})"><td>${firstCol}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${cueCell}</td><td class="${devClass}">${devShow.toFixed(3)}</td><td onclick="event.stopPropagation(); setSingleStrokeAsIdeal(${r.num}, ${r.streamKey ? JSON.stringify(r.streamKey) : 'undefined'})"><button class="btn btn-gold btn-sm" style="padding:2px 6px; font-size:0.7em;">Set Ideal</button></td></tr>`;
     }).join('');
 }
 

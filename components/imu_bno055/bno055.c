@@ -15,6 +15,9 @@ static volatile uint8_t s_last_cal_sys = 0;
 static volatile uint8_t s_last_cal_gyro = 0;
 static volatile uint8_t s_last_cal_accel = 0;
 static volatile uint8_t s_last_cal_mag = 0;
+/* Use NDOF for best orientation + gravity separation when available. */
+static const bno055_opmode_t GF_TARGET_OPMODE = BNO055_OPERATION_MODE_NDOF;
+static volatile uint8_t s_last_opmode = (uint8_t)BNO055_OPERATION_MODE_NDOF;
 
 void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
                                  uint8_t *mag) {
@@ -26,6 +29,8 @@ void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
   *accel = s_last_cal_accel;
   *mag = s_last_cal_mag;
 }
+
+uint8_t bno055_get_last_opmode(void) { return s_last_opmode; }
 
 // Helper function to read 8-bit register with retry for clock stretching
 static esp_err_t bno055_read8(int port, uint8_t addr, uint8_t reg,
@@ -188,11 +193,11 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     return err;
   }
 
-  // Set to IMUPLUS mode (6-DOF, ignores magnetometer for stable swimming tracking)
-  ESP_LOGI(TAG, "Setting BNO055 to IMUPLUS mode...");
-  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
+  // Set fusion operation mode (NDOF for full 9-DOF orientation when calibrated).
+  ESP_LOGI(TAG, "Setting BNO055 to fusion mode 0x%02X...", (unsigned)GF_TARGET_OPMODE);
+  err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "BNO055 set IMUPLUS mode failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "BNO055 set fusion mode failed: %s", esp_err_to_name(err));
     return err;
   }
 
@@ -201,13 +206,19 @@ esp_err_t bno055_init(int port, uint8_t addr) {
 
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X", BNO055_OPERATION_MODE_IMUPLUS);
+  ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X", (unsigned)GF_TARGET_OPMODE);
   return ESP_OK;
 }
 
 esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
                                     bno055_opmode_t mode) {
-  return bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
+  esp_err_t err = bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
+  if (err == ESP_OK) {
+    s_last_opmode = (uint8_t)mode;
+    // Datasheet: allow mode switch to settle (min 7ms).
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return err;
 }
 
 esp_err_t bno055_reset(int port, uint8_t addr) {
@@ -371,13 +382,12 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
 }
 
 esp_err_t bno055_start_calibration(int port, uint8_t addr) {
-  // BNO055 auto-calibrates in IMUPLUS mode. This function just ensures we're in
-  // IMUPLUS mode and logs guidance for the user.
-  ESP_LOGI(TAG, "Starting BNO055 calibration in IMUPLUS mode");
+  // BNO055 auto-calibrates in fusion modes; ensure we're in the target fusion mode.
+  ESP_LOGI(TAG, "Starting BNO055 calibration in fusion mode 0x%02X", (unsigned)GF_TARGET_OPMODE);
   ESP_LOGI(TAG, "  Gyro: Leave device still for 3-5 seconds");
-  ESP_LOGI(TAG, "  Accel: Slowly rotate device through 6 orientations (less strict in IMUPLUS)");
-  // Mag guidance removed because it's ignored in IMUPLUS
-  return bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
+  ESP_LOGI(TAG, "  Accel: Slowly rotate device through 6 orientations");
+  ESP_LOGI(TAG, "  Mag: Wide figure-8 away from metal (needed for NDOF)");
+  return bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
 }
 
 esp_err_t bno055_save_calibration_data(int port, uint8_t addr,
@@ -400,14 +410,14 @@ esp_err_t bno055_save_calibration_data(int port, uint8_t addr,
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to read cal offset at reg 0x%02X",
                BNO055_ACCEL_OFFSET_X_LSB_ADDR + i);
-      // Restore IMUPLUS mode before returning error
-      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
+      // Restore fusion mode before returning error
+      bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
       return err;
     }
   }
 
-  // Restore IMUPLUS mode
-  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
+  // Restore fusion mode
+  err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
   vTaskDelay(pdMS_TO_TICKS(20));
 
   ESP_LOGI(TAG, "Calibration data saved (22 bytes)");
@@ -433,13 +443,13 @@ esp_err_t bno055_load_calibration_data(int port, uint8_t addr,
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to write cal offset at reg 0x%02X",
                BNO055_ACCEL_OFFSET_X_LSB_ADDR + i);
-      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
+      bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
       return err;
     }
   }
 
-  // Restore IMUPLUS mode
-  err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_IMUPLUS);
+  // Restore fusion mode
+  err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
   vTaskDelay(pdMS_TO_TICKS(20));
 
   ESP_LOGI(TAG, "Calibration data restored (22 bytes)");

@@ -12,6 +12,10 @@ import os
 import sys
 import uuid
 import argparse
+import threading
+import queue
+import urllib.parse
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from simple_imu_visualizer import StrokeProcessor, align_sessions_by_hop
@@ -25,14 +29,93 @@ INSTANCE_ID_PATH = os.path.join(CACHE_DIR, 'gf_instance_id')
 IDEAL_CACHE_FILE = os.path.join(CACHE_DIR, 'ideal_stroke.json')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+
+def _load_local_env():
+    """Load optional dashboard/.env into os.environ (does not override existing vars)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except OSError:
+        pass
+
+
+_load_local_env()
+
 # Set in start_server — used by /api/bootstrap
 SERVER_INSTANCE_ID = ''
 DEMO_MODE = False
 
+# ── Real-time events (SSE) ──
+_SSE_LOCK = threading.Lock()
+_SSE_CLIENTS = []  # list[queue.SimpleQueue]
+_SSE_LAST_DEVICE_INFO = None
+_SSE_DEVICE_POLL_THREAD_STARTED = False
+
+
+def _sse_publish(event: str, data: dict):
+    payload = {'event': event, 'data': data, 'ts': int(time.time() * 1000)}
+    with _SSE_LOCK:
+        clients = list(_SSE_CLIENTS)
+    for q in clients:
+        try:
+            q.put(payload)
+        except Exception:
+            pass
+
+
+def _sse_start_device_poll_thread():
+    global _SSE_DEVICE_POLL_THREAD_STARTED
+    if _SSE_DEVICE_POLL_THREAD_STARTED:
+        return
+    _SSE_DEVICE_POLL_THREAD_STARTED = True
+
+    def _run():
+        global _SSE_LAST_DEVICE_INFO
+        while True:
+            time.sleep(1.0)
+            with _SSE_LOCK:
+                has_clients = len(_SSE_CLIENTS) > 0
+            if not has_clients:
+                continue
+            try:
+                resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=2.0)
+                d = json.loads(resp.read().decode())
+            except Exception:
+                d = {'status': 'disconnected'}
+            # Only publish when it changes (basic string compare is fine for small JSON).
+            try:
+                s = json.dumps(d, sort_keys=True)
+            except Exception:
+                s = None
+            if s and s == _SSE_LAST_DEVICE_INFO:
+                continue
+            _SSE_LAST_DEVICE_INFO = s
+            _sse_publish('device_info', d if isinstance(d, dict) else {'status': 'disconnected'})
+
+    t = threading.Thread(target=_run, name='gf_sse_device_poll', daemon=True)
+    t.start()
+
 
 def _get_instance_id(demo: bool) -> str:
-    """Demo: always new id. Normal: stable id across restarts (persisted file)."""
+    """Stable id across restarts (persisted file). Demo: new id each server start (see _prepare_server_state)."""
     if demo:
+        if os.path.isfile(INSTANCE_ID_PATH):
+            with open(INSTANCE_ID_PATH, 'r', encoding='utf-8') as f:
+                s = f.read().strip()
+                if s:
+                    return s
         iid = str(uuid.uuid4())
         with open(INSTANCE_ID_PATH, 'w', encoding='utf-8') as f:
             f.write(iid)
@@ -48,10 +131,14 @@ def _get_instance_id(demo: bool) -> str:
     return iid
 
 
-def _prepare_server_state(demo: bool) -> None:
-    """Demo: wipe DB + file caches, new instance id. Normal: init DB only."""
+def _prepare_server_state(demo: bool, fresh: bool = False) -> None:
+    """
+    Demo: separate demo SQLite file (always empty on each server start) + clear file caches.
+    Prod: goldenform.db; pass fresh=True once to delete existing DB for a clean install.
+    """
     global SERVER_INSTANCE_ID, DEMO_MODE
     DEMO_MODE = demo
+    db.configure_database(demo=demo, fresh=fresh)
     if demo:
         for fn in (RAW_CACHE, PROCESSED_CACHE, IDEAL_CACHE_FILE):
             try:
@@ -59,9 +146,13 @@ def _prepare_server_state(demo: bool) -> None:
                     os.remove(fn)
             except OSError:
                 pass
-        db.wipe_database_file()
-    else:
-        db.init_db()
+        # New instance id every demo boot so /api/bootstrap changes; the dashboard clears
+        # goldenform_* localStorage when instance_id differs (matches empty demo DB).
+        try:
+            if os.path.isfile(INSTANCE_ID_PATH):
+                os.remove(INSTANCE_ID_PATH)
+        except OSError:
+            pass
     SERVER_INSTANCE_ID = _get_instance_id(demo=demo)
 
 
@@ -70,6 +161,34 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """Suppress default request logging to keep terminal clean."""
         pass
+
+    def _auth_bearer_token(self):
+        auth = self.headers.get('Authorization', '')
+        if auth.lower().startswith('bearer '):
+            return auth[7:].strip()
+        return None
+
+    def _auth_token_from_query(self):
+        try:
+            u = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(u.query or '')
+            t = (q.get('token') or [None])[0]
+            return t
+        except Exception:
+            return None
+
+    def _current_user(self):
+        t = self._auth_bearer_token() or self._auth_token_from_query()
+        if not t:
+            return None
+        return db.get_user_from_token(t)
+
+    def _require_user(self):
+        u = self._current_user()
+        if not u:
+            self._send_json({'error': 'Unauthorized', 'auth_required': True}, 401)
+            return None
+        return u
 
     def do_GET(self):
         if self.path == '/' or self.path == '/integrated_session_viewer.html':
@@ -104,6 +223,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._set_from_stroke_api()
         elif self.path == '/api/device_info':
             self._get_device_info()
+        elif self.path.startswith('/api/events'):
+            self._sse_events()
         elif self.path == '/api/devices':
             self._get_devices()
         elif self.path == '/api/sessions':
@@ -126,6 +247,14 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path == '/api/register':
             self._register_user()
+        elif path == '/api/auth/register':
+            self._auth_register()
+        elif path == '/api/auth/login':
+            self._auth_login()
+        elif path == '/api/auth/logout':
+            self._auth_logout()
+        elif path == '/api/profile':
+            self._update_profile()
         elif path == '/api/ideal_stroke':
             self._upload_ideal_stroke()
         elif path == '/api/ideal_stroke/set_from_stroke':
@@ -148,43 +277,170 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._save_session()
         elif path == '/api/sessions/merge':
             self._merge_sessions()
+        elif path == '/api/coaching/insights':
+            self._coaching_insights()
         else:
             self.send_response(404)
             self.end_headers()
 
-    # ── User Registration (SQLite) ──
+    def _sse_events(self):
+        u = self._require_user()
+        if not u:
+            return
+        # Register client queue
+        q = queue.SimpleQueue()
+        with _SSE_LOCK:
+            _SSE_CLIENTS.append(q)
+        _sse_start_device_poll_thread()
+
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+
+            # Initial hello
+            hello = {'demo': DEMO_MODE}
+            self.wfile.write(b"event: hello\n")
+            self.wfile.write(("data: " + json.dumps(hello) + "\n\n").encode())
+            self.wfile.flush()
+
+            last_send = time.time()
+            while True:
+                try:
+                    msg = q.get(timeout=15.0)
+                except Exception:
+                    msg = None
+                if msg is None:
+                    # keepalive
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
+                ev = msg.get('event', 'message')
+                data = msg.get('data', {})
+                self.wfile.write(("event: " + str(ev) + "\n").encode())
+                self.wfile.write(("data: " + json.dumps(data) + "\n\n").encode())
+                self.wfile.flush()
+                last_send = time.time()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+        finally:
+            with _SSE_LOCK:
+                try:
+                    _SSE_CLIENTS.remove(q)
+                except ValueError:
+                    pass
+
+    # ── Auth & profile (SQLite) ──
 
     def _register_user(self):
+        """Legacy: single-field registration removed — use /api/auth/register."""
+        self._send_json({
+            'error': 'Create an account with POST /api/auth/register (email + password).',
+            'deprecated': True
+        }, 400)
+
+    def _auth_register(self):
         try:
             body = self._read_body()
-            uid = db.upsert_user(
-                name=body.get('name', 'Swimmer'),
-                height_cm=body.get('height_cm', 0),
-                wingspan_cm=body.get('wingspan_cm', 0),
-                skill_level=body.get('skill_level', 'beginner'),
-                pool_length=float(body.get('pool_length', 25) or 25),
-            )
-            user = db.get_user()
-            self._send_json({'status': 'ok', 'user_id': uid, 'profile': user})
+            email = (body.get('email') or '').strip()
+            password = body.get('password') or ''
+            name = (body.get('name') or '').strip() or 'Swimmer'
+            if not email or not password:
+                self._send_json({'error': 'Email and password are required'}, 400)
+                return
+            try:
+                uid = db.create_user(
+                    email=email,
+                    password_plain=password,
+                    name=name,
+                    height_cm=float(body.get('height_cm', 0) or 0),
+                    wingspan_cm=float(body.get('wingspan_cm', 0) or 0),
+                    skill_level=str(body.get('skill_level', 'beginner') or 'beginner'),
+                    pool_length=float(body.get('pool_length', 25) or 25),
+                )
+            except ValueError as e:
+                self._send_json({'error': str(e)}, 400)
+                return
+            token = db.create_session(uid)
+            user = db.get_user_by_id(uid)
+            self._send_json({'status': 'ok', 'token': token, 'profile': user})
+        except Exception as e:
+            self._send_json({'error': str(e)}, 500)
+
+    def _auth_login(self):
+        try:
+            body = self._read_body()
+            user = db.verify_login(body.get('email'), body.get('password'))
+            if not user:
+                self._send_json({'error': 'Invalid email or password'}, 401)
+                return
+            token = db.create_session(user['id'])
+            self._send_json({'status': 'ok', 'token': token, 'profile': user})
+        except Exception as e:
+            self._send_json({'error': str(e)}, 500)
+
+    def _auth_logout(self):
+        try:
+            t = self._auth_bearer_token()
+            if t:
+                db.revoke_auth_session(t)
+            _sse_publish('auth', {'status': 'logout'})
+            self._send_json({'status': 'ok'})
+        except Exception as e:
+            self._send_json({'error': str(e)}, 500)
+
+    def _update_profile(self):
+        try:
+            u = self._require_user()
+            if not u:
+                return
+            body = self._read_body()
+            kw = {}
+            if 'email' in body:
+                kw['email'] = body.get('email')
+            if 'name' in body:
+                kw['name'] = body.get('name')
+            if 'height_cm' in body:
+                kw['height_cm'] = float(body.get('height_cm') or 0)
+            if 'wingspan_cm' in body:
+                kw['wingspan_cm'] = float(body.get('wingspan_cm') or 0)
+            if 'skill_level' in body:
+                kw['skill_level'] = body.get('skill_level')
+            if 'pool_length' in body:
+                kw['pool_length'] = float(body.get('pool_length') or 25)
+            db.update_user_profile(u['id'], **kw)
+            user = db.get_user_by_id(u['id'])
+            _sse_publish('profile', {'user_id': u['id']})
+            self._send_json({'status': 'ok', 'profile': user})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
 
     def _get_user_profile(self):
-        user = db.get_user()
-        self._send_json(user if user else {})
+        u = self._current_user()
+        if not u:
+            self._send_json({'error': 'Unauthorized', 'auth_required': True}, 401)
+            return
+        self._send_json(u)
 
     # ── Device Registration ──
 
     def _register_device(self):
         try:
+            u = self._require_user()
+            if not u:
+                return
             body = self._read_body()
             did = db.register_device(
-                user_id=body.get('user_id', 1),
+                user_id=u['id'],
                 device_hw_id=body.get('device_hw_id', 0),
                 role=body.get('role', 'wrist_right'),
                 name=body.get('name', ''),
                 wifi_ssid=body.get('wifi_ssid', '') or ''
             )
+            _sse_publish('devices', {'user_id': u['id']})
             self._send_json({'status': 'ok', 'device_id': did})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
@@ -206,34 +462,39 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
     def _delete_device(self):
         try:
+            u = self._require_user()
+            if not u:
+                return
             body = self._read_body()
             did = body.get('device_id')
             if not did:
                 self._send_json({'error': 'Missing device_id'}, 400)
                 return
             db.delete_device(did)
+            _sse_publish('devices', {'user_id': u['id']})
             self._send_json({'status': 'ok'})
         except Exception as e:
             self._send_json({'error': str(e)}, 500)
 
     def _get_devices(self):
-        user = db.get_user()
-        uid = user['id'] if user else None
-        devices = db.get_devices(uid)
+        u = self._require_user()
+        if not u:
+            return
+        devices = db.get_devices(u['id'])
         self._send_json({'devices': devices})
 
     # ── Ideal Strokes ──
 
     def _upload_ideal_stroke(self):
         try:
+            u = self._require_user()
+            if not u:
+                return
             body = self._read_body()
-            user = db.get_user()
-            uid = user['id'] if user else None
+            uid = u['id']
             samples = body.get('samples', [])
 
-            # Save to database
-            if uid:
-                db.save_ideal_stroke(uid, body.get('name', 'Default'), samples, len(samples))
+            db.save_ideal_stroke(uid, body.get('name', 'Default'), samples, len(samples))
 
             # Also save to file cache for backwards compatibility
             ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
@@ -270,8 +531,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 self._send_json({'error': 'Invalid stroke_num'}, 400)
                 return
 
-            user = db.get_user()
-            uid = user['id'] if user else None
+            u = self._require_user()
+            if not u:
+                return
+            uid = u['id']
+            if not db.session_owned_by(session_id, uid):
+                self._send_json({'error': 'Forbidden'}, 403)
+                return
 
             session = db.get_session(session_id)
             if not session:
@@ -280,8 +546,12 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
             pd = session.get('processed_data', [])
 
+            use_fw = any(int(x.get('strokes') or 0) > 0 for x in pd)
+
             def stroke_idx(d):
-                return max(int(d.get('strokes') or 0), int(d.get('stroke_count') or 0))
+                if use_fw:
+                    return int(d.get('strokes') or 0)
+                return int(d.get('stroke_count') or 0)
 
             stroke_samples = [d for d in pd if stroke_idx(d) == stroke_num]
 
@@ -291,12 +561,13 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
             lia_data = []
             for d in stroke_samples:
+                lia = d.get('lia') or {}
                 acc = d.get('acceleration', {}) or {}
                 q = d.get('quaternion', {}) or {}
                 lia_data.append({
-                    'lia_x': acc.get('ax', 0),
-                    'lia_y': acc.get('ay', 0),
-                    'lia_z': acc.get('az', 0),
+                    'lia_x': lia.get('x', acc.get('ax', 0)),
+                    'lia_y': lia.get('y', acc.get('ay', 0)),
+                    'lia_z': lia.get('z', acc.get('az', 0)),
                     'qw': q.get('qw', 1),
                     'qx': q.get('qx', 0),
                     'qy': q.get('qy', 0),
@@ -304,8 +575,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     'entry_angle': d.get('entry_angle', 0),
                 })
 
-            if uid:
-                db.save_ideal_stroke(uid, f'Stroke {stroke_num} from Session {session_id}', lia_data, len(lia_data))
+            db.save_ideal_stroke(uid, f'Stroke {stroke_num} from Session {session_id}', lia_data, len(lia_data))
 
             ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
             with open(ideal_path, 'w') as f:
@@ -322,8 +592,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._send_json({'error': str(e)}, 500)
 
     def _get_ideal_stroke(self):
-        user = db.get_user()
-        uid = user['id'] if user else None
+        u = self._require_user()
+        if not u:
+            return
+        uid = u['id']
         ideal = db.get_latest_ideal_stroke(uid)
         if ideal:
             self._send_json({
@@ -371,19 +643,18 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
     def _delete_ideal_stroke(self):
         try:
-            # Delete from internal cache
+            u = self._require_user()
+            if not u:
+                return
+            uid = u['id']
             ideal_path = os.path.join(CACHE_DIR, 'ideal_stroke.json')
             if os.path.exists(ideal_path):
                 os.remove(ideal_path)
-            
-            user = db.get_user()
-            uid = user['id'] if user else None
-            if uid:
-                conn = db._connect()
-                c = conn.cursor()
-                c.execute('DELETE FROM ideal_strokes WHERE user_id = ?', (uid,))
-                conn.commit()
-                conn.close()
+            conn = db._connect()
+            c = conn.cursor()
+            c.execute('DELETE FROM ideal_strokes WHERE user_id = ?', (uid,))
+            conn.commit()
+            conn.close()
             
             # Forward delete to ESP32
             req = urllib.request.Request(
@@ -435,13 +706,23 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     # ── Device Info ──
 
     def _get_device_info(self):
-        try:
-            # Short timeout: laptop is usually not on 192.168.4.1 — fail fast, no broken pipes from slow clients
-            resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=2.5)
-            data = json.loads(resp.read().decode())
-            self._send_json(data)
-        except Exception:
-            self._send_json({'status': 'disconnected', 'message': 'Device not reachable'})
+        last_err = None
+        for attempt in range(2):
+            try:
+                # ESP32 can be busy right after AP start; retry once with a slightly longer read.
+                resp = urllib.request.urlopen(f'{ESP32_URL}/api/device_info', timeout=4.0)
+                data = json.loads(resp.read().decode())
+                self._send_json(data)
+                return
+            except Exception as e:
+                last_err = e
+                if attempt == 0:
+                    continue
+        self._send_json({
+            'status': 'disconnected',
+            'message': 'Device not reachable',
+            'detail': str(last_err) if last_err else None,
+        })
 
     def _get_bootstrap(self):
         self._send_json({
@@ -453,9 +734,11 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
     def _save_session(self):
         try:
+            u = self._require_user()
+            if not u:
+                return
             body = self._read_body()
-            user = db.get_user()
-            uid = user['id'] if user else None
+            uid = u['id']
             sid = db.save_session(
                 user_id=uid,
                 device_ids=body.get('device_ids', []),
@@ -478,6 +761,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     form_score=form_score,
                     stroke_count=metrics.get('stroke_count', 0)
                 )
+                _sse_publish('progress', {'user_id': uid})
+            _sse_publish('sessions', {'user_id': uid})
             self._send_json({'status': 'ok', 'session_id': sid})
         except Exception as e:
             import traceback
@@ -485,13 +770,20 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._send_json({'error': str(e)}, 500)
 
     def _get_sessions(self):
-        user = db.get_user()
-        uid = user['id'] if user else None
+        u = self._require_user()
+        if not u:
+            return
         limit = 20
-        sessions = db.get_sessions(uid, limit)
+        sessions = db.get_sessions(u['id'], limit)
         self._send_json({'sessions': sessions})
 
     def _get_session_detail(self, session_id):
+        u = self._require_user()
+        if not u:
+            return
+        if not db.session_owned_by(session_id, u['id']):
+            self._send_json({'error': 'Forbidden'}, 403)
+            return
         s = db.get_session(session_id)
         if not s:
             self._send_json({'error': 'Session not found'}, 404)
@@ -499,27 +791,37 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         self._send_json({'session': s})
 
     def _get_progress(self):
-        user = db.get_user()
-        if not user:
-            self._send_json({'progress': []})
+        u = self._require_user()
+        if not u:
             return
-        progress = db.get_progress(user['id'], 50)
+        progress = db.get_progress(u['id'], 50)
         self._send_json({'progress': progress})
 
     # ── Multi-Device Merge ──
 
     def _merge_sessions(self):
         try:
+            u = self._require_user()
+            if not u:
+                return
             body = self._read_body()
             session_ids = body.get('session_ids', [])
             if len(session_ids) < 2:
                 self._send_json({"error": "Need at least 2 sessions to merge"}, 400)
                 return
-            
-            # Load raw data for these sessions
+            for sid in session_ids:
+                try:
+                    sid_int = int(sid)
+                except (TypeError, ValueError):
+                    self._send_json({"error": "Invalid session id"}, 400)
+                    return
+                if not db.session_owned_by(sid_int, u['id']):
+                    self._send_json({"error": "Forbidden"}, 403)
+                    return
+
             sessions_to_merge = []
             for sid in session_ids:
-                s = db.get_session(sid)
+                s = db.get_session(int(sid))
                 if s and s.get('raw_data'):
                     sessions_to_merge.append({
                         'id': sid,
@@ -595,11 +897,70 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send_json({"error": str(e)}, 500)
 
+    def _coaching_insights(self):
+        u = self._require_user()
+        if not u:
+            return
+        try:
+            body = self._read_body()
+        except Exception:
+            self._send_json({'error': 'Invalid JSON body'}, 400)
+            return
+        if not isinstance(body, dict):
+            body = {}
+        try:
+            from gemini_coaching import _refresh_gemini_key_from_dotenv
+            _refresh_gemini_key_from_dotenv()
+        except Exception:
+            pass
+        key = (os.environ.get('GEMINI_API_KEY') or '').strip()
+        if not key:
+            self._send_json({
+                'status': 'unconfigured',
+                'message': (
+                    'AI coaching is not configured. Add GEMINI_API_KEY to dashboard/.env '
+                    '(same folder as wifi_session_processor.py) and restart the server.'
+                ),
+            }, 200)
+            return
+        try:
+            from gemini_coaching import coaching_rate_allow, generate_coaching_insights
+        except Exception as e:
+            self._send_json({'status': 'error', 'error': str(e)}, 500)
+            return
+        uid = u['id']
+        allowed, rl_msg = coaching_rate_allow(uid)
+        if not allowed:
+            self._send_json({
+                'status': 'error',
+                'error': rl_msg or 'Rate limited',
+                'rate_limited': True,
+            }, 429)
+            return
+        privacy = self.headers.get('X-GoldenForm-Coaching-NoLog', '').strip().lower() in (
+            '1', 'true', 'yes', 'on',
+        )
+        try:
+            result = generate_coaching_insights(
+                body,
+                user_id=uid,
+                privacy_no_log=privacy,
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._send_json({'status': 'error', 'error': str(e)}, 500)
+            return
+        code = 200
+        if result.get('status') == 'error':
+            code = 502
+        self._send_json(result, code)
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE, PUT')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-GoldenForm-Coaching-NoLog')
         self.end_headers()
     def _serve_html(self):
         self.send_response(200)
@@ -960,13 +1321,15 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         return round(max(0, min(10, score)), 1)
 
 
-def start_server(port=8004, demo=False):
-    _prepare_server_state(demo)
+def start_server(port=8004, demo=False, fresh=False):
+    _prepare_server_state(demo, fresh)
     server = ThreadingHTTPServer(('0.0.0.0', port), WiFiSessionHandler)
     print(f'GoldenForm Session Processor running on http://localhost:{port}')
     print(f'Open: http://localhost:{port}/')
     if demo:
-        print('Demo mode: fresh DB + caches; browser clears local data once to match this run.')
+        print('Demo mode: isolated DB (goldenform.demo.db), wiped each server start; file caches cleared.')
+    elif fresh:
+        print('Fresh production DB: goldenform.db was recreated (--fresh).')
     print('Press Ctrl+C to stop')
     try:
         server.serve_forever()
@@ -977,7 +1340,8 @@ def start_server(port=8004, demo=False):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='GoldenForm dashboard + Wi‑Fi session processor')
-    ap.add_argument('--demo', action='store_true', help='Fresh database and caches for a clean demo; browser syncs on load.')
+    ap.add_argument('--demo', action='store_true', help='Use demo SQLite file (emptied each run) + clear session caches.')
+    ap.add_argument('--fresh', action='store_true', help='Delete production goldenform.db before start (ignored with --demo).')
     ap.add_argument('--port', type=int, default=int(os.environ.get('PORT', 8004)), help='HTTP port (default 8004)')
     args = ap.parse_args()
-    start_server(port=args.port, demo=args.demo)
+    start_server(port=args.port, demo=args.demo, fresh=args.fresh)

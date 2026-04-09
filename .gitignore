@@ -64,6 +64,12 @@ Thumbs.db
 
 ./**/*.lck
 
+# Secrets (Gemini API key, etc.) — use dashboard/.env locally; never commit
+.env
+.env.local
+.env.*.local
+dashboard/.env
+
 9600/
 
 .vscode

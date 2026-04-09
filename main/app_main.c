@@ -83,7 +83,19 @@ static uint32_t session_sample_count = 0;
 static uint32_t session_start_time = 0;
 static bool ap_lingering = false;
 static uint32_t ap_linger_start_ms = 0;
-#define AP_LINGER_TIMEOUT_MS (10 * 60 * 1000)
+/* Disable AP linger auto-shutdown: AP should shut down based on calibration readiness
+ * (Gyro+Accel 3/3 in IMUPLUS) rather than a wall-clock timer. */
+#define AP_LINGER_TIMEOUT_MS (0)
+
+/* After /api/registration_done we keep the AP up briefly so the app can:
+ * - show live calibration status (TIDR 6-1-4),
+ * - push user config and ideal stroke (stretch goals),
+ * while still auto-shutting down Wi‑Fi for power after a short window.
+ * This is separate from ap_lingering (used for "no sessions on SD" idle mode). */
+static bool ap_post_reg_keepalive = false;
+static uint32_t ap_post_reg_start_ms = 0;
+/* AP is kept up after registration until calibration is "swim ready" on this unit.
+ * This removes the time limit and avoids confusing users mid-calibration/config. */
 
 // Subsystem status
 static bool bno055_available = false;
@@ -255,44 +267,20 @@ static void status_led_blink_stop_and_wait(void) {
   gpio_set_level(STATUS_LED_GPIO, 0);
 }
 
-/**
- * Blink status LED (GPIO 41) during registration/config linger (idle, not syncing).
- * Do not require wifi_server_is_ap_active() here: during boot the AP can still be
- * starting; gating on AP caused need=false and the branch below stopped the blink
- * and it never recovered reliably.
- */
-static void registration_led_update(void) {
-  if (!wifi_available) {
-    return;
-  }
-  const bool want_reg_blink =
-      current_state == STATE_IDLE && ap_lingering;
-  if (want_reg_blink) {
-    if (status_led_blink_task_handle == NULL) {
-      status_led_blink_start();
-    }
-  } else if (current_state == STATE_IDLE &&
-             status_led_blink_task_handle != NULL) {
-    status_led_blink_stop_and_wait();
-  }
-}
-
 /** Deferred from HTTP POST /api/registration_done so the response finishes before the AP/HTTP stack is torn down. */
 static void registration_done_worker(void *arg) {
   (void)arg;
   vTaskDelay(pdMS_TO_TICKS(100));
-  if (current_state != STATE_IDLE) {
-    ESP_LOGW(TAG, "registration_done: ignored (not idle)");
-    vTaskDelete(NULL);
-    return;
-  }
+  /* Registration completion is a UI/account pairing event, not a data-transfer state.
+   * The dashboard may call this while we're in SYNCING/LOGGING due to timing.
+   * Always stop the registration linger blink. AP stays up until the next recording
+   * so the user can replay JSON, review status, and push config/ideal. */
   ap_lingering = false;
   status_led_blink_stop_and_wait();
   if (wifi_available && wifi_server_is_ap_active()) {
-    esp_err_t e = wifi_server_stop_ap();
-    if (e != ESP_OK) {
-      ESP_LOGW(TAG, "registration_done: stop_ap %s", esp_err_to_name(e));
-    }
+    ap_post_reg_keepalive = true;
+    ap_post_reg_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    ESP_LOGI(TAG, "registration_done: AP stays alive (until next recording)");
   }
   vTaskDelete(NULL);
 }
@@ -317,10 +305,11 @@ static void transition_to_logging(void) {
   ESP_LOGI(TAG, ">>> STATE: LOGGING");
   ESP_LOGI(TAG, "Recording IMU data to SD card...");
 
-  if (ap_lingering && wifi_available) {
+  if (wifi_available && wifi_server_is_ap_active()) {
     ESP_LOGI(TAG, "Shutting down WiFi AP before recording...");
     wifi_server_stop_ap();
     ap_lingering = false;
+    ap_post_reg_keepalive = false;
   }
 
   session_sample_count = 0;
@@ -399,6 +388,11 @@ static void transition_to_syncing(void) {
     ap_lingering = true;
     ap_linger_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
     current_state = STATE_IDLE;
+    /* Same visual as active file transfer: blink only during Wi‑Fi sync / setup flows,
+     * not after transfer completes (see transition_to_idle — do not restart blink via ap_lingering). */
+    status_led_blink_start();
+    led_blink_start();
+    ESP_LOGI(TAG, "[LED] Status=BLINK — no files; AP open for app link/config");
     ESP_LOGI(TAG, "========================================");
     return;
   }
@@ -432,16 +426,11 @@ static void transition_to_idle(bool after_sync) {
   status_led_blink_stop_and_wait();
 
   if (current_state == STATE_SYNCING && wifi_available) {
+    // Stop file transfer state, but keep the AP up for replay/config until next recording.
     wifi_server_stop_sync();
-    if (after_sync) {
-      ap_lingering = true;
-      ap_linger_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
-      ESP_LOGI(TAG, "WiFi AP stays alive — push ideal/config from app");
-      ESP_LOGI(TAG, "AP auto-closes when you start recording or after 10 min");
-    } else {
-      wifi_server_stop_ap();
-      ap_lingering = false;
-    }
+    ap_lingering = true;
+    ap_linger_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    ESP_LOGI(TAG, "WiFi AP stays alive — replay JSON and push config/ideal");
   }
 
   if (after_sync && storage_available) {
@@ -816,16 +805,19 @@ void app_main(void) {
     }
 
     // AP linger timeout: shut down AP if idle for 10 minutes
-    if (ap_lingering && wifi_available && current_state == STATE_IDLE) {
+    if (AP_LINGER_TIMEOUT_MS > 0 && ap_lingering && wifi_available && current_state == STATE_IDLE &&
+        !ap_post_reg_keepalive) {
       uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
       if ((now_ms - ap_linger_start_ms) > AP_LINGER_TIMEOUT_MS) {
         ESP_LOGI(TAG, "AP linger timeout (10 min) — shutting down WiFi");
         wifi_server_stop_ap();
         ap_lingering = false;
+        led_blink_stop_and_wait();
+        status_led_blink_stop_and_wait();
       }
     }
 
-    registration_led_update();
+    // Keep AP alive after registration/sync; only stop it when recording starts.
 
     /* IMU samples → protobuf on SD; dashboard integrates via StrokeProcessor after Wi‑Fi sync.
      * (USB/UART is IDF console only — not the PDP data path.) */

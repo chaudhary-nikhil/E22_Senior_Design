@@ -54,6 +54,13 @@ let integratedPositions = [];
 let playbackStrokeSegments = [];
 /** Euler offsets (rad) applied after quaternion when a gravity axis hint exists. */
 let vizCoordinateTransform = { rotationX: 0, rotationY: 0, rotationZ: 0 };
+/** Filled when an ideal baseline is loaded: per-stroke deviation vs ideal + aggregates for Analysis. */
+let gfVsIdealMetrics = null;
+/** Analysis chart: which stroke is compared to the saved ideal (null = auto first stroke). */
+let idealCompareStrokeNum = null;
+let idealCompareStreamKey = null;
+/** Analysis ideal chart: 'stroke' = one stroke vs baseline; 'session' = whole session |LIA| resampled vs baseline. */
+let idealCompareMode = 'stroke';
 
 const TRAIL_MAX_POINTS = 2000;
 const TRAIL_SMOOTH_WINDOW = 7;
@@ -70,13 +77,13 @@ let loopFullSession = false;
 let positionStreamPositions = [];
 /** High-contrast phase colors (trail + cube tint) — distinct underwater vs recovery */
 const PHASE_COLOR_HEX = {
-    glide: 0x2563eb, catch: 0x15803d, pull: 0xc2410c,
-    recovery: 0x7e22ce, idle: 0x52525b
+    glide: 0x38bdf8, catch: 0x22c55e, pull: 0xef4444,
+    recovery: 0xa855f7, idle: 0x64748b
 };
 const PHASE_COLOR_RGB = {
-    glide: [0.145, 0.388, 0.922], catch: [0.082, 0.502, 0.243],
-    pull: [0.90, 0.28, 0.05], recovery: [0.49, 0.15, 0.80],
-    idle: [0.35, 0.35, 0.38]
+    glide: [0.22, 0.74, 0.97], catch: [0.13, 0.77, 0.37],
+    pull: [0.94, 0.27, 0.27], recovery: [0.66, 0.33, 0.97],
+    idle: [0.39, 0.45, 0.55]
 };
 
 /** Prefer firmware `strokes` when present so motion matches device logs. */
@@ -85,5 +92,5 @@ let rawIntegratedPositions = [];
 let velocityArrow = null;
 let followDeviceInView = false;
 const PHASE_COLOR_SIDE = {
-    glide: '#2563eb', catch: '#15803d', pull: '#ea580c', recovery: '#9333ea', idle: '#71717a'
+    glide: '#38bdf8', catch: '#22c55e', pull: '#ef4444', recovery: '#a855f7', idle: '#64748b'
 };

@@ -18,15 +18,16 @@
     <nav class="app-nav">
         <span class="nav-brand">GoldenForm</span>
         <div class="nav-tabs">
-            <button type="button" class="nav-tab active" id="tab-home" data-tab-target="home" onclick="switchTab('home')">Home</button>
-            <button type="button" class="nav-tab" id="tab-session" data-tab-target="session" onclick="switchTab('session')">Session</button>
-            <button type="button" class="nav-tab" id="tab-analysis" data-tab-target="analysis" onclick="switchTab('analysis')">Analysis</button>
-            <button type="button" class="nav-tab" id="tab-insights" data-tab-target="insights" onclick="switchTab('insights')">Insights</button>
-            <button type="button" class="nav-tab" id="tab-settings" data-tab-target="settings" onclick="switchTab('settings')">Settings</button>
+            <button type="button" class="nav-tab active" id="tab-home" data-tab-target="home">Home</button>
+            <button type="button" class="nav-tab" id="tab-session" data-tab-target="session">Session</button>
+            <button type="button" class="nav-tab" id="tab-analysis" data-tab-target="analysis">Analysis</button>
+            <button type="button" class="nav-tab" id="tab-insights" data-tab-target="insights">Insights</button>
+            <button type="button" class="nav-tab" id="tab-settings" data-tab-target="settings">Settings</button>
         </div>
         <div class="nav-right-cluster">
             <button type="button" class="nav-cal-pill nav-cal-pill--muted" id="nav-cal-pill" onclick="switchTab('session')" title="IMU fusion quality (opens Session)" aria-label="Calibration status, open Session tab">Cal …</button>
             <div class="nav-next-hint" id="nav-next-hint" title="Suggested next action">Loading…</div>
+            <button type="button" class="btn btn-outline btn-sm nav-logout" id="nav-logout-btn" onclick="logoutUser()" style="display:none;">Log out</button>
             <div class="nav-status"><span class="status-dot"></span><span id="conn-text">Offline</span></div>
         </div>
     </nav>
@@ -42,7 +43,24 @@
                 <span>Your setup path</span>
                 <span class="badge badge-outline" id="setup-journey-phase" style="font-size:0.75em;">Loading…</span>
             </div>
-            <p class="setup-journey-lead" id="setup-journey-lead">The wearable has no screen. Use the steps below; each button opens the right tab.</p>
+            <p class="setup-journey-lead" id="setup-journey-lead">Tap the next step. You only need Wi‑Fi for setup and syncing.</p>
+            <div class="setup-progress" aria-label="Setup progress">
+                <div class="setup-progress__track">
+                    <div class="setup-progress__fill" id="setup-progress-fill" style="width:0%;"></div>
+                </div>
+                <div class="setup-progress__meta"><span id="setup-progress-label">0/5</span></div>
+            </div>
+            <div class="setup-chips" id="setup-chips" aria-label="Setup status chips"></div>
+            <div class="setup-primary-cta-row">
+                <button type="button" class="btn btn-gold setup-primary-cta" id="setup-primary-cta" onclick="setupJourneyGo('profile')">
+                    <span class="cta-ic" aria-hidden="true"><i data-lucide="sparkles"></i></span>
+                    <span id="setup-primary-cta-label">Get started</span>
+                </button>
+                <button type="button" class="btn btn-outline btn-sm" id="setup-secondary-cta" onclick="switchTab('settings')">
+                    <span class="cta-ic" aria-hidden="true"><i data-lucide="settings-2"></i></span>
+                    Settings
+                </button>
+            </div>
             <div class="setup-journey" id="setup-journey" aria-label="Setup steps"></div>
             <div id="setup-journey-continue" class="setup-continue-wrap" aria-live="polite"></div>
         </div>
@@ -64,20 +82,6 @@
                 <div class="card-title">Last Distance</div>
                 <div class="card-value" id="home-last-distance">--</div>
                 <div class="card-sub">meters</div>
-            </div>
-        </div>
-        <div class="card home-onboarding-card" id="getting-started" style="margin-top:16px;display:none;">
-            <div class="card-title">First-time path</div>
-            <div class="home-onboarding-steps">
-                <div class="home-onboarding-step"><span class="home-onboarding-num">1</span><span><strong>Settings:</strong> profile, wearables, then IMU calibration on Wi‑Fi.</span></div>
-                <div class="home-onboarding-step"><span class="home-onboarding-num">2</span><span><strong>Session:</strong> first <strong>Sync now</strong> checks the link (zero files the first time is fine).</span></div>
-                <div class="home-onboarding-step"><span class="home-onboarding-num">3</span><span><strong>Pool:</strong> record, then <strong>Sync now</strong> again to import.</span></div>
-                <div class="home-onboarding-step"><span class="home-onboarding-num">4</span><span><strong>Analysis / Insights</strong> when data is in.</span></div>
-            </div>
-            <p class="home-onboarding-stretch">More than one unit: sync each, then <strong>Merge</strong> on Session.</p>
-            <div class="home-onboarding-actions">
-                <button type="button" class="btn btn-gold" onclick="switchTab('settings')">Settings</button>
-                <button type="button" class="btn btn-outline" onclick="switchTab('session')">Session</button>
             </div>
         </div>
         <div class="card" id="quick-actions" style="margin-top:16px;display:none;">
@@ -173,10 +177,10 @@
                 <div class="card sync-playbook-card" id="sync-playbook-wrap">
                     <div class="card-title">Wi‑Fi sync (wearable has no dashboard)</div>
                     <ol class="sync-playbook" id="sync-playbook">
-                        <li data-step="1"><strong>Hold sync</strong> on the wearable until the <strong>GoldenForm</strong> hotspot appears (first step for registration and sync).</li>
-                        <li data-step="2"><strong>Join</strong> that Wi‑Fi on this computer (menu bar or Settings).</li>
-                        <li data-step="3"><strong>Sync now</strong> (first time): confirms the app reached the band. You may see zero sessions.</li>
-                        <li data-step="4"><strong>After a swim</strong>, <strong>Sync now</strong> again to download that recording. Not the same as the empty first sync.</li>
+                        <li data-step="1"><span class="sync-ic" aria-hidden="true"><i data-lucide="hand"></i></span><strong>Hold Sync</strong> on the band → hotspot appears.</li>
+                        <li data-step="2"><span class="sync-ic" aria-hidden="true"><i data-lucide="wifi"></i></span><strong>Join</strong> that Wi‑Fi on your computer.</li>
+                        <li data-step="3"><span class="sync-ic" aria-hidden="true"><i data-lucide="download"></i></span><strong>Sync now</strong> = link check (0 sessions is OK).</li>
+                        <li data-step="4"><span class="sync-ic" aria-hidden="true"><i data-lucide="waves"></i></span><strong>After a swim</strong>, <strong>Sync now</strong> imports the file.</li>
                     </ol>
                     <p class="sync-playbook-note sync-playbook-note--first" id="sync-playbook-first" style="display:none;"></p>
                     <p class="sync-playbook-note" id="sync-playbook-multi"></p>
@@ -184,12 +188,22 @@
                 <div class="card">
                     <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
                             id="session-count-badge">0</span></div>
+                    <p class="card-sub" style="font-size:0.72em;color:var(--text3);margin:0 0 10px;line-height:1.45;"><strong>Sync now</strong> imports swims from the band. To save or inspect the stored payload later, select a session and use <strong>Export raw JSON</strong>.</p>
                     <div style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap;">
                         <button type="button" class="btn btn-gold" style="flex:1;min-width:120px;" id="sync-btn" onclick="syncFromDevice()" title="Download sessions from the wearable while connected to its GoldenForm Wi‑Fi.">Sync now</button>
                         <button type="button" class="btn btn-blue" style="flex:1;min-width:120px;" id="merge-btn"
                             onclick="mergeLatestSessions()">Merge Devices</button>
                     </div>
-                    <p style="font-size:0.72em;color:var(--text3);margin-bottom:8px;">First <strong>Sync now</strong> = link check. After swimming, <strong>Sync now</strong> = pull that file. Two wrists: sync each → <strong>Merge</strong>.</p>
+                    <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+                        <button type="button" class="btn btn-outline btn-sm" id="export-raw-json-btn" onclick="exportSessionRawJson()" title="Download raw JSON stored with the selected session (no Wi‑Fi required).">Export raw JSON</button>
+                    </div>
+                    <details class="session-advanced-details" style="margin:0 0 10px;font-size:0.78em;color:var(--text3);">
+                        <summary style="cursor:pointer;color:var(--text2);user-select:none;list-style-position:outside;padding:4px 0;">Advanced</summary>
+                        <div style="margin-top:8px;padding-left:2px;">
+                            <button type="button" class="btn btn-outline btn-sm" id="replay-ap-json-btn" onclick="replayApJsonToSession()" title="Live fetch from 192.168.4.1/data.json only while the band is actively transferring. Normal import: Sync now.">Replay AP JSON</button>
+                            <p style="margin:8px 0 0;line-height:1.45;max-width:42em;">For debugging: pulls JSON directly from the wearable during an active transfer. Use <strong>Sync now</strong> for regular imports.</p>
+                        </div>
+                    </details>
                     <p style="font-size:0.7em;color:var(--text3);margin-bottom:8px;"><button type="button" class="btn btn-outline btn-sm" onclick="clearLocalSessions()" title="Remove sessions from this device">Clear local list</button></p>
                     <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
                     <div class="session-list" id="session-cards"></div>
@@ -256,9 +270,10 @@
                 <div class="card-sub">Ideal: <span id="aoa-ideal">30°</span></div>
             </div>
             <div class="card stat-card" style="text-align:center;">
-                <div class="card-title">Haptic Events</div>
+                <div class="card-title">Form cues</div>
                 <div class="card-value" id="haptic-count">0</div>
-                <div class="card-sub">Avg Deviation: <span id="avg-deviation">0.000</span></div>
+                <div class="card-sub" id="haptic-card-hint" style="font-size:0.78em;opacity:0.9;margin-bottom:6px;">Band buzzes during swim</div>
+                <div class="card-sub">Avg deviation (vs ideal when set): <span id="avg-deviation">0.000</span></div>
             </div>
         </div>
         <div class="card">
@@ -281,12 +296,24 @@
                 <span class="card-title">Ideal vs Actual Comparison</span>
                 <span class="badge badge-gold" id="ideal-similarity">--%</span>
             </div>
+            <p id="ideal-compare-lead" class="card-sub" style="margin:0 0 10px;line-height:1.45;font-size:0.84em;color:var(--text2);">Each line is <strong>|LIA|</strong>. Use the compare mode, then click a table row for a single stroke, or view the full session normalized to your baseline length.</p>
+            <div id="ideal-compare-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px;font-size:0.82em;color:var(--text2);">
+                <label for="ideal-compare-mode">Compare</label>
+                <select id="ideal-compare-mode" class="input-like-select" style="max-width:220px;padding:6px 10px;border-radius:6px;background:var(--bg3);color:var(--text1);border:1px solid var(--border);" onchange="onIdealCompareModeChange(this.value)">
+                    <option value="stroke">Selected stroke</option>
+                    <option value="session">Full session (normalized)</option>
+                </select>
+            </div>
             <div id="ideal-comparison-content">
-                <div style="height:180px;margin-top:8px;"><canvas id="ideal-compare-chart"></canvas></div>
+                <p id="ideal-compare-caption" style="display:none;font-size:0.82em;color:var(--text2);margin:0 0 10px;line-height:1.45;"></p>
+                <div id="ideal-compare-chart-host" style="height:220px;position:relative;margin-top:4px;">
+                    <canvas id="ideal-compare-chart"></canvas>
+                </div>
             </div>
         </div>
         <div class="card">
             <div class="card-title">Per-Stroke Breakdown</div>
+            <p class="card-sub" style="margin:0 0 8px;font-size:0.82em;color:var(--text3);">Click a row to update the chart above and jump playback to that stroke.</p>
             <div class="table-scroll">
                 <table class="data-table">
                     <thead>
@@ -294,8 +321,8 @@
                             <th>#</th>
                             <th>Time (rel. s)</th>
                             <th>Entry Angle</th>
-                            <th>Haptic</th>
-                            <th>Deviation</th>
+                            <th title="⚡ = band buzz on that stroke, or shape off vs your Set Ideal">Cue</th>
+                            <th title="Path difference vs saved ideal baseline (updates when you Set Ideal)">Deviation</th>
                             <th>Action</th>
                         </tr>
                     </thead>
@@ -311,6 +338,15 @@
             <p class="page-heading__sub">Coaching · trends</p>
         </header>
         <p id="insights-source-hint" class="insights-source-hint" hidden></p>
+        <div class="card coaching-ai-card" style="margin-bottom:16px;">
+            <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                <span class="card-title">AI coaching (Gemini)</span>
+                <button type="button" class="btn btn-gold btn-sm" id="ai-coaching-btn" onclick="refreshAiCoachingInsights()">Generate insights</button>
+            </div>
+            <p style="font-size:0.8em;color:var(--text3);margin:0 0 10px;line-height:1.45;">Uses your loaded session metrics, per-stroke vs-ideal deviation, and band haptic flags. Requires the dashboard server and a configured API key.</p>
+            <div id="ai-coaching-body" class="coaching-ai-body" style="min-height:48px;color:var(--text2);font-size:0.92em;line-height:1.55;"></div>
+            <p id="ai-coaching-meta" style="font-size:0.72em;color:var(--text3);margin:10px 0 0;"></p>
+        </div>
         <div class="card" style="margin-bottom:16px;">
             <div class="card-title">Top Coaching Priorities</div>
             <div id="coaching-priorities" style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
@@ -348,12 +384,24 @@
         <div class="grid-2">
             <div class="card">
                 <div class="card-title">Profile</div>
-                <form onsubmit="registerUser(event)" style="margin-top:12px;">
+                <form onsubmit="saveProfileFromSettings(event)" style="margin-top:12px;">
+                    <label>Email</label>
+                    <input type="email" id="settings-email-display" autocomplete="email"
+                        style="margin-bottom:10px;" title="Used for sign-in">
                     <label>Name</label><input type="text" id="settings-name" placeholder="Your name"
                         style="margin-bottom:10px;">
-                    <label>Height (cm)</label><input type="number" id="settings-height" placeholder="175"
+                    <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                        <span>Units</span>
+                        <select id="settings-units" style="max-width:140px;">
+                            <option value="in">in / ft</option>
+                            <option value="cm">cm</option>
+                        </select>
+                    </label>
+                    <label>Height <span style="color:var(--text3);font-weight:400;">(e.g. 5'10" or 70)</span></label>
+                    <input type="text" id="settings-height" placeholder="5'10&quot;"
                         style="margin-bottom:10px;">
-                    <label>Wingspan (cm)</label><input type="number" id="settings-wingspan" placeholder="180"
+                    <label>Wingspan <span style="color:var(--text3);font-weight:400;">(fingertip to fingertip)</span></label>
+                    <input type="text" id="settings-wingspan" placeholder="72"
                         style="margin-bottom:10px;">
                     <label>Skill Level</label>
                     <select id="settings-skill" style="margin-bottom:12px;">
@@ -394,7 +442,7 @@
             <div class="card-header card-header--cal">
                 <div>
                     <div class="card-title">IMU calibration (sensor fusion)</div>
-                    <p class="cal-product-note">Stay on the band Wi‑Fi here. Numbers update live. While you swim, the radio stays off to save power; stroke cues use the motor on the band (faster than sending over Wi‑Fi). For downloads, use sync mode again and run Session <strong>Sync now</strong> like usual.</p>
+                    <p class="cal-product-note">To see live calibration, join the band’s <strong>GoldenForm</strong> Wi‑Fi on this computer while the band is in Sync mode. Once Gyro + Accel are ready, you can leave Wi‑Fi and start logging. After your swim, come back to Sync mode and use <strong>Session → Sync now</strong>.</p>
                 </div>
             </div>
             <p class="cal-explainer">Each channel is 0 to 3 while you are connected. Open the <strong>guide</strong> for the figure eight and face tilts. We save a snapshot in this browser when quality goes up (you can save manually too).</p>
@@ -403,12 +451,12 @@
                 <button type="button" class="btn btn-outline btn-sm" onclick="openCalibrationGuide()">Calibration guide</button>
             </div>
             <div class="cal-grid">
-                <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-bad" id="cal-sys">0/3</span></div>
-                <div class="cal-item"><span class="cal-label">Gyro</span><span class="cal-badge cal-bad" id="cal-gyro">0/3</span></div>
-                <div class="cal-item"><span class="cal-label">Accel</span><span class="cal-badge cal-bad" id="cal-accel">0/3</span></div>
-                <div class="cal-item"><span class="cal-label">Mag</span><span class="cal-badge cal-bad" id="cal-mag">0/3</span></div>
+                <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-warn" id="cal-sys">--</span></div>
+                <div class="cal-item"><span class="cal-label">Gyro</span><span class="cal-badge cal-warn" id="cal-gyro">--</span></div>
+                <div class="cal-item"><span class="cal-label">Accel</span><span class="cal-badge cal-warn" id="cal-accel">--</span></div>
+                <div class="cal-item"><span class="cal-label">Mag</span><span class="cal-badge cal-warn" id="cal-mag">--</span></div>
             </div>
-            <div class="cal-quality-row">Quality <strong id="cal-quality">0%</strong></div>
+            <div class="cal-quality-row">Quality <strong id="cal-quality">--</strong></div>
             <p id="cal-hint" class="cal-hint"></p>
             <p id="cal-saved-strip" class="cal-saved-strip"></p>
             <div class="cal-save-row">
@@ -439,33 +487,59 @@
         </div>
     </div>
 
-    <div class="modal-overlay" id="reg-modal">
-        <div class="modal">
+    <!-- Default to showing auth modal on first paint.
+         JS hides it immediately after a valid login (prevents demo startup getting stuck on Home). -->
+    <div class="modal-overlay" id="auth-modal">
+        <div class="modal" style="max-width:420px;">
             <div class="modal-brand">GoldenForm</div>
-            <h2>Welcome</h2>
-            <p style="color:var(--text2);margin-bottom:6px;">Set up your profile for personalized swim analysis and haptic feedback calibration.</p>
-            <p style="color:var(--text3);font-size:0.78em;margin-bottom:18px;">Your wingspan is used to normalize stroke comparison across body types. Skill level adjusts haptic feedback sensitivity.</p>
-            <form onsubmit="registerUser(event)">
-                <label>Name <span style="color:var(--red);">*</span></label>
-                <input type="text" id="reg-name" placeholder="Your name" required
-                    style="margin-bottom:12px;" minlength="2">
-                <label>Height (cm)</label>
-                <input type="number" id="reg-height" placeholder="175" min="100" max="230"
-                    style="margin-bottom:12px;">
-                <label>Wingspan (cm) <span style="color:var(--text3);font-weight:400;">(fingertip to fingertip)</span></label>
-                <input type="number" id="reg-wingspan" placeholder="180" min="100" max="260"
-                    style="margin-bottom:12px;">
-                <label>Skill Level</label>
-                <select id="reg-skill" style="margin-bottom:16px;">
-                    <option value="beginner">Beginner</option>
-                    <option value="intermediate">Intermediate</option>
-                    <option value="advanced">Advanced</option>
-                    <option value="competitive">Competitive</option>
-                </select>
-                <label>Pool Length (m)</label>
-                <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100" style="margin-bottom:16px;">
-                <button class="btn btn-gold" type="submit" style="width:100%;">Get Started</button>
-            </form>
+            <div class="auth-tabs" role="tablist">
+                <button type="button" class="auth-tab auth-tab--active" id="auth-tab-login" onclick="setAuthTab('login')">Sign in</button>
+                <button type="button" class="auth-tab" id="auth-tab-register" onclick="setAuthTab('register')">Create account</button>
+            </div>
+            <div id="auth-panel-login">
+                <p style="color:var(--text2);font-size:0.88em;margin:12px 0 14px;">Use the email and password for your GoldenForm account. Sessions and devices stay in the local database on this machine.</p>
+                <form onsubmit="loginUser(event)">
+                    <label>Email</label>
+                    <input type="email" id="login-email" autocomplete="username" required style="margin-bottom:10px;">
+                    <label>Password</label>
+                    <input type="password" id="login-password" autocomplete="current-password" required style="margin-bottom:14px;">
+                    <button class="btn btn-gold" type="submit" style="width:100%;">Sign in</button>
+                </form>
+            </div>
+            <div id="auth-panel-register" hidden>
+                <p style="color:var(--text2);margin-bottom:6px;font-size:0.88em;">Create an account — data is stored in SQLite on this computer (demo uses a separate empty DB each server restart).</p>
+                <form onsubmit="createAccountFromModal(event)">
+                    <label>Name <span style="color:var(--red);">*</span></label>
+                    <input type="text" id="reg-name" placeholder="Your name" required style="margin-bottom:10px;" minlength="2">
+                    <label>Email <span style="color:var(--red);">*</span></label>
+                    <input type="email" id="reg-email" autocomplete="email" required style="margin-bottom:10px;">
+                    <label>Password <span style="color:var(--red);">*</span></label>
+                    <input type="password" id="reg-password" autocomplete="new-password" required minlength="6" style="margin-bottom:12px;">
+                    <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                        <span>Units</span>
+                        <select id="reg-units" style="max-width:140px;">
+                            <option value="in">in / ft</option>
+                            <option value="cm">cm</option>
+                        </select>
+                    </label>
+                    <label>Height</label>
+                    <input type="text" id="reg-height" placeholder="5'10&quot;" style="margin-bottom:10px;">
+                    <label>Wingspan</label>
+                    <input type="text" id="reg-wingspan" placeholder="72" style="margin-bottom:10px;">
+                    <label>Skill Level</label>
+                    <select id="reg-skill" style="margin-bottom:10px;">
+                        <option value="beginner">Beginner</option>
+                        <option value="intermediate">Intermediate</option>
+                        <option value="advanced">Advanced</option>
+                        <option value="competitive">Competitive</option>
+                    </select>
+                    <label>Pool Length (m)</label>
+                    <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100" style="margin-bottom:10px;">
+                    <label>How many wearables?</label>
+                    <input type="number" id="reg-wearable-count" min="1" max="2" value="1" style="margin-bottom:12px;">
+                    <button class="btn btn-gold" type="submit" style="width:100%;">Create account</button>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -518,7 +592,11 @@
     <script defer src="/js/gf_viz_side_view.js"></script>
     <script defer src="/js/gf_viz_render.js"></script>
     <script defer src="/js/gf_viz_controls.js"></script>
+    <script defer src="/js/gf_realtime.js"></script>
     <script defer src="/app.js"></script>
+
+    <!-- Lightweight free icon set (no build tooling required). -->
+    <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 </body>
 
 </html>

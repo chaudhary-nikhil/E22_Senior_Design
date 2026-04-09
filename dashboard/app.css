@@ -39,11 +39,34 @@ html {
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg1);
+  background: radial-gradient(1200px 700px at 10% -10%, rgba(197, 165, 90, 0.08), rgba(0,0,0,0)),
+              radial-gradient(900px 600px at 90% 0%, rgba(59, 130, 246, 0.10), rgba(0,0,0,0)),
+              radial-gradient(900px 600px at 50% 110%, rgba(16, 185, 129, 0.06), rgba(0,0,0,0)),
+              var(--bg1);
   color: var(--text1);
   line-height: 1.5;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle "HD" grain layer for depth (pure CSS, no assets). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.10;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 3px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 4px);
+  mix-blend-mode: overlay;
+}
+
+/* Ensure app content sits above the background grain. */
+body > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* ── ANIMATIONS ── */
@@ -291,6 +314,39 @@ body {
   line-height: 1.45;
 }
 
+.coaching-ai-body .coaching-md {
+  text-align: left;
+}
+
+.coaching-md-h {
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--text1);
+  margin: 14px 0 8px;
+  line-height: 1.35;
+}
+
+.coaching-md-h:first-child {
+  margin-top: 0;
+}
+
+.coaching-md-p {
+  margin: 0 0 10px;
+  color: var(--text2);
+  line-height: 1.55;
+}
+
+.coaching-md-ul {
+  margin: 0 0 12px 18px;
+  padding: 0;
+  color: var(--text2);
+  line-height: 1.5;
+}
+
+.coaching-md-ul li {
+  margin-bottom: 6px;
+}
+
 .nav-status {
   display: flex;
   align-items: center;
@@ -349,6 +405,134 @@ body {
   margin: 10px 0 16px;
 }
 
+.setup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.setup-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(21, 21, 40, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text2);
+  font-size: 0.76em;
+  line-height: 1;
+}
+
+.setup-chip svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.95;
+}
+
+.setup-chip--ok {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.06);
+  color: var(--text1);
+}
+
+.setup-chip--warn {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.07);
+  color: var(--text1);
+}
+
+.setup-chip--muted {
+  color: var(--text3);
+}
+
+.setup-primary-cta-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 4px 0 14px;
+}
+
+.setup-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.setup-progress__track {
+  flex: 1;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.setup-progress__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.95), rgba(197, 165, 90, 0.95), rgba(16, 185, 129, 0.85));
+  box-shadow: 0 0 16px rgba(197, 165, 90, 0.15);
+  transition: width 380ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.setup-progress__meta {
+  font-size: 0.74em;
+  color: var(--text3);
+  min-width: 44px;
+  text-align: right;
+}
+
+.setup-primary-cta {
+  flex: 1;
+  min-width: 220px;
+  justify-content: center;
+  gap: 10px;
+  position: relative;
+  overflow: hidden;
+}
+
+.sync-ic {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  opacity: 0.95;
+}
+
+.sync-ic svg {
+  width: 16px;
+  height: 16px;
+}
+
+.setup-primary-cta::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  background: radial-gradient(800px 260px at 10% 0%, rgba(255,255,255,0.16), rgba(0,0,0,0));
+  opacity: 0;
+  transition: opacity var(--transition);
+  pointer-events: none;
+}
+
+.setup-primary-cta:hover::before {
+  opacity: 1;
+}
+
+.cta-ic {
+  display: grid;
+  place-items: center;
+}
+
+.cta-ic svg {
+  width: 18px;
+  height: 18px;
+}
+
 .journey-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -362,6 +546,22 @@ body {
   padding: 12px 14px;
   text-align: left;
   transition: border-color var(--transition), box-shadow var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+
+.journey-step::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(1200px 220px at 10% 0%, rgba(197, 165, 90, 0.10), rgba(0, 0, 0, 0));
+  opacity: 0.0;
+  transition: opacity var(--transition);
+  pointer-events: none;
+}
+
+.journey-step:hover::before {
+  opacity: 1;
 }
 
 .journey-step--done {
@@ -369,9 +569,18 @@ body {
   box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.08);
 }
 
+/* Current funnel step: green accent while still in progress */
 .journey-step--current {
-  border-color: rgba(197, 165, 90, 0.45);
-  box-shadow: 0 0 0 1px rgba(197, 165, 90, 0.12);
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.12), inset 3px 0 0 0 rgba(34, 197, 94, 0.88);
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.09) 0%, transparent 52%);
+}
+
+/* All steps complete: “Analyze” is current — gold accent (done + destination) */
+.journey-step--done.journey-step--current {
+  border-color: rgba(197, 165, 90, 0.5);
+  box-shadow: 0 0 0 1px rgba(197, 165, 90, 0.14), inset 3px 0 0 0 rgba(197, 165, 90, 0.92);
+  background: linear-gradient(90deg, rgba(197, 165, 90, 0.1) 0%, transparent 48%);
 }
 
 .journey-step-head {
@@ -654,6 +863,30 @@ body {
 
 .sync-playbook li {
   margin-bottom: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(21, 21, 40, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  list-style: none;
+  position: relative;
+  padding-left: 34px;
+}
+
+.sync-playbook li::before {
+  content: attr(data-step);
+  position: absolute;
+  left: 10px;
+  top: 7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 0.72em;
+  color: var(--text1);
+  background: rgba(59, 130, 246, 0.20);
+  border: 1px solid rgba(59, 130, 246, 0.30);
 }
 
 .sync-playbook-note {
@@ -1319,6 +1552,11 @@ body {
   background: rgba(239, 68, 68, 0.06);
 }
 
+.data-table tr.analysis-row-selected {
+  box-shadow: inset 3px 0 0 var(--gold);
+  background: rgba(197, 165, 90, 0.1);
+}
+
 .haptic-marker {
   color: var(--red);
   font-size: 1.1em;
@@ -1527,6 +1765,37 @@ input[type="range"]::-webkit-slider-thumb {
 
 .modal-overlay.show {
   display: flex;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  margin-bottom: 6px;
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text2);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88em;
+  font-family: inherit;
+}
+
+.auth-tab--active {
+  border-color: rgba(197, 165, 90, 0.45);
+  color: var(--text1);
+  background: rgba(197, 165, 90, 0.12);
+}
+
+.nav-logout {
+  font-size: 0.78rem;
+  padding: 6px 10px;
 }
 
 .modal {

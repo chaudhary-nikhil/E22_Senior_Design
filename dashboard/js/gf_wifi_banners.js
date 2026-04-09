@@ -55,7 +55,13 @@ function updateWearableConnectionBanner(res) {
 
 async function refreshWearableConnectionBanner() {
     try {
-        const res = await apiGet('/api/device_info');
+        let res = null;
+        if (typeof fetchDeviceInfoMerged === 'function') {
+            const merged = await fetchDeviceInfoMerged();
+            res = merged.res;
+        } else {
+            res = await apiGet('/api/device_info');
+        }
         if (res && !res.error && res.status !== 'disconnected' && res.device_id !== undefined) {
             updateWearableConnectionBanner(res);
         } else {
@@ -71,7 +77,13 @@ async function refreshWearableConnectionBanner() {
  */
 async function addWearableFromConnection() {
     try {
-        const res = await apiGet('/api/device_info');
+        let res = null;
+        if (typeof fetchDeviceInfoMerged === 'function') {
+            const merged = await fetchDeviceInfoMerged();
+            res = merged.res;
+        } else {
+            res = await apiGet('/api/device_info');
+        }
         if (!res || res.error || res.status === 'disconnected' || res.device_id === undefined) {
             showToast('Join this computer to the band’s GoldenForm Wi‑Fi, then try again.', 'error');
             return;
@@ -84,8 +96,12 @@ async function addWearableFromConnection() {
         if (hid) hid.value = ssid;
         if (hw) hw.value = String(res.device_id);
 
+        if (!userProfile || !userProfile.id) {
+            showToast('Sign in first, then add this wearable.', 'error');
+            return;
+        }
         const body = {
-            user_id: userProfile ? userProfile.id : 1,
+            user_id: userProfile.id,
             device_hw_id: res.device_id,
             role: finalRole,
             name: formatRoleLabel(finalRole),
@@ -93,6 +109,8 @@ async function addWearableFromConnection() {
         };
         const reg = await apiPost('/api/devices/register', body);
         updateWearableConnectionBanner(res);
+        if (typeof pollOfflineStreak !== 'undefined') pollOfflineStreak = 0;
+        if (typeof setConnStatus === 'function') setConnStatus('connected');
         if (reg && reg.status === 'ok') {
             showToast('Added ' + formatRoleLabel(finalRole) + ' · HW #' + res.device_id, 'success');
             await loadDevices();

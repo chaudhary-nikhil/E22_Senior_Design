@@ -72,6 +72,9 @@ async function loadIdealStroke() {
             { serverCreatedAt: res.created_at }
         );
         updateIdealStrokePanel();
+        if (typeof processedData !== 'undefined' && processedData && processedData.length && typeof updateAnalysis === 'function' && sessionMetrics) {
+            updateAnalysis();
+        }
         return;
     }
     try {
@@ -90,6 +93,9 @@ async function loadIdealStroke() {
                     createdAt: o.serverCreatedAt || null
                 };
                 updateIdealStrokePanel();
+                if (typeof processedData !== 'undefined' && processedData && processedData.length && typeof updateAnalysis === 'function' && sessionMetrics) {
+                    updateAnalysis();
+                }
                 return;
             }
         }
@@ -97,12 +103,24 @@ async function loadIdealStroke() {
     idealStrokeData = null;
     idealDisplayInfo = null;
     updateIdealStrokePanel();
+    if (typeof processedData !== 'undefined' && processedData && processedData.length && typeof updateAnalysis === 'function' && sessionMetrics) {
+        updateAnalysis();
+    }
 }
 
 async function afterIdealSavedServer() {
     await loadIdealStroke();
-    buildIdealComparison();
+    if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
     if (isDeviceOnline) pushIdealToDevice(true);
+}
+
+/** SQLite-backed session id for /api/ideal_stroke/set_from_stroke (excludes apjson: / local-only ids). */
+function gfNumericSessionIdForApi(sess) {
+    if (!sess || sess.id == null || sess.id === '') return null;
+    const raw = String(sess.id);
+    if (raw.includes(':') || raw.includes('apjson')) return null;
+    const n = Number(sess.id);
+    return (Number.isFinite(n) && n > 0) ? n : null;
 }
 
 async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
@@ -121,7 +139,10 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
         meta.sourceSessionName = currentSession.name || ('Session #' + (currentSession.id || strokeNum));
     }
 
-    if (!currentSession || !currentSession.id) {
+    const sidApi = gfNumericSessionIdForApi(currentSession);
+    if (!currentSession || sidApi == null) {
+        idealCompareStrokeNum = Number(strokeNum);
+        idealCompareStreamKey = (streamKey != null && streamKey !== '') ? String(streamKey) : null;
         idealStrokeData = samples;
         cacheIdealLocal(samples, avgAngle, 'Stroke ' + strokeNum, meta);
         idealDisplayInfo = {
@@ -133,17 +154,21 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
         };
         updateIdealStrokePanel();
         buildIdealComparison();
+        if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+        if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
         showToast('Ideal saved on this device. Sync on dashboard Wi‑Fi to store on the server.', 'info');
         return;
     }
 
     let res = await apiPost('/api/ideal_stroke/set_from_stroke', {
-        session_id: Number(currentSession.id),
+        session_id: sidApi,
         stroke_num: Number(strokeNum),
         ideal_entry_angle: avgAngle
     });
 
     if (res && res.status === 'ok') {
+        idealCompareStrokeNum = Number(strokeNum);
+        idealCompareStreamKey = (streamKey != null && streamKey !== '') ? String(streamKey) : null;
         showToast('Stroke ' + strokeNum + ' set as ideal baseline', 'success');
         await afterIdealSavedServer();
         return;
@@ -156,11 +181,15 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
     });
 
     if (res && res.status === 'ok') {
+        idealCompareStrokeNum = Number(strokeNum);
+        idealCompareStreamKey = (streamKey != null && streamKey !== '') ? String(streamKey) : null;
         showToast('Stroke ' + strokeNum + ' saved as ideal (direct upload)', 'success');
         await afterIdealSavedServer();
         return;
     }
 
+    idealCompareStrokeNum = Number(strokeNum);
+    idealCompareStreamKey = (streamKey != null && streamKey !== '') ? String(streamKey) : null;
     idealStrokeData = samples;
     cacheIdealLocal(samples, avgAngle, 'Stroke ' + strokeNum, meta);
     idealDisplayInfo = {
@@ -173,6 +202,8 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
     };
     updateIdealStrokePanel();
     buildIdealComparison();
+    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+    if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
     const err = (res && res.error) ? res.error : 'Could not reach dashboard';
     showToast('Saved ideal on this device only: ' + err, 'warn');
 }
@@ -182,7 +213,17 @@ async function setCurrentAsIdeal() {
         showToast('Open a session with strokes on the Session tab first', 'error');
         return;
     }
-    const samples = processedData.map(p => ({ lia_x: p.acceleration?.ax || 0, lia_y: p.acceleration?.ay || 0, lia_z: p.acceleration?.az || 0 }));
+    const samples = typeof buildIdealLiaSamplesFromFullSession === 'function'
+        ? buildIdealLiaSamplesFromFullSession()
+        : processedData.map((p) => {
+            const L = p.lia || null;
+            const acc = p.acceleration || {};
+            return {
+                lia_x: (L && L.x != null) ? L.x : (acc.ax || 0),
+                lia_y: (L && L.y != null) ? L.y : (acc.ay || 0),
+                lia_z: (L && L.z != null) ? L.z : (acc.az || 0)
+            };
+        });
     const avgAngle = sessionMetrics ? sessionMetrics.avg_entry_angle : 30.0;
     const sess = typeof savedSessions !== 'undefined' ? savedSessions[activeSessionIdx] : null;
     const meta = {};
@@ -211,6 +252,8 @@ async function setCurrentAsIdeal() {
     };
     updateIdealStrokePanel();
     buildIdealComparison();
+    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+    if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
     showToast('Saved on this device only: ' + ((res && res.error) || 'offline'), 'warn');
 }
 
@@ -255,8 +298,14 @@ async function deleteIdealStroke() {
 }
 
 async function pushUserConfigToDevice(silent = false) {
-    const wingspan = document.getElementById('settings-wingspan') ? parseFloat(document.getElementById('settings-wingspan').value) : 180;
-    const height = document.getElementById('settings-height') ? parseFloat(document.getElementById('settings-height').value) : 180;
+    const units = (typeof window.gfGetUnits === 'function') ? window.gfGetUnits('settings-') : 'cm';
+    const wingspanRaw = document.getElementById('settings-wingspan') ? document.getElementById('settings-wingspan').value : '';
+    const heightRaw = document.getElementById('settings-height') ? document.getElementById('settings-height').value : '';
+    const parseLenToCm = (typeof window.gfParseLenToCm === 'function')
+        ? window.gfParseLenToCm
+        : ((v) => parseFloat(v) || 0);
+    const wingspan = parseLenToCm(wingspanRaw, units) || 180;
+    const height = parseLenToCm(heightRaw, units) || 180;
     const skill = document.getElementById('settings-skill') ? document.getElementById('settings-skill').value : 'beginner';
     const poolLength = document.getElementById('settings-pool-length') ? parseFloat(document.getElementById('settings-pool-length').value) : 25;
     const devRoleEl = document.getElementById('dev-role');

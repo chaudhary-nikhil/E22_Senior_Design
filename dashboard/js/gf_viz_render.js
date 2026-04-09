@@ -278,3 +278,26 @@ function focusVizOnDevice() {
     followDeviceInView = false;
     controls.update();
 }
+
+function frameVizOnTrail() {
+    if (!camera || !controls || !processedData.length) return;
+    if (integratedPositions.length !== processedData.length) integratePositions();
+    const anim = currentAnimationPositions();
+    if (!anim || !anim.length) return;
+    const box = new THREE.Box3();
+    for (let i = 0; i < anim.length; i++) {
+        if (anim[i]) box.expandByPoint(anim[i]);
+    }
+    if (box.isEmpty()) return;
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z, 0.5);
+    const dist = maxDim * 1.8 + 1.2;
+    controls.target.copy(center);
+    camera.position.set(center.x + dist * 0.55, center.y + dist * 0.5, center.z + dist * 0.7);
+    camera.lookAt(center);
+    followDeviceInView = false;
+    controls.update();
+}

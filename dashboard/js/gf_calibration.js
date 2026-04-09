@@ -13,22 +13,66 @@ function normalizeCal(c) {
     };
 }
 
-function calQualityPercentFromNormalized(n) {
-    if (!n) return 0;
-    return Math.round((n.sys + n.gyro + n.accel + n.mag) / 12 * 100);
+function _opModeFromPayload(payload) {
+    // Firmware /api/device_info includes `bno_opmode` (BNO055 OPR_MODE).
+    const v = payload && payload.bno_opmode != null ? Number(payload.bno_opmode) : null;
+    return Number.isFinite(v) ? v : null;
 }
 
-/** True when fusion is strong enough to trust before a swim (all channels at least 2, quality at least 75%). */
-function isCalibrationSwimReady(cal) {
+function _isImuPlusMode(payloadOrMode) {
+    const m = (typeof payloadOrMode === 'number') ? payloadOrMode : _opModeFromPayload(payloadOrMode);
+    return m === 0x08; // BNO055_OPERATION_MODE_IMUPLUS
+}
+
+function calQualityPercentFromNormalized(n, payloadOrMode = null) {
+    if (!n) return 0;
+    const imuPlus = _isImuPlusMode(payloadOrMode);
+    if (imuPlus) {
+        // IMUPLUS (0x08) ignores magnetometer fusion; treat Gyro+Accel as the full scale (6 points).
+        return Math.round((n.gyro + n.accel) / 6 * 100);
+    }
+    /* NDOF (0x0C) system-cal nibble is volatile and commonly drops during motion even when
+     * fusion is practically stable. For user-facing readiness and the “shut AP off” policy,
+     * treat Gyro+Accel+Mag as the relevant channels (9 points). */
+    return Math.round((n.gyro + n.accel + n.mag) / 9 * 100);
+}
+
+/** True when fusion is strong enough to trust before a swim.
+ * Note: many GoldenForm builds use BNO055 IMUPLUS mode (0x08) which does not
+ * rely on magnetometer fusion. In that mode Sys/Mag can remain 0 in-water and
+ * on some benches; we treat Gyro+Accel as the swim-critical channels. */
+function isCalibrationSwimReady(cal, payload = null) {
     const n = normalizeCal(cal);
     if (!n) return false;
-    if (n.sys < 2 || n.gyro < 2 || n.accel < 2 || n.mag < 2) return false;
-    return calQualityPercentFromNormalized(n) >= 75;
+    const imuPlus = _isImuPlusMode(payload);
+    const imuPlusLikely = (n.mag === 0 && n.sys === 0 && (n.gyro >= 2 || n.accel >= 2));
+    if (imuPlus || (!payload && imuPlusLikely)) {
+        /* Match firmware/AP policy: full 3/3 on gyro + accel before “ready to log”. */
+        return (n.gyro >= 3 && n.accel >= 3);
+    }
+    /* NDOF / full fusion: Sys can bounce; treat G/A/M as the swim-critical set. */
+    return (n.gyro >= 3 && n.accel >= 3 && n.mag >= 3);
 }
 
 /** Setup journey: step complete when saved snapshot qualifies (stable after you disconnect). */
 function calibrationStepOk() {
     try {
+        const expected = (typeof getExpectedWearableCount === 'function') ? getExpectedWearableCount() : 1;
+
+        // Multi-device: require a swim-ready snapshot for each expected device_id.
+        if (expected > 1) {
+            const rawMap = localStorage.getItem(LS_CAL_MAP_KEY);
+            if (!rawMap) return false;
+            const map = JSON.parse(rawMap) || {};
+            const ids = Object.keys(map).map((k) => Number(k)).filter((n) => Number.isFinite(n) && n > 0);
+            let okCount = 0;
+            for (const id of ids) {
+                if (isCalibrationSwimReady(map[String(id)])) okCount++;
+            }
+            return okCount >= expected;
+        }
+
+        // Single device: legacy snapshot key.
         const raw = localStorage.getItem(LS_CAL_KEY);
         if (!raw) return false;
         const o = JSON.parse(raw);
@@ -43,7 +87,31 @@ function updateNavCalPill(res) {
     const el = document.getElementById('nav-cal-pill');
     if (!el) return;
     let cal = null;
+    let saved = null;
     if (res && res.cal) cal = normalizeCal(res.cal);
+    // If we have a saved snapshot for this device, never let the UI regress below it.
+    try {
+        const devId = res && res.device_id != null ? Number(res.device_id) : null;
+        if (devId != null && Number.isFinite(devId) && devId > 0) {
+            const rawMap = localStorage.getItem(LS_CAL_MAP_KEY);
+            if (rawMap) {
+                const map = JSON.parse(rawMap) || {};
+                saved = normalizeCal(map[String(devId)]);
+            }
+        }
+        if (!saved) {
+            const raw = localStorage.getItem(LS_CAL_KEY);
+            if (raw) saved = normalizeCal(JSON.parse(raw));
+        }
+    } catch { /* ignore */ }
+    if (cal && saved) {
+        cal = {
+            sys: Math.max(cal.sys || 0, saved.sys || 0),
+            gyro: Math.max(cal.gyro || 0, saved.gyro || 0),
+            accel: Math.max(cal.accel || 0, saved.accel || 0),
+            mag: Math.max(cal.mag || 0, saved.mag || 0),
+        };
+    }
     if (!cal) {
         try {
             const raw = localStorage.getItem(LS_CAL_KEY);
@@ -56,11 +124,16 @@ function updateNavCalPill(res) {
         el.title = 'Connect wearable. Calibration updates live here.';
         return;
     }
-    const pct = calQualityPercentFromNormalized(cal);
-    const weak = cal.sys < 2 || cal.gyro < 2 || cal.accel < 2 || cal.mag < 2;
+    const pct = calQualityPercentFromNormalized(cal, res || cal);
+    const imuPlus = _isImuPlusMode(res);
+    const imuPlusLikely = (cal.mag === 0 && cal.sys === 0 && (cal.gyro >= 2 || cal.accel >= 2));
+    const weak = (imuPlus || (!res && imuPlusLikely))
+        ? (cal.gyro < 3 || cal.accel < 3)
+        : (cal.gyro < 2 || cal.accel < 2 || cal.mag < 2);
     el.textContent = 'Cal ' + pct + '%';
     el.className = 'nav-cal-pill ' + (weak ? 'nav-cal-pill--warn' : 'nav-cal-pill--ok');
-    el.title = 'S' + cal.sys + ' G' + cal.gyro + ' A' + cal.accel + ' M' + cal.mag + ' (tap → Session)';
+    const modeHint = (imuPlus || (!res && imuPlusLikely)) ? 'IMUPLUS' : 'NDOF';
+    el.title = modeHint + ' · S' + cal.sys + ' G' + cal.gyro + ' A' + cal.accel + ' M' + cal.mag + ' (tap → Session)';
 }
 
 /**
@@ -100,7 +173,11 @@ function updateSessionCalBanner() {
         page.classList.remove('page-session--weak-cal');
         return;
     }
-    const weak = mins.sys < 2 || mins.gyro < 2 || mins.accel < 2 || mins.mag < 2;
+    // Mode-aware weak fusion: Sys can be volatile (esp. NDOF) and IMUPLUS doesn't use Mag.
+    const imuPlusLikely = (mins.mag === 0 && mins.sys === 0 && (mins.gyro >= 2 || mins.accel >= 2));
+    const weak = imuPlusLikely
+        ? (mins.gyro < 3 || mins.accel < 3)
+        : (mins.gyro < 2 || mins.accel < 2 || mins.mag < 2);
     page.classList.toggle('page-session--weak-cal', weak);
     const minTag = 'min S' + mins.sys + ' G' + mins.gyro + ' A' + mins.accel + ' M' + mins.mag;
     if (weak) {
@@ -123,7 +200,7 @@ function refreshCalibrationSavedStrip() {
         }
         const o = JSON.parse(raw);
         const ageMin = o.savedAt ? Math.round((Date.now() - o.savedAt) / 60000) : '?';
-        el.textContent = 'Saved ' + calQualityPercentFromNormalized(normalizeCal(o)) + '% · ' + ageMin + 'm' + (o.device_id != null ? ' · #' + o.device_id : '');
+        el.textContent = 'Saved ' + calQualityPercentFromNormalized(normalizeCal(o), o) + '% · ' + ageMin + 'm' + (o.device_id != null ? ' · #' + o.device_id : '');
     } catch {
         el.textContent = '';
     }
@@ -132,14 +209,48 @@ function refreshCalibrationSavedStrip() {
 function persistCalibrationSnapshot(cal, deviceId) {
     const n = normalizeCal(cal);
     if (!n) return;
+    const opmode = _opModeFromPayload(cal);
+    const mergeMax = (a, b) => {
+        const A = normalizeCal(a) || { sys: 0, gyro: 0, accel: 0, mag: 0 };
+        const B = normalizeCal(b) || { sys: 0, gyro: 0, accel: 0, mag: 0 };
+        return {
+            sys: Math.max(A.sys || 0, B.sys || 0),
+            gyro: Math.max(A.gyro || 0, B.gyro || 0),
+            accel: Math.max(A.accel || 0, B.accel || 0),
+            mag: Math.max(A.mag || 0, B.mag || 0),
+        };
+    };
     try {
         const prev = JSON.parse(localStorage.getItem(LS_CAL_KEY) || '{}');
+        const merged = mergeMax(prev, n);
         localStorage.setItem(LS_CAL_KEY, JSON.stringify({
-            ...n,
+            ...merged,
+            bno_opmode: opmode != null ? opmode : prev.bno_opmode,
             device_id: deviceId != null ? deviceId : prev.device_id,
             savedAt: Date.now()
         }));
     } catch (e) { /* quota */ }
+
+    // Also store per-device snapshots for multi-wearable setups.
+    try {
+        if (deviceId != null) {
+            const id = Number(deviceId);
+            if (Number.isFinite(id) && id > 0) {
+                const rawMap = localStorage.getItem(LS_CAL_MAP_KEY);
+                const map = rawMap ? (JSON.parse(rawMap) || {}) : {};
+                const prevDev = map[String(id)] || null;
+                const mergedDev = mergeMax(prevDev, n);
+                map[String(id)] = {
+                    ...mergedDev,
+                    bno_opmode: opmode,
+                    device_id: id,
+                    savedAt: Date.now(),
+                };
+                localStorage.setItem(LS_CAL_MAP_KEY, JSON.stringify(map));
+            }
+        }
+    } catch (e) { /* quota */ }
+
     refreshCalibrationSavedStrip();
     updateNavCalPill({ cal: n });
     if (typeof renderSetupJourney === 'function') renderSetupJourney();
@@ -152,12 +263,21 @@ function maybeAutoSaveCalibrationFromPoll(res) {
     if (!n) return;
     let prev = null;
     try { prev = JSON.parse(localStorage.getItem(LS_CAL_KEY) || 'null'); } catch { prev = null; }
-    const score = n.sys + n.gyro + n.accel + n.mag;
-    const prevScore = prev && typeof prev.sys === 'number' ? prev.sys + prev.gyro + prev.accel + prev.mag : -1;
-    const wasReady = prev && typeof prev === 'object' && isCalibrationSwimReady(prev);
-    const nowReady = isCalibrationSwimReady(n);
-    if (score > prevScore || (nowReady && !wasReady)) {
-        persistCalibrationSnapshot(n, res.device_id);
+    const imuPlus = _isImuPlusMode(res);
+    const score = imuPlus ? (n.gyro + n.accel) : (n.sys + n.gyro + n.accel + n.mag);
+    const prevImuPlus = _isImuPlusMode(prev);
+    const prevScore = prev && typeof prev === 'object'
+        ? (prevImuPlus ? ((prev.gyro || 0) + (prev.accel || 0)) : ((prev.gyro || 0) + (prev.accel || 0) + (prev.mag || 0)))
+        : -1;
+    const ndofScore = (n.gyro + n.accel + n.mag);
+    const scoreFinal = imuPlus ? score : ndofScore;
+    const wasReady = prev && typeof prev === 'object' && isCalibrationSwimReady(prev, prev);
+    const nowReady = isCalibrationSwimReady(n, res);
+    if (scoreFinal > prevScore || (nowReady && !wasReady)) {
+        persistCalibrationSnapshot({ ...n, bno_opmode: res.bno_opmode }, res.device_id);
+        if (nowReady && !wasReady) {
+            try { if (typeof showToast === 'function') showToast('Calibration ready — saved snapshot', 'success'); } catch (e) { /* ignore */ }
+        }
     }
 }
 
@@ -173,7 +293,13 @@ function closeCalibrationGuide() {
 }
 
 async function saveCalibrationSnapshotManual() {
-    const res = await apiGet('/api/device_info');
+    let res = null;
+    if (typeof fetchDeviceInfoMerged === 'function') {
+        const merged = await fetchDeviceInfoMerged();
+        res = merged.res;
+    } else {
+        res = await apiGet('/api/device_info');
+    }
     if (!res || res.error || res.status === 'disconnected' || res.device_id === undefined) {
         showToast('Device not reachable. Join the GoldenForm Wi‑Fi first.', 'error');
         return;
@@ -208,33 +334,42 @@ function updateCalibrationDisplay(d) {
     const gyro = cal.gyro || 0;
     const accel = cal.accel || 0;
     const mag = cal.mag || 0;
-    const total = sys + gyro + accel + mag;
-    const quality = Math.round(total / 12 * 100);
+    const imuPlus = _isImuPlusMode(d);
+    const quality = calQualityPercentFromNormalized({ sys, gyro, accel, mag }, d);
     setText('cal-quality', quality + '%');
 
     const hintEl = document.getElementById('cal-hint');
     if (hintEl) {
-        if (isCalibrationSwimReady(cal)) {
-            hintEl.textContent = 'Strong enough for fusion. You can head to the pool when you are ready.';
+        const imuPlus = _isImuPlusMode(d);
+        const imuPlusLikely = (mag === 0 && sys === 0 && (gyro >= 2 || accel >= 2));
+        if (isCalibrationSwimReady(cal, d)) {
+            hintEl.textContent = (imuPlus || imuPlusLikely)
+                ? 'Good to swim (IMUPLUS): gyro + accel are solid. Mag/System are not used for fusion in this mode.'
+                : 'Good to swim (NDOF): gyro + accel + mag are solid. System may bounce during motion.';
+        } else if ((imuPlus || imuPlusLikely) && (gyro < 3 || accel < 3)) {
+            hintEl.textContent = 'IMUPLUS mode: bring Gyro and Accel to 3/3 (then you are ready to log).';
         } else if (mag < 2) hintEl.textContent = 'Mag: wide figure 8, away from metal, aim for 3/3.';
         else if (gyro < 2) hintEl.textContent = 'Gyro: rest flat on the table, aim for 3/3.';
         else if (accel < 2) hintEl.textContent = 'Accel: six faces, slow and flat, aim for 3/3.';
-        else if (sys < 2) hintEl.textContent = 'System: finish gyro, accel, and mag first.';
-        else if (quality >= 75) hintEl.textContent = 'Close. Push any yellow channel to 3/3.';
+        else if (!imuPlus && quality >= 75) hintEl.textContent = 'Close. Push any yellow channel to 3/3.';
         else hintEl.textContent = 'Bring each channel toward 3/3 using the guide.';
     }
 
     const nCal = normalizeCal(cal);
     const readyEl = document.getElementById('cal-ready-banner');
     const cardEl = document.getElementById('card-imu-calibration');
-    const liveReady = isCalibrationSwimReady(cal);
+    const liveReady = isCalibrationSwimReady(cal, d);
     if (readyEl) {
         if (liveReady) {
             readyEl.hidden = false;
             readyEl.innerHTML =
                 '<div class="cal-ready-banner__inner">' +
                 '<span class="cal-ready-banner__title">You are good to swim</span>' +
-                '<span class="cal-ready-banner__sub">Fusion looks solid. Start recording on the band in the water. The radio stays off during the swim; feedback comes from the motor on your wrist, not over Wi‑Fi.</span>' +
+                '<span class="cal-ready-banner__sub">Start logging on the band. Wi‑Fi will shut off automatically after calibration to save power. After your swim, use Sync to import.</span>' +
+                '<div class="cal-ready-banner__actions" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">' +
+                '<button type="button" class="btn btn-gold btn-sm" onclick="switchTab(\'session\')">Next: Session</button>' +
+                '<button type="button" class="btn btn-outline btn-sm" onclick="switchTab(\'analysis\')">View Analysis</button>' +
+                '</div>' +
                 '</div>';
         } else {
             readyEl.hidden = true;
@@ -248,6 +383,23 @@ function updateCalibrationDisplay(d) {
 
 /** When /api/device_info has no cal (offline), clear the Settings card so we never show stale nibbles that disagree with the device. */
 function clearCalibrationLiveDisplay() {
+    // Offline: show the last saved snapshot if available (so users still see numbers).
+    try {
+        const raw = localStorage.getItem(LS_CAL_KEY);
+        if (raw) {
+            const o = JSON.parse(raw);
+            const n = normalizeCal(o);
+            if (n) {
+                updateCalibrationDisplay({ cal: n });
+                const hintEl = document.getElementById('cal-hint');
+                if (hintEl) {
+                    hintEl.textContent = 'Offline — showing last saved calibration snapshot. Join band Wi‑Fi to refresh live values.';
+                }
+                return;
+            }
+        }
+    } catch { /* ignore */ }
+
     ['cal-sys', 'cal-gyro', 'cal-accel', 'cal-mag'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) {

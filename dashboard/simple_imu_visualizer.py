@@ -55,12 +55,17 @@ class StrokeProcessor:
     Holds the state for velocity and position integration.
     Detects strokes on DOWNWARD hand entry into water (catch phase).
 
-    Position path (dashboard + UART replay): Kalman-smoothed sensor LIA → quaternion rotation
-    to world frame → integrate only while ``stroke_integrating`` (pull-through window after impact).
-    This supersedes older gyro-threshold ``in_stroke`` gating from early branches; it is tuned to
-    match live JSON streams at reference
-    https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
-    and the integrated GoldenForm dashboard consumes ``position`` + ``tracking_active`` from here.
+    Position path: Kalman-smoothed LIA → quaternion to world frame → integrate when ``tracking_active``.
+
+    - **Live (Wi‑Fi / UART, ``batch_mode=False``):** matches the *general* 0401fbde behavior —
+      integration is gated by **motion** (``|gy|`` + total LIA magnitude), not by the impact stroke
+      detector. Position/velocity reset when a new motion segment **starts** (same idea as the
+      old ``in_stroke`` gate in
+      https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6 ).
+    - **Batch replay (``batch_mode=True``):** pull-through window ``stroke_integrating`` plus
+      optional wider ``pos_tracking_active`` for SD→dashboard replay (smoother trails).
+
+    The dashboard reads ``position`` + ``tracking_active`` from each JSON sample.
     
     Research basis (SwimBIT & Frontiers IMU swimming papers):
     - Water entry creates distinct deceleration spike (~1.5-2.5 m/s²)
@@ -196,6 +201,20 @@ class StrokeProcessor:
         self.stroke_settle_count = 0
         self.stroke_integrating = False
         self.stroke_integration_start = 0
+
+        # Legacy (0401fbde) position tracking window (gyro/accel gated).
+        # For post-session SD→Wi‑Fi replay (`batch_mode=True`), using only the pull-through
+        # window can make trails look too short/jerky. This wider gate matches the older
+        # visualizer feel while still applying strong drift suppression.
+        self.pos_tracking_active = False
+        self.pos_tracking_start_ms = 0
+        self.POS_TRACK_START_GYRO = 0.6 if batch_mode else 0.8
+        self.POS_TRACK_START_ACCEL = 0.35
+        self.POS_TRACK_END_GYRO = 0.22
+        self.POS_TRACK_END_ACCEL = 0.30
+        self.POS_TRACK_MIN_MS = 350
+        self.pos_quiet_count = 0
+        self.POS_TRACK_QUIET_REQUIRED = 4
         
         self.MIN_CAL_LEVEL = 0  # Relaxed: IMUPLUS mode makes 3/3 accel impossible while swimming
         self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor (accel only)
@@ -253,6 +272,15 @@ class StrokeProcessor:
         self.debug_is_impact_by_jerk = False
         self.debug_in_turn_lockout = False
 
+        # --- Live visualization gate (0401fbde-style): separate from impact stroke counting ---
+        self.legacy_pos_track = False
+        self.legacy_viz_start_ms = 0
+        self.LEGACY_VIZ_START_GYRO = 0.6  # rad/s — abs(gy)
+        self.LEGACY_VIZ_START_ACCEL = 0.25  # m/s² — |LIA| magnitude
+        self.LEGACY_VIZ_END_GYRO = 0.2
+        self.LEGACY_VIZ_END_ACCEL = 0.25
+        self.LEGACY_VIZ_MIN_DURATION_S = 0.5  # require brief motion before “quiet” can end segment
+
     def process_data(self, data_dict):
         """
         Processes a full data dictionary from the sensor.
@@ -304,6 +332,7 @@ class StrokeProcessor:
         ):
             self.in_stroke = False
             self.stroke_integrating = False
+            self.legacy_pos_track = False
             self.velocity = [0.0, 0.0, 0.0]
         else:
             # --- System is sufficiently calibrated, run stroke logic ---
@@ -481,9 +510,12 @@ class StrokeProcessor:
                 self.wall_high_count = 0
                 self.recent_world_az.clear()
                 self.glide_sample_count = 0
-                self.position = [0.0, 0.0, 0.0]
-                self.velocity = [0.0, 0.0, 0.0]
-                self.hp_avg = [0.0, 0.0, 0.0]
+                # Live: position reset is owned by the 0401fbde-style legacy motion gate (below).
+                # Batch replay: keep reset at impact so pull-through trails stay anchored to entry.
+                if self.batch_mode:
+                    self.position = [0.0, 0.0, 0.0]
+                    self.velocity = [0.0, 0.0, 0.0]
+                    self.hp_avg = [0.0, 0.0, 0.0]
                 self.in_stroke = True
                 self.stroke_start_time = t_ms
                 self.stroke_integrating = True
@@ -598,11 +630,62 @@ class StrokeProcessor:
                         self.stroke_settle_count = 0
             else:
                 self.in_stroke = False
+
+            # =================================================================
+            # LIVE: 0401fbde-style motion gate for position (|gy| + |LIA|), independent of impact.
+            # =================================================================
+            if not self.batch_mode:
+                gy_abs = abs(float(gyro_y))
+                if not self.legacy_pos_track:
+                    if (
+                        gy_abs > self.LEGACY_VIZ_START_GYRO
+                        or accel_mag > self.LEGACY_VIZ_START_ACCEL
+                    ):
+                        self.legacy_pos_track = True
+                        self.legacy_viz_start_ms = t_ms
+                        self.position = [0.0, 0.0, 0.0]
+                        self.velocity = [0.0, 0.0, 0.0]
+                        self.hp_avg = [0.0, 0.0, 0.0]
+                else:
+                    dur_s = (t_ms - self.legacy_viz_start_ms) / 1000.0
+                    quiet = (
+                        gy_abs < self.LEGACY_VIZ_END_GYRO
+                        and accel_mag < self.LEGACY_VIZ_END_ACCEL
+                    )
+                    if quiet and dur_s >= self.LEGACY_VIZ_MIN_DURATION_S:
+                        self.legacy_pos_track = False
+                    elif dur_s > 25.0:
+                        self.legacy_pos_track = False
+            else:
+                self.legacy_pos_track = False
+
+            # =================================================================
+            # LEGACY POSITION TRACK WINDOW (visual quality for batch replay)
+            # 0401fbde integrated position while "in_stroke" based on gyro/accel gating.
+            # For SD→Wi‑Fi post-session playback, this longer window produces smoother,
+            # more continuous trails for 1–2 IMUs without requiring live streaming.
+            # =================================================================
+            if self.batch_mode:
+                if not self.pos_tracking_active:
+                    if gyro_mag > self.POS_TRACK_START_GYRO or accel_mag > self.POS_TRACK_START_ACCEL:
+                        self.pos_tracking_active = True
+                        self.pos_tracking_start_ms = t_ms
+                        self.pos_quiet_count = 0
+                        self.position = [0.0, 0.0, 0.0]
+                        self.velocity = [0.0, 0.0, 0.0]
+                        self.hp_avg = [0.0, 0.0, 0.0]
+                else:
+                    quiet = (gyro_mag < self.POS_TRACK_END_GYRO and accel_mag < self.POS_TRACK_END_ACCEL)
+                    self.pos_quiet_count = (self.pos_quiet_count + 1) if quiet else 0
+                    active_ms = t_ms - self.pos_tracking_start_ms
+                    if active_ms >= self.POS_TRACK_MIN_MS and self.pos_quiet_count >= self.POS_TRACK_QUIET_REQUIRED:
+                        self.pos_tracking_active = False
+                        self.pos_quiet_count = 0
             
             # 5. Integration Logic
-            # ONLY integrate during the stroke pull-through window.
-            # Between strokes: position is frozen, velocity is zero.
-            # World-frame R * Kalman(LIA) — same physics as legacy UART stream (0401fbde).
+            # Live: legacy motion gate; batch: pull-through and/or pos_tracking window.
+            # Between segments: position is frozen, velocity is zero.
+            # World-frame R * Kalman(LIA); decay/deadzone match strong-fusion UART tuning.
             int_ax = (ww + xx - yy - zz) * smooth_x + 2 * (xy - wz) * smooth_y + 2 * (xz + wy) * smooth_z
             int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
             int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
@@ -616,7 +699,14 @@ class StrokeProcessor:
                 int_ay -= self.hp_avg[1]
                 int_az -= self.hp_avg[2]
 
-            if self.stroke_integrating:
+            integrate_now = (
+                (not self.batch_mode and self.legacy_pos_track)
+                or (
+                    self.batch_mode
+                    and (self.stroke_integrating or self.pos_tracking_active)
+                )
+            )
+            if integrate_now:
                 # Legacy UART (0401fbde): with accel+gyro fusion >= 2, use tight deadzone and
                 # light decay — same world-frame path as Wi‑Fi/SD replay (R * Kalman-smoothed LIA).
                 well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
@@ -678,9 +768,11 @@ class StrokeProcessor:
                 self.position[2] += self.velocity[2] * dt
                 
                 # Clamp position: realistic arm pull-through reach ~0.6m
+                # Batch replay uses a slightly larger clamp to keep trails visually readable.
+                clamp_m = 1.2 if self.batch_mode else 0.6
                 pos_mag = math.sqrt(sum(p*p for p in self.position))
-                if pos_mag > 0.6:
-                    scale = 0.6 / pos_mag
+                if pos_mag > clamp_m:
+                    scale = clamp_m / pos_mag
                     self.position = [p * scale for p in self.position]
                     self.velocity = [v * 0.3 for v in self.velocity]
             else:
@@ -718,7 +810,13 @@ class StrokeProcessor:
                 "my": float(data_dict.get('my', 0) or 0),
                 "mz": float(data_dict.get('mz', 0) or 0),
             },
-            "tracking_active": self.stroke_integrating,
+            "tracking_active": (
+                ((not self.batch_mode) and self.legacy_pos_track)
+                or (
+                    self.batch_mode
+                    and (self.stroke_integrating or self.pos_tracking_active)
+                )
+            ),
             "stroke_count": self.stroke_count,
             "strokes": fw_strokes,
             "turn_count": self.turn_count,

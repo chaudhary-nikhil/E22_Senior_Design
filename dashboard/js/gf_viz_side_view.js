@@ -16,6 +16,18 @@ function resizeSideViewCanvas() {
 function getLiaPositionSample(i) {
     const d = processedData[i];
     if (!d) return { px: 0, py: 0, pz: 0 };
+    /* Prefer StrokeProcessor positions after per-stroke smoothing (same as 3D trail).
+     * Raw JSON positions are noisier; IMU+ world frame also drifts in yaw — smoothing helps visuals. */
+    const s = (typeof positionScale !== 'undefined' && positionScale > 0) ? positionScale : 3;
+    if (typeof positionStreamPositions !== 'undefined' && positionStreamPositions &&
+        positionStreamPositions.length === processedData.length && positionStreamPositions[i]) {
+        const v = positionStreamPositions[i];
+        return {
+            px: v.x / s,
+            py: v.y / s,
+            pz: v.z / s
+        };
+    }
     const pos = d.position || {};
     return {
         px: Number(pos.px) || 0,
@@ -70,18 +82,22 @@ function clearSideViewCanvas() {
     const canvas = document.getElementById('canvas-side-view');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#0a0a12';
+    ctx.fillStyle = '#0b1422';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 function drawSideViewViz(idx) {
     const canvas = document.getElementById('canvas-side-view');
     if (!canvas || !processedData.length) return;
+    if (typeof integratePositions === 'function' &&
+        (!positionStreamPositions || positionStreamPositions.length !== processedData.length)) {
+        integratePositions();
+    }
     resizeSideViewCanvas();
     const ctx = canvas.getContext('2d');
     const W = canvas.width;
     const H = canvas.height;
-    ctx.fillStyle = '#0a0a12';
+    ctx.fillStyle = '#0b1422';
     ctx.fillRect(0, 0, W, H);
 
     const b = strokeBoundsForIndex(idx);
@@ -213,7 +229,7 @@ function drawSideViewViz(idx) {
 
     ctx.fillStyle = '#9ca3af';
     ctx.font = '10px system-ui';
-    ctx.fillText('Forward Δpz →  ·  ↑py = vertical (m), origin = stroke start', 12, 32);
+    ctx.fillText('Forward Δpz →  ·  ↑py = vertical (m), origin = stroke start · path uses smoothed trail (matches 3D)', 12, 32);
 
     if (pathPts.length === 0) return;
     const last = pathPts[pathPts.length - 1];
@@ -238,5 +254,10 @@ function drawSideViewViz(idx) {
 
     ctx.fillStyle = '#d1d5db';
     ctx.font = '11px system-ui, sans-serif';
-    ctx.fillText('Pitch (quat): ' + pitch.toFixed(0) + '°    Gyro sagittal: ' + gdeg.toFixed(0) + '° (useful in catch/pull)', 12, H - 10);
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.fillText(
+        'AoA: pitch (quat) ' + pitch.toFixed(0) + '° · gyro sagittal ' + gdeg.toFixed(0) + '° — IMU+ has no mag; yaw drifts; path is indicative',
+        12,
+        H - 12
+    );
 }

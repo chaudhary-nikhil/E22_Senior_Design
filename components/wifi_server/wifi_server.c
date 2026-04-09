@@ -1300,18 +1300,21 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
   extern bool stroke_detector_has_ideal(void);
   extern void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
                                          uint8_t *mag);
+  extern uint8_t bno055_get_last_opmode(void);
 
   /* Same cal nibbles as the IMU sampling loop (serial), not a second I2C read (avoids contention). */
   uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
   bno055_get_last_calibration(&sys, &gyro, &accel, &mag);
+  uint8_t opmode = bno055_get_last_opmode();
 
   const char *role_str = s_wrist_left ? "wrist_left" : "wrist_right";
-  char json[640];
+  char json[1024];
   snprintf(json, sizeof(json),
            "{\"device_id\":%d,\"device_role\":\"%s\","
            "\"haptic_available\":%s,\"ideal_loaded\":%s,"
            "\"storage_ok\":%s,"
            "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d},"
+           "\"bno_opmode\":%d,"
            "\"firmware\":\"GoldenForm v1.0\",\"mcu\":\"ESP32-S3-WROOM-1\","
            "\"ssid\":\"%s\","
            "\"sample_hz\":%d,\"multi_device\":%s}",
@@ -1321,6 +1324,7 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
            stroke_detector_has_ideal() ? "true" : "false",
            storage_is_available() ? "true" : "false",
            sys, gyro, accel, mag,
+           opmode,
            s_ap_ssid,
            CONFIG_GOLDENFORM_SAMPLE_HZ,
 #if defined(CONFIG_GOLDENFORM_MULTI_DEVICE_ENABLE)
@@ -1511,54 +1515,22 @@ esp_err_t wifi_server_start_sync(void) {
   qsort(stream_state.file_names, stream_state.file_count, sizeof(char *),
         cmp_file_names);
 
-  // Count actual samples by reading all files (accurate count, not estimate)
-  // This ensures the status endpoint shows the correct count
+  // Estimate sample counts from file sizes (fast — avoids reading every
+  // protobuf record which can take many seconds on large sessions).
   stream_state.total_samples_available = 0;
   char file_path[160];
-  bno055_sample_t *count_buffer = malloc(256 * sizeof(bno055_sample_t));
-  if (count_buffer) {
-    for (size_t i = 0; i < stream_state.file_count; i++) {
-      snprintf(file_path, sizeof(file_path), "%s/%s", mount_point,
-               stream_state.file_names[i]);
-      FILE *f = fopen(file_path, "rb");
-      if (f) {
-        size_t file_samples = 0;
-        while (true) {
-          size_t decoded = 0;
-          esp_err_t read_err =
-              protobuf_read_delimited(f, count_buffer, 256, &decoded);
-          if (read_err == ESP_ERR_NOT_FOUND) {
-            break; // EOF
-          }
-          if (read_err == ESP_OK && decoded > 0) {
-            file_samples += decoded;
-          } else {
-            break; // Error or no more data
-          }
-        }
-        fclose(f);
-        stream_state.total_samples_available += file_samples;
-        ESP_LOGI(TAG, "File %s: %zu samples", stream_state.file_names[i],
-                 file_samples);
-      }
-    }
-    free(count_buffer);
-  } else {
-    // Fallback to estimation if memory allocation fails
-    ESP_LOGW(TAG, "Failed to allocate count buffer, using estimation");
-    for (size_t i = 0; i < stream_state.file_count; i++) {
-      snprintf(file_path, sizeof(file_path), "%s/%s", mount_point,
-               stream_state.file_names[i]);
-      FILE *f = fopen(file_path, "rb");
-      if (f) {
-        fseek(f, 0, SEEK_END);
-        long file_size = ftell(f);
-        fclose(f);
-        if (file_size > 0) {
-          // Estimate: ~109 bytes per sample in protobuf format (more accurate)
-          stream_state.total_samples_available += (size_t)(file_size / 109);
-        }
-      }
+  for (size_t i = 0; i < stream_state.file_count; i++) {
+    snprintf(file_path, sizeof(file_path), "%s/%s", mount_point,
+             stream_state.file_names[i]);
+    FILE *f = fopen(file_path, "rb");
+    if (f) {
+      fseek(f, 0, SEEK_END);
+      long file_size = ftell(f);
+      fclose(f);
+      size_t est = (file_size > 0) ? (size_t)(file_size / 109) : 0;
+      stream_state.total_samples_available += est;
+      ESP_LOGI(TAG, "File %s: ~%zu samples (%ld bytes)",
+               stream_state.file_names[i], est, file_size);
     }
   }
 

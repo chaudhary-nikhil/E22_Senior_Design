@@ -10,12 +10,38 @@ function buildIdealLiaSamplesFromStroke(strokeNum, streamKey) {
         const d = processedData[i];
         if (strokeNumAt(d) !== strokeNum) continue;
         if (streamKey != null && streamKey !== '' && getStreamKey(d) !== streamKey) continue;
+        // Use linear acceleration (LIA) when available; fall back to acceleration for legacy payloads.
+        const L = d.lia || null;
         const acc = d.acceleration || {};
         const q = d.quaternion || {};
         out.push({
-            lia_x: acc.ax || 0,
-            lia_y: acc.ay || 0,
-            lia_z: acc.az || 0,
+            lia_x: (L && L.x != null) ? L.x : (acc.ax || 0),
+            lia_y: (L && L.y != null) ? L.y : (acc.ay || 0),
+            lia_z: (L && L.z != null) ? L.z : (acc.az || 0),
+            qw: q.qw != null ? q.qw : 1,
+            qx: q.qx || 0,
+            qy: q.qy || 0,
+            qz: q.qz || 0,
+            entry_angle: d.entry_angle || 0
+        });
+    }
+    return out;
+}
+
+/** Full session in sample order (LIA + quaternion + entry angle per row). */
+function buildIdealLiaSamplesFromFullSession() {
+    const out = [];
+    if (!processedData || !processedData.length) return out;
+    refreshStrokeFieldMode();
+    for (let i = 0; i < processedData.length; i++) {
+        const d = processedData[i];
+        const L = d.lia || null;
+        const acc = d.acceleration || {};
+        const q = d.quaternion || {};
+        out.push({
+            lia_x: (L && L.x != null) ? L.x : (acc.ax || 0),
+            lia_y: (L && L.y != null) ? L.y : (acc.ay || 0),
+            lia_z: (L && L.z != null) ? L.z : (acc.az || 0),
             qw: q.qw != null ? q.qw : 1,
             qx: q.qx || 0,
             qy: q.qy || 0,

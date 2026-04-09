@@ -114,7 +114,7 @@ function clearViz() {
 function resetView() {
     followDeviceInView = false;
     if (camera) {
-        camera.position.set(2.1, 2.15, 3.4);
+        camera.position.set(2.4, 2.5, 3.8);
         camera.lookAt(0, 0.1, 0.5);
         if (controls) { controls.target.set(0, 0.1, 0.5); controls.update(); }
     }

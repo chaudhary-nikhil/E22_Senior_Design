@@ -145,12 +145,12 @@ async function mergeLatestSessions() {
 }
 /** Show first-run strip vs quick actions — keeps Home aligned with PDP base path. */
 function updateHomeOnboardingPanels() {
-    const gettingStarted = document.getElementById('getting-started');
     const quickActions = document.getElementById('quick-actions');
-    if (!gettingStarted || !quickActions) return;
-    const hasSess = hasSavedSessions();
-    gettingStarted.style.display = hasSess ? 'none' : '';
-    quickActions.style.display = hasSess ? '' : 'none';
+    if (!quickActions) return;
+    const showQuick = typeof getOnboardingSnapshot === 'function'
+        ? getOnboardingSnapshot().hasSessionForJourney
+        : hasSavedSessions();
+    quickActions.style.display = showQuick ? '' : 'none';
 }
 
 function renderSessionList() {
@@ -230,7 +230,7 @@ async function selectSession(i) {
     updateAnalysis();
     updateCoachingInsights();
     // Switch to Session tab first so chart and 3D canvases have real dimensions (not 0x0)
-    switchTab('session');
+    switchTab('session', { force: true });
     // Scroll Session tab into view so the 3D canvas and charts are visible
     const sessionPage = document.getElementById('page-session');
     if (sessionPage) sessionPage.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -245,7 +245,7 @@ async function selectSession(i) {
             // (Re)init 3D if not yet created (e.g. canvas was hidden at load)
             if (!scene || !renderer) init3D();
             if (renderer && camera) {
-                renderer.setSize(w, h);
+                renderer.setSize(Math.min(w, 1400), Math.min(h, 900), false);
                 camera.aspect = w / h;
                 camera.updateProjectionMatrix();
             }
@@ -254,6 +254,7 @@ async function selectSession(i) {
         resizeSideViewCanvas();
         renderFrame(0);
         if (processedData.length > 0 && accelChart && gyroChart) updateCharts(0);
+        if (typeof frameVizOnTrail === 'function') frameVizOnTrail();
         if (typeof refreshIdealViewerContext === 'function') refreshIdealViewerContext();
     });
 }
