@@ -102,11 +102,6 @@ class StrokeProcessor:
         self.kalman_ay = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_az = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         
-        # High-pass filter: running average for DC-offset removal
-        # When accel is uncalibrated, LIA has gravity residual (DC bias)
-        # Subtract the slowly-moving average to get only dynamic acceleration
-        self.hp_alpha = 0.02  # Slow average: ~50 sample window at 50Hz = ~1s
-        self.hp_avg = [0.0, 0.0, 0.0]
         
         # =====================================================================
         # STROKE DETECTION: Downward Water Entry (Research-Backed Thresholds)
@@ -202,29 +197,22 @@ class StrokeProcessor:
         self.stroke_integrating = False
         self.stroke_integration_start = 0
 
-        # Legacy (0401fbde) position tracking window (gyro/accel gated).
-        # For post-session SD→Wi‑Fi replay (`batch_mode=True`), using only the pull-through
-        # window can make trails look too short/jerky. This wider gate matches the older
-        # visualizer feel while still applying strong drift suppression.
+        # 0401fbde position tracking gate (gyro/accel motion-gated, primary integration window).
+        # Matches the original StrokeProcessor that produced the most accurate stroke visualization:
+        # abs(gy) + accel_mag thresholds, position/velocity reset on segment start, instant end.
         self.pos_tracking_active = False
         self.pos_tracking_start_ms = 0
-        self.POS_TRACK_START_GYRO = 0.6 if batch_mode else 0.8
-        self.POS_TRACK_START_ACCEL = 0.35
-        self.POS_TRACK_END_GYRO = 0.22
-        self.POS_TRACK_END_ACCEL = 0.30
-        self.POS_TRACK_MIN_MS = 350
-        self.pos_quiet_count = 0
-        self.POS_TRACK_QUIET_REQUIRED = 4
+        self.POS_TRACK_START_GYRO = 0.6   # rad/s — abs(gy), 0401fbde STROKE_START_GYRO_THRESHOLD
+        self.POS_TRACK_START_ACCEL = 0.25  # m/s², 0401fbde STROKE_START_ACCEL_THRESHOLD
+        self.POS_TRACK_END_GYRO = 0.2      # rad/s, 0401fbde STROKE_END_GYRO_THRESHOLD
+        self.POS_TRACK_END_ACCEL = 0.25    # m/s², 0401fbde STROKE_END_ACCEL_THRESHOLD
+        self.POS_TRACK_MIN_MS = 500        # 0401fbde MIN_STROKE_DURATION = 0.5s
         
         self.MIN_CAL_LEVEL = 0  # Relaxed: IMUPLUS mode makes 3/3 accel impossible while swimming
-        self.ACCEL_DEADZONE = 0.3  # m/s² - noise floor for calibrated sensor (accel only)
-        self.ACCEL_DEADZONE_UNCAL = 1.0  # m/s² - larger deadzone for uncalibrated accel
-        # Legacy UART stream (0401fbde): world-frame integration used 0.98 / 0.80 with 0.2 deadzone
-        self.VELOCITY_DECAY = 0.97  # default — active stroke friction
-        self.STATIONARY_FRICTION = 0.85
-        self.VELOCITY_DECAY_WELL_CAL = 0.98
-        self.STATIONARY_FRICTION_WELL_CAL = 0.80
-        self.ACCEL_DEADZONE_WELL_CAL = 0.2  # m/s² — tight, like legacy live stream after BNO fusion
+        # 0401fbde integration constants (used directly in process_data)
+        self.ACCEL_DEADZONE = 0.2  # m/s² per-axis — 0401fbde ACCEL_DEADZONE
+        self.VELOCITY_DECAY = 0.98  # 0401fbde VELOCITY_DECAY (active motion)
+        self.STATIONARY_FRICTION = 0.80  # 0401fbde STATIONARY_FRICTION (quiet)
 
         self.stroke_count = 0  # Track number of strokes
         self.stroke_start_time = 0  # To track duration
@@ -515,7 +503,6 @@ class StrokeProcessor:
                 if self.batch_mode:
                     self.position = [0.0, 0.0, 0.0]
                     self.velocity = [0.0, 0.0, 0.0]
-                    self.hp_avg = [0.0, 0.0, 0.0]
                 self.in_stroke = True
                 self.stroke_start_time = t_ms
                 self.stroke_integrating = True
@@ -645,7 +632,6 @@ class StrokeProcessor:
                         self.legacy_viz_start_ms = t_ms
                         self.position = [0.0, 0.0, 0.0]
                         self.velocity = [0.0, 0.0, 0.0]
-                        self.hp_avg = [0.0, 0.0, 0.0]
                 else:
                     dur_s = (t_ms - self.legacy_viz_start_ms) / 1000.0
                     quiet = (
@@ -660,121 +646,70 @@ class StrokeProcessor:
                 self.legacy_pos_track = False
 
             # =================================================================
-            # LEGACY POSITION TRACK WINDOW (visual quality for batch replay)
-            # 0401fbde integrated position while "in_stroke" based on gyro/accel gating.
-            # For SD→Wi‑Fi post-session playback, this longer window produces smoother,
-            # more continuous trails for 1–2 IMUs without requiring live streaming.
+            # 0401fbde POSITION TRACKING GATE (batch replay)
+            # Original StrokeProcessor gated integration on abs(gy) + accel_mag.
+            # Position/velocity reset on each new motion segment.
             # =================================================================
             if self.batch_mode:
+                gy_abs = abs(float(gyro_y))
                 if not self.pos_tracking_active:
-                    if gyro_mag > self.POS_TRACK_START_GYRO or accel_mag > self.POS_TRACK_START_ACCEL:
+                    if (gy_abs > self.POS_TRACK_START_GYRO
+                            or accel_mag > self.POS_TRACK_START_ACCEL):
                         self.pos_tracking_active = True
                         self.pos_tracking_start_ms = t_ms
-                        self.pos_quiet_count = 0
                         self.position = [0.0, 0.0, 0.0]
                         self.velocity = [0.0, 0.0, 0.0]
-                        self.hp_avg = [0.0, 0.0, 0.0]
                 else:
-                    quiet = (gyro_mag < self.POS_TRACK_END_GYRO and accel_mag < self.POS_TRACK_END_ACCEL)
-                    self.pos_quiet_count = (self.pos_quiet_count + 1) if quiet else 0
-                    active_ms = t_ms - self.pos_tracking_start_ms
-                    if active_ms >= self.POS_TRACK_MIN_MS and self.pos_quiet_count >= self.POS_TRACK_QUIET_REQUIRED:
+                    quiet = (gy_abs < self.POS_TRACK_END_GYRO
+                             and accel_mag < self.POS_TRACK_END_ACCEL)
+                    duration_ms = t_ms - self.pos_tracking_start_ms
+                    if quiet and duration_ms >= self.POS_TRACK_MIN_MS:
                         self.pos_tracking_active = False
-                        self.pos_quiet_count = 0
+                    elif duration_ms > 20000:
+                        self.pos_tracking_active = False
             
-            # 5. Integration Logic
-            # Live: legacy motion gate; batch: pull-through and/or pos_tracking window.
-            # Between segments: position is frozen, velocity is zero.
-            # World-frame R * Kalman(LIA); decay/deadzone match strong-fusion UART tuning.
+            # 5. Integration Logic — 0401fbde StrokeProcessor math
+            # Kalman-smoothed LIA → quaternion to world frame → per-axis deadzone → integrate.
+            # Constants match the original 0401fbde commit (most accurate stroke visualization).
             int_ax = (ww + xx - yy - zz) * smooth_x + 2 * (xy - wz) * smooth_y + 2 * (xz + wy) * smooth_z
             int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
             int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
-            
-            # High-pass filter: remove DC bias from gravity residual (uncalibrated accel)
-            if cal_accel < 2:
-                self.hp_avg[0] += self.hp_alpha * (int_ax - self.hp_avg[0])
-                self.hp_avg[1] += self.hp_alpha * (int_ay - self.hp_avg[1])
-                self.hp_avg[2] += self.hp_alpha * (int_az - self.hp_avg[2])
-                int_ax -= self.hp_avg[0]
-                int_ay -= self.hp_avg[1]
-                int_az -= self.hp_avg[2]
 
             integrate_now = (
                 (not self.batch_mode and self.legacy_pos_track)
-                or (
-                    self.batch_mode
-                    and (self.stroke_integrating or self.pos_tracking_active)
-                )
+                or (self.batch_mode and self.pos_tracking_active)
             )
             if integrate_now:
-                # Legacy UART (0401fbde): with accel+gyro fusion >= 2, use tight deadzone and
-                # light decay — same world-frame path as Wi‑Fi/SD replay (R * Kalman-smoothed LIA).
-                well_cal_integrate = cal_accel >= 2 and cal_gyro >= 2
-                if well_cal_integrate:
-                    deadzone = self.ACCEL_DEADZONE_WELL_CAL
-                    decay_act = self.VELOCITY_DECAY_WELL_CAL
-                    decay_stat = self.STATIONARY_FRICTION_WELL_CAL
-                else:
-                    deadzone = (
-                        self.ACCEL_DEADZONE if cal_accel >= 2 else self.ACCEL_DEADZONE_UNCAL
-                    )
-                    decay_act = self.VELOCITY_DECAY
-                    decay_stat = self.STATIONARY_FRICTION
+                DEADZONE = 0.2   # 0401fbde ACCEL_DEADZONE
+                DECAY_ACTIVE = 0.98   # 0401fbde VELOCITY_DECAY
+                DECAY_STATIONARY = 0.80  # 0401fbde STATIONARY_FRICTION
 
                 is_accelerating = False
-                # Vector deadzone when well calibrated: avoids false "motion" from one noisy
-                # axis drifting the integrator diagonally (common IMU double-integration issue).
-                if well_cal_integrate:
-                    w_mag = math.sqrt(int_ax * int_ax + int_ay * int_ay + int_az * int_az)
-                    if w_mag < deadzone:
-                        int_ax = 0.0
-                        int_ay = 0.0
-                        int_az = 0.0
-                    else:
-                        is_accelerating = True
+                if abs(int_ax) < DEADZONE:
+                    int_ax = 0.0
                 else:
-                    if abs(int_ax) < deadzone:
-                        int_ax = 0.0
-                    else:
-                        is_accelerating = True
-                    if abs(int_ay) < deadzone:
-                        int_ay = 0.0
-                    else:
-                        is_accelerating = True
-                    if abs(int_az) < deadzone:
-                        int_az = 0.0
-                    else:
-                        is_accelerating = True
+                    is_accelerating = True
+                if abs(int_ay) < DEADZONE:
+                    int_ay = 0.0
+                else:
+                    is_accelerating = True
+                if abs(int_az) < DEADZONE:
+                    int_az = 0.0
+                else:
+                    is_accelerating = True
 
                 self.velocity[0] += int_ax * dt
                 self.velocity[1] += int_ay * dt
                 self.velocity[2] += int_az * dt
 
-                decay = decay_act if is_accelerating else decay_stat
+                decay = DECAY_ACTIVE if is_accelerating else DECAY_STATIONARY
                 self.velocity[0] *= decay
                 self.velocity[1] *= decay
                 self.velocity[2] *= decay
 
-                # Bleed residual velocity when acceleration is near quiet (reduces slow drift
-                # in one direction while still tracking real pull transients).
-                if well_cal_integrate and accel_mag < 0.5:
-                    vb = 0.92
-                    self.velocity[0] *= vb
-                    self.velocity[1] *= vb
-                    self.velocity[2] *= vb
-                
                 self.position[0] += self.velocity[0] * dt
                 self.position[1] += self.velocity[1] * dt
                 self.position[2] += self.velocity[2] * dt
-                
-                # Clamp position: realistic arm pull-through reach ~0.6m
-                # Batch replay uses a slightly larger clamp to keep trails visually readable.
-                clamp_m = 1.2 if self.batch_mode else 0.6
-                pos_mag = math.sqrt(sum(p*p for p in self.position))
-                if pos_mag > clamp_m:
-                    scale = clamp_m / pos_mag
-                    self.position = [p * scale for p in self.position]
-                    self.velocity = [v * 0.3 for v in self.velocity]
             else:
                 self.velocity = [0.0, 0.0, 0.0]
 
@@ -812,10 +747,7 @@ class StrokeProcessor:
             },
             "tracking_active": (
                 ((not self.batch_mode) and self.legacy_pos_track)
-                or (
-                    self.batch_mode
-                    and (self.stroke_integrating or self.pos_tracking_active)
-                )
+                or (self.batch_mode and self.pos_tracking_active)
             ),
             "stroke_count": self.stroke_count,
             "strokes": fw_strokes,
@@ -838,12 +770,7 @@ class StrokeProcessor:
             "phase_pcts": dict(self.last_phase_pcts),
             "phase_progress": round(phase_progress, 3),
             "stroke_velocity_ms": round(stroke_vel_ms, 3),
-            # World-frame LIA integration tuning (matches live UART @ 0401fbde when fusion strong)
-            "position_integration": (
-                "legacy_uart_match"
-                if (cal_accel >= 2 and cal_gyro >= 2)
-                else ("hp_gravity_residual" if cal_accel < 2 else "standard")
-            ),
+            "position_integration": "0401fbde",
             
             "haptic_fired": data_dict.get('haptic_fired', data_dict.get('haptic', False)),
             "deviation_score": data_dict.get('deviation_score', data_dict.get('deviation', 0.0)),

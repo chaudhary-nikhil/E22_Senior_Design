@@ -1,15 +1,15 @@
 /**
  * GoldenForm — LIA / processor position integration and stroke-segmented trail prep.
  *
- * Authoritative path: use `position` from Python `StrokeProcessor` (wifi_session_processor /
- * simple_imu_visualizer) — Kalman-smoothed LIA → world frame → integrate while `tracking_active`.
- * Live Wi‑Fi uses a 0401fbde-style motion gate (|gy| + |LIA|); batch replay uses pull-through /
- * pos_tracking. Reference:
- * https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
+ * All integration uses 0401fbde StrokeProcessor math — the most accurate stroke visualization:
+ *   Kalman-smoothed LIA (Q=0.3, R=0.1) → quaternion to world frame → per-axis deadzone (0.2 m/s²)
+ *   → integrate velocity/position → fixed decay (0.98 active / 0.80 stationary).
+ *   Motion gate: abs(gy) + accel_mag thresholds; position/velocity reset on segment start.
  *
- * Fallback (no per-sample `position`): same order — 1D Kalman per axis (same coeffs as
- * SimpleKalmanFilter in simple_imu_visualizer.py), then world-frame rotation, then integration
- * gated by `tracking_active` when present.
+ * Authoritative path: use `position` from Python `StrokeProcessor` when present.
+ * Fallback: same Kalman → world-frame → integrate pipeline in JS.
+ *
+ * Reference: https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
  */
 /**
  * Map processor world position (px,py,pz) to Three.js scene coordinates.
@@ -37,57 +37,18 @@ function gfKalman1D(Q, R, P0, x0) {
     };
 }
 
-/** Phase-adaptive integration (0401fbde / StrokeProcessor-style) — replay path without per-sample `tracking_active`. */
-const GF_PHASE_PARAMS = {
-    catch: { deadzone: 0.2, decay: 0.98 },
-    pull: { deadzone: 0.2, decay: 0.98 },
-    exit: { deadzone: 0.25, decay: 0.96 },
-    recovery: { deadzone: 0.5, decay: 0.92 },
-    glide: { deadzone: 0.4, decay: 0.90 },
-    idle: { deadzone: 0.3, decay: 0.95 }
-};
-
-function gfNormalizePhaseName(s) {
-    if (!s) return '';
-    const t = String(s).toLowerCase().trim();
-    if (GF_PHASE_PARAMS[t]) return t;
-    return '';
-}
-
 /**
- * Prefer `stroke_phase` / `phase` on the sample (from Python batch / processor).
- * Else infer from time-in-stroke + |LIA| + ‖ω‖ (same spirit as simple_imu_visualizer timeline).
+ * 0401fbde StrokeProcessor integration constants.
+ * Fixed deadzone + decay — the original math that produced the most accurate stroke visualization.
  */
-function gfInferReplayPhase(d, dtStrokeMs, liaBodyMag, gyroMag) {
-    const fromField = gfNormalizePhaseName(d && (d.stroke_phase || d.phase));
-    if (fromField) return fromField;
-    const t = dtStrokeMs;
-    const CATCH_MS = 150;
-    const PULL_MS = 500;
-    const EXIT_MS = 700;
-    if (t < CATCH_MS) return 'catch';
-    if (t < PULL_MS) return 'pull';
-    if (t < EXIT_MS) return 'exit';
-    if (t >= EXIT_MS && liaBodyMag < 1.5 && gyroMag < 0.55) return 'glide';
-    if (gyroMag > 1.5) return 'recovery';
-    if (liaBodyMag < 3.0) return 'recovery';
-    return 'recovery';
-}
-
-function gfPhaseParamsForReplay(d, seg, i, ts, ax, ay, az, gyro) {
-    const def = GF_PHASE_PARAMS.pull;
-    if (!seg || i < seg.start) return def;
-    const d0 = processedData[seg.start];
-    const t0 = (d0 && d0.timestamp != null) ? Number(d0.timestamp) : (seg.start * 20);
-    const dtStroke = Math.max(0, ts - t0);
-    const liaBodyMag = Math.hypot(ax, ay, az);
-    const gx = Number(gyro.gx || gyro.x || 0) || 0;
-    const gy = Number(gyro.gy || gyro.y || 0) || 0;
-    const gz = Number(gyro.gz || gyro.z || 0) || 0;
-    const gyroMag = Math.hypot(gx, gy, gz);
-    const name = gfInferReplayPhase(d, dtStroke, liaBodyMag, gyroMag);
-    return GF_PHASE_PARAMS[name] || def;
-}
+const GF_0401_DEADZONE = 0.2;   // m/s² per-axis
+const GF_0401_DECAY_ACTIVE = 0.98;
+const GF_0401_DECAY_STATIONARY = 0.80;
+const GF_0401_START_GY = 0.6;   // rad/s — abs(gy) to start integration
+const GF_0401_START_A = 0.25;   // m/s² — accel_mag to start integration
+const GF_0401_END_GY = 0.2;
+const GF_0401_END_A = 0.25;
+const GF_0401_MIN_ON_MS = 500;
 
 function buildRawIntegratedPositions() {
     rawIntegratedPositions = [];
@@ -127,13 +88,9 @@ function buildRawIntegratedPositions() {
         return { start, end };
     };
     /* Fallback when no stroke indices in file: short motion gate (older behavior). */
+    /* 0401fbde motion gate: abs(gy) + accel_mag thresholds, position/velocity reset on segment start. */
     let gateOn = false;
     let gateStartMs = 0;
-    const START_GY = 0.52;
-    const START_A = 0.16;
-    const END_GY = 0.18;
-    const END_A = 0.2;
-    const MIN_ON_MS = 420;
 
     const kx = gfKalman1D(0.3, 0.1, 1.0, 0.0);
     const ky = gfKalman1D(0.3, 0.1, 1.0, 0.0);
@@ -152,7 +109,6 @@ function buildRawIntegratedPositions() {
         if (i > 0 && d.timestamp != null && processedData[i - 1].timestamp != null) {
             dt = Math.max(0.001, Math.min(0.1, (d.timestamp - processedData[i - 1].timestamp) / 1000));
         }
-        /* Match StrokeProcessor: no integration when tracking_active false (no idle drift). */
         if (hasTracking && d.tracking_active === false) {
             rawIntegratedPositions.push(vizMapProcessorPosition(px, py, pz));
             vx = vy = vz = 0;
@@ -171,7 +127,6 @@ function buildRawIntegratedPositions() {
         const gyro = d.angular_velocity || {};
         const gy = Number(gyro.gy || gyro.y || 0) || 0;
         const gyAbs = Math.abs(gy);
-        /* Raw AP / SD replay without tracking_active: full stroke cycle per boundary when possible. */
         if (!hasTracking && useStrokeSegments) {
             const seg = strokeSegAt(i);
             if (!seg || i < seg.start) {
@@ -186,7 +141,7 @@ function buildRawIntegratedPositions() {
             }
         } else if (!hasTracking) {
             if (!gateOn) {
-                if (gyAbs > START_GY || aMag > START_A) {
+                if (gyAbs > GF_0401_START_GY || aMag > GF_0401_START_A) {
                     gateOn = true;
                     gateStartMs = ts;
                     vx = vy = vz = 0;
@@ -194,9 +149,9 @@ function buildRawIntegratedPositions() {
                 }
             } else {
                 const dur = ts - gateStartMs;
-                const quiet = (gyAbs < END_GY && aMag < END_A);
-                if (quiet && dur >= MIN_ON_MS) gateOn = false;
-                else if (dur > 25000) gateOn = false;
+                const quiet = (gyAbs < GF_0401_END_GY && aMag < GF_0401_END_A);
+                if (quiet && dur >= GF_0401_MIN_ON_MS) gateOn = false;
+                else if (dur > 20000) gateOn = false;
             }
             if (!gateOn) {
                 rawIntegratedPositions.push(vizMapProcessorPosition(px, py, pz));
@@ -205,37 +160,17 @@ function buildRawIntegratedPositions() {
             }
         }
 
-        /* Phase-adaptive deadzone/decay on replay+stroke boundaries; gate fallback fixed; firmware tracking_active unchanged. */
-        let pp = { deadzone: 0.2, decay: 0.985 };
-        if (!hasTracking && useStrokeSegments) {
-            const segNow = strokeSegAt(i);
-            pp = gfPhaseParamsForReplay(d, segNow, i, ts, ax, ay, az, gyro);
-        } else if (!hasTracking && !useStrokeSegments) {
-            pp = { deadzone: 0.2, decay: 0.985 };
-        }
-        const cal = d.cal || d.calibration || {};
-        const ca = Number(cal.accel) || 0;
-        const cg = Number(cal.gyro) || 0;
-        let DEADZONE = pp.deadzone;
-        if (ca >= 2 && cg >= 2) DEADZONE *= 0.85;
-
+        /* 0401fbde integration: per-axis deadzone, fixed decay. */
         let axw = wA.x, ayw = wA.y, azw = wA.z;
-        if (aMag < DEADZONE) {
-            axw = ayw = azw = 0;
-        }
+        let isAccel = false;
+        if (Math.abs(axw) < GF_0401_DEADZONE) axw = 0; else isAccel = true;
+        if (Math.abs(ayw) < GF_0401_DEADZONE) ayw = 0; else isAccel = true;
+        if (Math.abs(azw) < GF_0401_DEADZONE) azw = 0; else isAccel = true;
+
         vx += axw * dt; vy += ayw * dt; vz += azw * dt;
-        let decay;
-        if (hasTracking) {
-            decay = (aMag < DEADZONE) ? 0.82 : 0.985;
-        } else {
-            decay = (aMag < DEADZONE) ? (pp.decay * 0.94) : pp.decay;
-        }
+        const decay = isAccel ? GF_0401_DECAY_ACTIVE : GF_0401_DECAY_STATIONARY;
         vx *= decay; vy *= decay; vz *= decay;
         px += vx * dt; py += vy * dt; pz += vz * dt;
-        const pm = Math.sqrt(px * px + py * py + pz * pz);
-        if (pm > 1.0) {
-            vx *= 0.95; vy *= 0.95; vz *= 0.95;
-        }
         rawIntegratedPositions.push(vizMapProcessorPosition(px, py, pz));
     }
 }
