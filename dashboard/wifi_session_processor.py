@@ -1122,8 +1122,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             allow = os.environ.get('GOLDENFORM_ALLOW_STALE_CACHE', '').strip().lower() in ('1', 'true', 'yes')
             hint = (
-                f'HTTP {e.code} from {ESP32_URL}/data.json — usually means this computer is not on the '
-                'GoldenForm hotspot (traffic went to a different device), or the band firmware is out of date.'
+                f'HTTP {e.code} from {ESP32_URL}/data.json — if you are on the band Wi‑Fi: often there are '
+                'no session files yet (record a swim first), or the swim was already synced and cleared from '
+                'the SD card. Also check you joined the correct GoldenForm SSID (not a different AP), and '
+                'flash current firmware (older builds required “sync transfer” mode for data.json).'
             )
             print(f'[ESP32] {hint} ({e})')
             if allow and os.path.exists(PROCESSED_CACHE):

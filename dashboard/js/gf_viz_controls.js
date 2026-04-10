@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Viz playback controls, clear session, camera reset, position scale.
+ * GoldenForm  --  Viz playback controls, clear session, camera reset, position scale.
  */
 function bindVizPlaybackControls() {
     const sp = document.getElementById('viz-playback-speed');

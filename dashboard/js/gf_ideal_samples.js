@@ -6,11 +6,7 @@ function buildIdealLiaSamplesFromStroke(strokeNum, streamKey) {
     const out = [];
     if (!processedData || !processedData.length) return out;
     refreshStrokeFieldMode();
-    for (let i = 0; i < processedData.length; i++) {
-        const d = processedData[i];
-        if (strokeNumAt(d) !== strokeNum) continue;
-        if (streamKey != null && streamKey !== '' && getStreamKey(d) !== streamKey) continue;
-        // Use linear acceleration (LIA) when available; fall back to acceleration for legacy payloads.
+    const pushRow = (d) => {
         const L = d.lia || null;
         const acc = d.acceleration || {};
         const q = d.quaternion || {};
@@ -24,6 +20,19 @@ function buildIdealLiaSamplesFromStroke(strokeNum, streamKey) {
             qz: q.qz || 0,
             entry_angle: d.entry_angle || 0
         });
+    };
+    if (typeof gfGetStrokeSampleRangeLoose === 'function') {
+        const range = gfGetStrokeSampleRangeLoose(strokeNum, streamKey);
+        if (range && range.end >= range.start) {
+            for (let i = range.start; i <= range.end; i++) pushRow(processedData[i]);
+            if (out.length) return out;
+        }
+    }
+    for (let i = 0; i < processedData.length; i++) {
+        const d = processedData[i];
+        if (strokeNumAt(d) !== strokeNum) continue;
+        if (streamKey != null && streamKey !== '' && getStreamKey(d) !== streamKey) continue;
+        pushRow(d);
     }
     return out;
 }
@@ -53,8 +62,22 @@ function buildIdealLiaSamplesFromFullSession() {
 }
 
 function averageEntryAngleForStroke(strokeNum, streamKey) {
-    let sum = 0, n = 0;
     refreshStrokeFieldMode();
+    if (typeof gfGetStrokeSampleRangeLoose === 'function') {
+        const range = gfGetStrokeSampleRangeLoose(strokeNum, streamKey);
+        if (range && range.end >= range.start) {
+            let sum = 0, n = 0;
+            for (let i = range.start; i <= range.end; i++) {
+                const ea = Number(processedData[i].entry_angle) || 0;
+                if (ea > 0.5) {
+                    sum += ea;
+                    n++;
+                }
+            }
+            if (n) return sum / n;
+        }
+    }
+    let sum = 0, n = 0;
     for (const d of processedData) {
         if (strokeNumAt(d) !== strokeNum) continue;
         if (streamKey != null && streamKey !== '' && getStreamKey(d) !== streamKey) continue;

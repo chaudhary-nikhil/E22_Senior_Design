@@ -92,6 +92,49 @@ function gfDeviationVsIdealMae(actualMags, idealTemplateMags) {
     return gfIdealCompareChartStats(actualMags, idealTemplateMags).deviation;
 }
 
+/**
+ * True when the loaded ideal is a full-session baseline captured from the same saved session
+ * as the one open in the viewer (avoid scoring the template against itself).
+ */
+function gfSessionIsIdealBaselineForUi() {
+    if (typeof idealDisplayInfo === 'undefined' || !idealDisplayInfo || idealDisplayInfo.sourceSessionId == null) {
+        return false;
+    }
+    if (typeof savedSessions === 'undefined' || typeof activeSessionIdx === 'undefined' || activeSessionIdx < 0) {
+        return false;
+    }
+    const s = savedSessions[activeSessionIdx];
+    if (!s || s.id == null) return false;
+    if (Number(idealDisplayInfo.sourceSessionId) !== Number(s.id)) return false;
+    const pd = typeof processedData !== 'undefined' && processedData ? processedData.length : 0;
+    const id = typeof idealStrokeData !== 'undefined' && idealStrokeData ? idealStrokeData.length : 0;
+    if (pd < 10 || id < 10) return false;
+    return id >= Math.floor(pd * 0.65);
+}
+
+/** Zero client vs-ideal deltas when viewing the baseline session itself. */
+function gfApplySelfBaselineVsIdealOverrides() {
+    if (!gfVsIdealMetrics || typeof gfSessionIsIdealBaselineForUi !== 'function' || !gfSessionIsIdealBaselineForUi()) {
+        if (gfVsIdealMetrics) gfVsIdealMetrics.isSelfBaseline = false;
+        return;
+    }
+    gfVsIdealMetrics.isSelfBaseline = true;
+    gfVsIdealMetrics.sessionChartDeviation = 0;
+    gfVsIdealMetrics.sessionVsIdealAlert = false;
+    gfVsIdealMetrics.vsIdealAlertCount = 0;
+    gfVsIdealMetrics.avgDeviation = 0;
+    gfVsIdealMetrics.selectedStrokeDeviation = null;
+    if (gfVsIdealMetrics.byStroke && gfVsIdealMetrics.byStroke.size) {
+        for (const [k, v] of gfVsIdealMetrics.byStroke) {
+            gfVsIdealMetrics.byStroke.set(k, {
+                deviation: 0,
+                deviceHaptic: v.deviceHaptic,
+                vsIdealAlert: false
+            });
+        }
+    }
+}
+
 /** Sample index range for one stroke (merged sessions: pass streamKey when needed). */
 function gfGetStrokeSampleRange(strokeNum, streamKey) {
     if (typeof processedData === 'undefined' || !processedData || !processedData.length) return null;
@@ -155,8 +198,20 @@ function gfValidateIdealCompareSelection() {
         idealCompareStreamKey = range.sb.streamKey || null;
         return;
     }
+    if (idealCompareStrokeNum != null) {
+        return;
+    }
     idealCompareStrokeNum = strokeBoundaries[0].strokeNum;
     idealCompareStreamKey = strokeBoundaries[0].streamKey || null;
+}
+
+function gfRefreshAnalysisOrIdealOnly() {
+    if (typeof updateAnalysis === 'function' && sessionMetrics) {
+        updateAnalysis();
+        return;
+    }
+    if (typeof buildIdealComparison === 'function') buildIdealComparison();
+    if (typeof buildStrokeTable === 'function') buildStrokeTable();
 }
 
 /**
@@ -169,6 +224,7 @@ function gfComputeVsIdealMetrics() {
         : 0.32;
     gfVsIdealMetrics = {
         hasIdeal: false,
+        isSelfBaseline: false,
         byStroke: new Map(),
         avgDeviation: 0,
         vsIdealAlertCount: 0,
@@ -201,6 +257,7 @@ function gfComputeVsIdealMetrics() {
             ? gfVsIdealMetrics.sessionChartDeviation
             : 0;
         gfVsIdealMetrics.vsIdealAlertCount = gfVsIdealMetrics.sessionVsIdealAlert ? 1 : 0;
+        gfApplySelfBaselineVsIdealOverrides();
         return;
     }
 
@@ -270,35 +327,29 @@ function gfComputeVsIdealMetrics() {
         }
     }
     gfVsIdealMetrics.selectedStrokeDeviation = selDev;
+    gfApplySelfBaselineVsIdealOverrides();
 }
 
 function setIdealCompareStroke(num, streamKey) {
     idealCompareStrokeNum = num != null ? Number(num) : null;
     idealCompareStreamKey = (streamKey != null && streamKey !== '') ? String(streamKey) : null;
-    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'stroke';
-    const sel = document.getElementById('ideal-compare-mode');
-    if (sel) sel.value = 'stroke';
-    if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
-    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'session';
 }
 
-function onIdealCompareModeChange(v) {
-    if (typeof idealCompareMode !== 'undefined') {
-        idealCompareMode = (v === 'session') ? 'session' : 'stroke';
-    }
+function onIdealCompareModeChange(_v) {
+    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'session';
     if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
-    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+    gfRefreshAnalysisOrIdealOnly();
 }
 
-/** Row click on Analysis per-stroke table: compare this stroke + sync playback. */
+/** Row click on Analysis per-stroke table: jump playback only (chart stays full-session vs baseline). */
 function analysisStrokeRowClick(e, num, streamKey) {
     if (e && e.target && e.target.closest && e.target.closest('button')) return;
     const sk = (streamKey != null && streamKey !== '') ? streamKey : undefined;
-    setIdealCompareStroke(num, sk);
     if (typeof jumpToStroke === 'function') jumpToStroke(num, sk);
 }
 
-// ── IDEAL STROKE COMPARISON (one stroke at a time vs saved ideal template) ──
+// ── IDEAL COMPARISON: full session |LIA| vs saved baseline (resampled to same length) ──
 function buildIdealComparison() {
     const host = document.getElementById('ideal-compare-chart-host');
     const cap = document.getElementById('ideal-compare-caption');
@@ -306,11 +357,10 @@ function buildIdealComparison() {
 
     const lead = document.getElementById('ideal-compare-lead');
     if (lead) {
-        lead.textContent = 'Pick a comparison mode, then click a row for a single stroke. Y = |LIA| (m/s²). X = progress through the stroke or through the full session when “Full session” is selected (both series resampled to the same length).';
+        lead.textContent = 'Y = |LIA| (m/s²). X = progress through this session (0–100%). White = this session; gold = your saved baseline—both series are resampled to the same length so lap length differences do not skew the plot.';
     }
 
-    const sel = document.getElementById('ideal-compare-mode');
-    if (sel && typeof idealCompareMode !== 'undefined') sel.value = idealCompareMode;
+    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'session';
 
     const destroyChart = () => {
         if (window._idealChart) {
@@ -335,7 +385,7 @@ function buildIdealComparison() {
     }
 
     if (!idealStrokeData || !idealStrokeData.length) {
-        showError('No ideal stroke saved. Set one in Settings or use <strong>Set Ideal</strong> on a stroke below.');
+        showError('No ideal baseline saved. Use <strong>Set session as ideal</strong> here or in Settings after a good swim.');
         setText('ideal-similarity', '--');
         gfComputeVsIdealMetrics();
         return;
@@ -343,68 +393,15 @@ function buildIdealComparison() {
 
     refreshStrokeFieldMode();
     computeStrokeBoundaries();
-    gfValidateIdealCompareSelection();
 
-    if (idealCompareStrokeNum == null && strokeBoundaries && strokeBoundaries.length) {
-        idealCompareStrokeNum = strokeBoundaries[0].strokeNum;
-        idealCompareStreamKey = strokeBoundaries[0].streamKey || null;
-    }
-
-    const mode = (typeof idealCompareMode !== 'undefined' && idealCompareMode === 'session') ? 'session' : 'stroke';
-
-    let actualLIA = [];
-    let captionTitle = '';
-    let xAxisTitle = 'Progress through this stroke (%)';
-    let actualLabel = 'Actual (|LIA|)';
-
-    if (mode === 'session') {
-        actualLIA = processedData.map((row) => gfLiaMagFromProcessed(row));
-        captionTitle = 'Full session';
-        xAxisTitle = 'Progress through session (%)';
-        actualLabel = 'Session (|LIA|)';
-    } else {
-        const range = gfGetStrokeSampleRangeLoose(idealCompareStrokeNum, idealCompareStreamKey);
-        if (!range || range.end < range.start) {
-            showError('No strokes found in this session.');
-            setText('ideal-similarity', '--');
-            gfComputeVsIdealMetrics();
-            return;
-        }
-        for (let i = range.start; i <= range.end; i++) {
-            actualLIA.push(gfLiaMagFromProcessed(processedData[i]));
-        }
-        const skLabel = (idealCompareStreamKey && String(idealCompareStreamKey).length)
-            ? (' · ' + (typeof streamLabelShort === 'function'
-                ? streamLabelShort(processedData[range.start])
-                : idealCompareStreamKey))
-            : '';
-        captionTitle = 'Stroke ' + idealCompareStrokeNum + skLabel;
-    }
+    const actualLIA = processedData.map((row) => gfLiaMagFromProcessed(row));
+    const captionTitle = 'Full session';
+    const xAxisTitle = 'Progress through session (%)';
+    const actualLabel = 'Session (|LIA|)';
 
     const idealMagsFull = idealStrokeData.map(gfLiaMagFromIdealSample);
-    let idealLIA = idealMagsFull;
-    if (mode === 'stroke' && strokeBoundaries && strokeBoundaries.length) {
-        let bi = -1;
-        for (let k = 0; k < strokeBoundaries.length; k++) {
-            const sb = strokeBoundaries[k];
-            if (sb.strokeNum !== idealCompareStrokeNum) continue;
-            if (idealCompareStreamKey != null && idealCompareStreamKey !== '' &&
-                String(sb.streamKey || '') !== String(idealCompareStreamKey)) continue;
-            bi = k;
-            break;
-        }
-        if (bi < 0) {
-            for (let k = 0; k < strokeBoundaries.length; k++) {
-                if (strokeBoundaries[k].strokeNum === idealCompareStrokeNum) {
-                    bi = k;
-                    break;
-                }
-            }
-        }
-        if (bi >= 0) {
-            idealLIA = gfIdealMagsForStrokeCompare(actualLIA, idealMagsFull, bi, strokeBoundaries.length);
-        }
-    }
+    const selfBase = typeof gfSessionIsIdealBaselineForUi === 'function' && gfSessionIsIdealBaselineForUi();
+    const idealLIA = selfBase ? actualLIA.slice() : idealMagsFull;
 
     let L = actualLIA.length;
     if (L < 2) {
@@ -425,9 +422,14 @@ function buildIdealComparison() {
 
     if (cap) {
         cap.style.display = 'block';
-        cap.innerHTML =
-            '<strong>' + captionTitle + '</strong> — white = |LIA| (resampled). Gold = ideal baseline (resampled to the same length). Similarity ' +
-            similarity.toFixed(0) + '% (MAE vs mean ideal magnitude).';
+        if (selfBase) {
+            cap.innerHTML =
+                '<strong>Baseline session</strong>. This file is your saved template, so the curves align (100%). Open another swim to see where |LIA| diverges from baseline.';
+        } else {
+            cap.innerHTML =
+                '<strong>' + captionTitle + '</strong>. White = this session |LIA| (resampled). Gold = ideal baseline (resampled to the same length). Similarity ' +
+                similarity.toFixed(0) + '% (MAE vs mean ideal magnitude).';
+        }
     }
 
     const ctx = document.getElementById('ideal-compare-chart');
@@ -440,7 +442,7 @@ function buildIdealComparison() {
     const labels = [];
     const aData = [];
     const iData = [];
-    const progressLabel = mode === 'session' ? 'Through session' : 'Through stroke';
+    const progressLabel = 'Through session';
     for (let i = 0; i < L; i += step) {
         labels.push(Math.round((L > 1 ? i / (L - 1) : 0) * 100));
         aData.push(actualRs[i]);

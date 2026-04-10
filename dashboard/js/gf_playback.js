@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Playback: scrubber, play/pause, frame step, time formatters.
+ * GoldenForm  --  Playback: scrubber, play/pause, frame step, time formatters.
  */
 // ── PLAYBACK ──
 function getPlaybackBounds() {
@@ -73,6 +73,26 @@ function skipBackward() {
     renderFrame(currentIndex);
 }
 
+/** Keep scrubber fill/playhead in sync during drag (mirrors gf_viz_render math). */
+function updatePlaybackScrubberVisual(idx) {
+    if (!processedData.length) return;
+    const b = getPlaybackBounds();
+    const pct = b.end > b.start
+        ? (idx - b.start) / (b.end - b.start) * 100
+        : (processedData.length > 1 ? idx / (processedData.length - 1) * 100 : 0);
+    const fillEl = document.getElementById('progress-fill');
+    if (fillEl) fillEl.style.width = pct + '%';
+    const playheadEl = document.getElementById('progress-playhead');
+    if (playheadEl) {
+        playheadEl.style.left = pct + '%';
+        playheadEl.style.display = processedData.length > 1 ? 'block' : 'none';
+    }
+    const scrubEl = document.getElementById('progress-scrubber');
+    if (scrubEl && processedData.length > 1) {
+        scrubEl.setAttribute('aria-valuenow', String(Math.round(pct)));
+    }
+}
+
 /** Seek scrubber from screen X (click or drag). */
 function seekPlaybackFromPointer(clientX, trackEl) {
     const b = getPlaybackBounds();
@@ -83,6 +103,7 @@ function seekPlaybackFromPointer(clientX, trackEl) {
     currentIndex = Math.round(b.start + pct * (b.end - b.start));
     currentIndex = Math.max(b.start, Math.min(b.end, currentIndex));
     renderFrame(currentIndex);
+    updatePlaybackScrubberVisual(currentIndex);
 }
 
 function seekPlayback(e) {

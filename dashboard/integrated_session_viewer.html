@@ -280,7 +280,7 @@
                 <div class="card-title">Form cues</div>
                 <div class="card-value" id="haptic-count">0</div>
                 <div class="card-sub" id="haptic-card-hint" style="font-size:0.78em;opacity:0.9;margin-bottom:6px;">Band buzzes during swim</div>
-                <div class="card-sub">Avg deviation (vs ideal when set): <span id="avg-deviation">0.000</span></div>
+                <div class="card-sub">Avg deviation (vs saved baseline when set): <span id="avg-deviation">0.000</span></div>
             </div>
         </div>
         <div class="card">
@@ -303,13 +303,9 @@
                 <span class="card-title">Ideal vs Actual Comparison</span>
                 <span class="badge badge-gold" id="ideal-similarity">--%</span>
             </div>
-            <p id="ideal-compare-lead" class="card-sub" style="margin:0 0 10px;line-height:1.45;font-size:0.84em;color:var(--text2);">Each line is <strong>|LIA|</strong>. Use the compare mode, then click a table row for a single stroke, or view the full session normalized to your baseline length.</p>
+            <p id="ideal-compare-lead" class="card-sub" style="margin:0 0 10px;line-height:1.45;font-size:0.84em;color:var(--text2);">Each line is <strong>|LIA|</strong> for the whole session, resampled to match your baseline length.</p>
             <div id="ideal-compare-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px;font-size:0.82em;color:var(--text2);">
-                <label for="ideal-compare-mode">Compare</label>
-                <select id="ideal-compare-mode" class="input-like-select" style="max-width:220px;padding:6px 10px;border-radius:6px;background:var(--bg3);color:var(--text1);border:1px solid var(--border);" onchange="onIdealCompareModeChange(this.value)">
-                    <option value="stroke">Selected stroke</option>
-                    <option value="session">Full session (normalized)</option>
-                </select>
+                <span class="badge badge-outline" style="font-size:0.78em;">Full session vs baseline</span>
                 <button type="button" class="btn btn-gold btn-sm" style="padding:4px 10px;font-size:0.9em;" onclick="setCurrentAsIdeal()">Set session as ideal</button>
             </div>
             <div id="ideal-comparison-content">
@@ -321,7 +317,7 @@
         </div>
         <div class="card">
             <div class="card-title">Per-Stroke Breakdown</div>
-            <p class="card-sub" style="margin:0 0 8px;font-size:0.82em;color:var(--text3);">Click a row to update the chart above and jump playback to that stroke.</p>
+            <p class="card-sub" style="margin:0 0 8px;font-size:0.82em;color:var(--text3);">Click a row to jump playback to that stroke. The chart above always compares the full session to your baseline.</p>
             <div class="table-scroll">
                 <table class="data-table">
                     <thead>
@@ -329,9 +325,8 @@
                             <th>#</th>
                             <th>Time (rel. s)</th>
                             <th>Entry Angle</th>
-                            <th title="⚡ = band haptic fired on that stroke during the swim">Cue</th>
-                            <th title="Firmware deviation score from ideal baseline on the device">Deviation</th>
-                            <th>Action</th>
+                            <th title="⚡ only when the band fired a haptic during the swim (not app-only vs-ideal hints)">Cue</th>
+                            <th title="Firmware deviation when the band had a baseline at record time; otherwise client |LIA| vs saved baseline (hidden when this file is the baseline)">Deviation</th>
                         </tr>
                     </thead>
                     <tbody id="stroke-table-body"></tbody>
@@ -349,7 +344,6 @@
         <div class="card coaching-ai-card" style="margin-bottom:16px;">
             <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
                 <span class="card-title">AI Coaching (Gemini)</span>
-                <button type="button" class="btn btn-outline btn-sm" id="ai-coaching-btn" onclick="refreshAiCoachingInsights()" style="font-size:0.75em;padding:3px 8px;">Regenerate</button>
             </div>
             <p style="font-size:0.8em;color:var(--text3);margin:0 0 10px;line-height:1.45;">Personalized analysis from Gemini, generated automatically when a session is loaded.</p>
             <div id="ai-coaching-body" class="coaching-ai-body" style="min-height:48px;color:var(--text2);font-size:0.92em;line-height:1.55;"></div>

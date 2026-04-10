@@ -1,5 +1,5 @@
 /**
- * GoldenForm — shared mutable state (cross-module variables).
+ * GoldenForm  --  shared mutable state (cross-module variables).
  * Load after gf_constants.js, before gf_app_nav_profile.js and other gf_*.js features.
  * Split layout: gf_wifi_* / gf_onboarding_journey, gf_session_transfer, gf_haptic_timeline,
  * gf_playback, gf_viz_* (charts/3D/side view), gf_ideal_device (ideal + device push + test buzz).
@@ -20,7 +20,7 @@ let cachedDeviceListLength = 0;
 /** Full rows from last /api/devices (device list and setup hints). */
 let lastDevicesList = [];
 let isDeviceOnline = false;
-/** Debounced for UI/playbook — avoids Connected/Offline flicker when /device_info flaps. */
+/** Debounced for UI/playbook  --  avoids Connected/Offline flicker when /device_info flaps. */
 let navDisplayOnline = false;
 let pendingConfigSync = false;
 let pendingIdealSync = false;
@@ -37,7 +37,7 @@ let strokeBoundaries = []; // {index, strokeNum, streamKey, label?} per band + s
 let hapticEvents = [];     // {index, deviation}
 let accelChart, gyroChart, magChart;
 let scene, camera, renderer, controls;
-/** Single rAF loop for Three.js — cancel on WebGL context loss to avoid stacked loops / flicker. */
+/** Single rAF loop for Three.js  --  cancel on WebGL context loss to avoid stacked loops / flicker. */
 let vizRafId = null;
 let imuCube = null;
 /** Six face materials (+X,-X,+Y,-Y,+Z,-Z) for haptic flash tinting. */
@@ -59,8 +59,8 @@ let gfVsIdealMetrics = null;
 /** Analysis chart: which stroke is compared to the saved ideal (null = auto first stroke). */
 let idealCompareStrokeNum = null;
 let idealCompareStreamKey = null;
-/** Analysis ideal chart: 'stroke' = one stroke vs baseline; 'session' = whole session |LIA| resampled vs baseline. */
-let idealCompareMode = 'stroke';
+/** Analysis ideal chart: always full-session |LIA| resampled vs baseline (stroke picker removed). */
+let idealCompareMode = 'session';
 
 const TRAIL_MAX_POINTS = 2000;
 const TRAIL_SMOOTH_WINDOW = 7;
@@ -69,13 +69,13 @@ const PLAYBACK_BASE_MS = 18;
 /** 0 = full session; else play only this stroke #. */
 let playbackStrokeFilter = 0;
 let loopStrokePlayback = false;
-/** 0.25–4; multiplies playback speed. */
+/** 0.25-4; multiplies playback speed. */
 let playbackSpeedMultiplier = 0.35;
 /** When playing all strokes, loop entire session. */
 let loopFullSession = false;
 /** Smoothed LIA positions (matches StrokeProcessor world integration, lightly smoothed per stroke). */
 let positionStreamPositions = [];
-/** High-contrast phase colors (trail + cube tint) — distinct underwater vs recovery */
+/** High-contrast phase colors (trail + cube tint)  --  distinct underwater vs recovery */
 const PHASE_COLOR_HEX = {
     glide: 0x38bdf8, catch: 0x22c55e, pull: 0xef4444,
     recovery: 0xa855f7, idle: 0x64748b

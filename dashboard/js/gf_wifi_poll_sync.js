@@ -2,6 +2,8 @@
  * GoldenForm — Connection polling; manual Session → Sync only (no auto /process on connect).
  */
 
+let gfPollDeviceInFlight = false;
+
 /** Normalize cal object from /api/device_info (handles alternate keys and string payloads). */
 function normalizeDeviceInfoCal(res) {
     if (!res || typeof res !== 'object') return null;
@@ -22,7 +24,7 @@ function normalizeDeviceInfoCal(res) {
 async function fetchDeviceInfoDirectFromBand() {
     try {
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 2800);
+        const to = setTimeout(() => ctrl.abort(), 1000);
         const r = await fetch('http://192.168.4.1/api/device_info', {
             method: 'GET',
             cache: 'no-store',
@@ -326,15 +328,22 @@ async function replayApJsonToSession() {
  * Prefer JSON from the ESP32 when the browser can reach 192.168.4.1. The Python host may not be
  * on the GoldenForm AP (different machine, VPN, firewall), so /api/device_info would stay disconnected
  * even though the laptop sees the wearable.
+ *
+ * When the dashboard proxy already returns a connected device with calibration, skip the direct
+ * 192.168.4.1 fetch so polling stays fast (avoids ~1s dead wait every 2s while offline from the band).
  */
 async function fetchDeviceInfoMerged() {
-    let res = await apiGet('/api/device_info');
+    const res = await apiGet('/api/device_info');
     let cal = normalizeDeviceInfoCal(res);
+    const proxyOk = !!(res && !res.error && res.status !== 'disconnected' && !res._httpError);
+    const hasDevice = res && res.device_id !== undefined;
+    if (proxyOk && hasDevice && cal) {
+        return { res: { ...res, cal }, cal };
+    }
     const direct = await fetchDeviceInfoDirectFromBand();
     const dcal = direct ? normalizeDeviceInfoCal(direct) : null;
     if (dcal && direct && typeof direct === 'object') {
-        res = { ...direct, cal: dcal };
-        cal = dcal;
+        return { res: { ...direct, cal: dcal }, cal: dcal };
     }
     return { res, cal };
 }
@@ -356,6 +365,13 @@ function startDevicePolling() {
 }
 
 async function pollDevice() {
+    if (gfPollDeviceInFlight) return;
+    try {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+            return;
+        }
+    } catch (e) { /* ignore */ }
+    gfPollDeviceInFlight = true;
     try {
         const merged = await fetchDeviceInfoMerged();
         let res = merged.res;
@@ -434,6 +450,8 @@ async function pollDevice() {
         if (typeof clearCalibrationLiveDisplay === 'function') {
             clearCalibrationLiveDisplay();
         }
+    } finally {
+        gfPollDeviceInFlight = false;
     }
 }
 

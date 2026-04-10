@@ -1,5 +1,5 @@
 /**
- * GoldenForm — wearable roles (two wrists only for stretch multi-device).
+ * GoldenForm  --  wearable roles (two wrists only for stretch multi-device).
  * PDP stretch 3-1-1: register and configure wearables; we support left + right hand.
  */
 const LS_EXPECTED_WEARABLES = 'goldenform_expected_wearables';

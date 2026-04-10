@@ -1431,11 +1431,13 @@ body > * {
 }
 
 .haptic-tick {
-  height: 12px;
-  width: 8px;
-  background: var(--red);
+  height: 14px;
+  width: 10px;
+  background: linear-gradient(145deg, #f59e0b, #e8c878);
   clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
-  opacity: 0.9;
+  opacity: 1;
+  box-shadow: 0 0 10px rgba(232, 200, 120, 0.85);
+  z-index: 2;
 }
 
 .timeline-legend {

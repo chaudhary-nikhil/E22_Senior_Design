@@ -700,7 +700,10 @@ void app_main(void) {
           size_t read_bytes = fread(ideal_data, 1, file_size, ideal_file);
           size_t num_samples = read_bytes / (3 * sizeof(float));
           if (num_samples > 0) {
-            stroke_detector_load_ideal(ideal_data, num_samples, 30.0f);
+            float ent = 30.0f;
+            if (goldenform_ideal_boot_entry_angle(&ent))
+              ESP_LOGI(TAG, "Ideal entry angle from NVS: %.1f°", ent);
+            stroke_detector_load_ideal(ideal_data, num_samples, ent);
             ESP_LOGI(TAG, "Loaded ideal stroke: %zu samples from SD",
                      num_samples);
           }

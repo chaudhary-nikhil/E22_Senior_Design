@@ -1,7 +1,7 @@
 /**
- * GoldenForm — LIA / processor position integration and stroke-segmented trail prep.
+ * GoldenForm  --  LIA / processor position integration and stroke-segmented trail prep.
  *
- * All integration uses 0401fbde StrokeProcessor math — the most accurate stroke visualization:
+ * All integration uses 0401fbde StrokeProcessor math  --  the most accurate stroke visualization:
  *   Kalman-smoothed LIA (Q=0.3, R=0.1) → quaternion to world frame → per-axis deadzone (0.2 m/s²)
  *   → integrate velocity/position → fixed decay (0.98 active / 0.80 stationary).
  *   Motion gate: abs(gy) + accel_mag thresholds; position/velocity reset on segment start.
@@ -39,13 +39,13 @@ function gfKalman1D(Q, R, P0, x0) {
 
 /**
  * 0401fbde StrokeProcessor integration constants.
- * Fixed deadzone + decay — the original math that produced the most accurate stroke visualization.
+ * Fixed deadzone + decay  --  the original math that produced the most accurate stroke visualization.
  */
 const GF_0401_DEADZONE = 0.2;   // m/s² per-axis
 const GF_0401_DECAY_ACTIVE = 0.98;
 const GF_0401_DECAY_STATIONARY = 0.80;
-const GF_0401_START_GY = 0.6;   // rad/s — abs(gy) to start integration
-const GF_0401_START_A = 0.25;   // m/s² — accel_mag to start integration
+const GF_0401_START_GY = 0.6;   // rad/s  --  abs(gy) to start integration
+const GF_0401_START_A = 0.25;   // m/s²  --  accel_mag to start integration
 const GF_0401_END_GY = 0.2;
 const GF_0401_END_A = 0.25;
 const GF_0401_MIN_ON_MS = 500;

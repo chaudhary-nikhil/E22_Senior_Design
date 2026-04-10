@@ -20,6 +20,7 @@ function switchTab(tab, opts = {}) {
         } else if (tab === 'insights') {
             loadProgress();
             updateCoachingInsights();
+            try { if (typeof gfEnsureInsightsTabAiCoaching === 'function') gfEnsureInsightsTabAiCoaching(); } catch (e) { /* ignore */ }
         } else if (tab === 'settings') {
             loadDevices();
             refreshWearableConnectionBanner();
@@ -62,6 +63,7 @@ function switchTab(tab, opts = {}) {
     if (tab === 'insights') {
         try { loadProgress(); } catch (e) { /* ignore */ }
         try { updateCoachingInsights(); } catch (e) { /* ignore */ }
+        try { if (typeof gfEnsureInsightsTabAiCoaching === 'function') gfEnsureInsightsTabAiCoaching(); } catch (e) { /* ignore */ }
     }
     if (tab === 'home') { try { renderSetupJourney(); } catch (e) { /* ignore */ } }
     if (tab === 'settings') {

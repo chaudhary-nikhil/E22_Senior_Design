@@ -1,5 +1,5 @@
 /**
- * GoldenForm — display times in US Eastern (handles DST; shown as "ET").
+ * GoldenForm  --  display times in US Eastern (handles DST; shown as "ET").
  */
 function formatEasternDateTime(msOrIso) {
     let d;

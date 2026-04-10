@@ -115,6 +115,14 @@ void wifi_server_set_registration_done_callback(void (*cb)(void));
  */
 esp_err_t wifi_server_deinit(void);
 
+/**
+ * @brief Ideal entry angle last pushed with /api/ideal_stroke (persisted in NVS).
+ *        Use after loading LIA samples from SD so reboot matches dashboard haptics.
+ * @param out_entry_angle valid angle in degrees when return value is true
+ * @return true if NVS holds metadata from a prior ideal upload
+ */
+bool goldenform_ideal_boot_entry_angle(float *out_entry_angle);
+
 #ifdef __cplusplus
 }
 #endif

@@ -50,7 +50,7 @@ const STREAM_VIZ_PALETTE_RGB = [
     [0.95, 0.62, 0.12]
 ];
 
-/** RGB 0–1 for this stream (stable for a given getStreamKey). */
+/** RGB 0-1 for this stream (stable for a given getStreamKey). */
 function streamColorRgbForKey(sk) {
     let h = 0;
     const s = String(sk || '0');

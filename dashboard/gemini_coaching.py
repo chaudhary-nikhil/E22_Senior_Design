@@ -125,6 +125,15 @@ def _model_name() -> str:
     return os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
 
 
+def _gemini_generation_config() -> Dict[str, Any]:
+    try:
+        max_tok = int(os.environ.get("GEMINI_MAX_OUTPUT_TOKENS", "1400"))
+    except ValueError:
+        max_tok = 1400
+    max_tok = max(256, min(max_tok, 8192))
+    return {"temperature": 0.35, "maxOutputTokens": max_tok}
+
+
 def _refresh_gemini_key_from_dotenv() -> None:
     """If GEMINI_API_KEY is still empty, load dashboard/.env (same folder as this module)."""
     if (os.environ.get("GEMINI_API_KEY") or "").strip():
@@ -155,10 +164,7 @@ def _call_gemini(api_key: str, prompt: str) -> str:
     )
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.35,
-            "maxOutputTokens": 1400,
-        },
+        "generationConfig": _gemini_generation_config(),
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -208,10 +214,7 @@ def _call_gemini_with_fallback(api_key: str, prompt: str) -> str:
             )
             payload = {
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.35,
-                    "maxOutputTokens": 1400,
-                },
+                "generationConfig": _gemini_generation_config(),
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
@@ -249,6 +252,12 @@ def _build_prompt(
     metrics: Dict[str, Any],
     strokes: List[Dict[str, Any]],
     ideal_loaded: bool,
+    *,
+    ideal_baseline_kind: str = "unknown",
+    same_session_as_ideal: bool = False,
+    is_self_baseline_template: bool = False,
+    ideal_compare_mode: Optional[str] = None,
+    ideal_compare_stroke_num: Optional[int] = None,
 ) -> str:
     """Structured prompt — swimming biomechanics + session numbers only."""
     sc = int(metrics.get("stroke_count") or 0)
@@ -256,30 +265,67 @@ def _build_prompt(
     rate = _num(metrics.get("stroke_rate"))
     avg_ang = _num(metrics.get("avg_entry_angle"))
     avg_dev = _num(metrics.get("avg_deviation"))
+    avg_vs_ideal = metrics.get("avg_deviation_vs_ideal")
+    avg_vs_ideal_f = _num(avg_vs_ideal) if avg_vs_ideal is not None else None
     haptic_n = int(metrics.get("haptic_count") or 0)
     dur = _num(metrics.get("duration"))
 
     lines = [
         "You are an expert swim coach. The athlete uses a wrist IMU (GoldenForm).",
         "Give concise, actionable feedback (no medical diagnosis).",
+        "Tone: supportive and direct; assume a competitive age-group or masters swimmer who wants specifics.",
+        "Aim for under ~200 words unless many strokes had haptic feedback (then you may go slightly longer).",
+        "Avoid generic motivational filler and vague phrases like 'listen to your body'.",
         "Use short sections with headings: Summary, What went well, Focus next, Strokes to review.",
         "If deviation vs ideal is high, relate it to catch/pull line and rhythm — not vague motivation.",
         "",
         f"Session: {sc} strokes, {dur:.1f}s, stroke rate ~{rate:.1f}/min, consistency ~{cons:.0f}%.",
-        f"Average entry angle ~{avg_ang:.1f}°. Average deviation vs ideal (when applicable): {avg_dev:.3f}.",
+        f"Average entry angle ~{avg_ang:.1f}°. Firmware/session avg deviation field: {avg_dev:.3f}.",
+    ]
+    if avg_vs_ideal_f is not None:
+        lines.append(f"App-computed average deviation vs loaded ideal shape: {avg_vs_ideal_f:.3f}.")
+    lines += [
         f"Device haptic buzz count (during recording): {haptic_n}.",
         f"Ideal baseline loaded for comparison in app: {'yes' if ideal_loaded else 'no'}.",
+        f"Ideal baseline kind (from app): {ideal_baseline_kind}.",
+    ]
+    if ideal_compare_mode:
+        lines.append(f"Ideal compare mode in app: {ideal_compare_mode}.")
+    if ideal_compare_stroke_num is not None:
+        lines.append(f"User-selected stroke for ideal comparison (if any): {ideal_compare_stroke_num}.")
+    if is_self_baseline_template:
+        lines.append(
+            "IMPORTANT: This recording is the saved full-session BASELINE template. The app hides vs-ideal "
+            "deviation for this file so the athlete is not scored against themselves. Do not invent deviation "
+            "problems for this session; emphasize rhythm/consistency within the file, haptics, and goals for "
+            "the next swim compared to this template."
+        )
+    if same_session_as_ideal:
+        lines.append(
+            "IMPORTANT: The athlete set THIS SAME RECORDING (or session) as the ideal baseline. "
+            "Near-zero deviation vs ideal is expected and is NOT proof of perfect technique—do not praise "
+            "only 'you matched your baseline'. Explain what this swim defines as the reference pattern, "
+            "call out variability between strokes within the file, and give forward-looking cues for the next swim "
+            "(fatigue, pacing, entry, rhythm) using the per-stroke table and haptics."
+        )
+    elif ideal_loaded and ideal_baseline_kind == "full_session" and avg_vs_ideal_f is not None and avg_vs_ideal_f < 0.08:
+        lines.append(
+            "Deviation vs ideal is very low; the baseline may be a full-session template. "
+            "Focus on stroke-to-stroke consistency, rhythm, and any haptic cues—not generic 'zero error' praise."
+        )
+    lines += [
         "",
         "Per-stroke (vs ideal when present):",
     ]
     for s in strokes[:40]:
         n = int(s.get("stroke_num") or s.get("number") or 0)
         dev = _num(s.get("deviation_vs_ideal"))
+        fw = _num(s.get("firmware_deviation"))
         ang = _num(s.get("entry_angle"))
         dh = bool(s.get("device_haptic"))
         alert = bool(s.get("vs_ideal_alert"))
         lines.append(
-            f"  Stroke {n}: entry {ang:.1f}°, dev_vs_ideal {dev:.3f}, "
+            f"  Stroke {n}: entry {ang:.1f}°, dev_vs_ideal {dev:.3f}, firmware_dev {fw:.3f}, "
             f"device_haptic={dh}, over_threshold_vs_ideal={alert}"
         )
     lines.append("")
@@ -315,6 +361,17 @@ def generate_coaching_insights(
     if not isinstance(strokes_raw, list):
         strokes_raw = []
     ideal_loaded = bool(client_payload.get("ideal_loaded"))
+    ideal_baseline_kind = str(client_payload.get("ideal_baseline_kind") or "unknown")
+    same_session_as_ideal = bool(client_payload.get("same_session_as_ideal"))
+    ideal_compare_mode = client_payload.get("ideal_compare_mode")
+    ideal_compare_stroke_num = client_payload.get("ideal_compare_stroke_num")
+    is_self_baseline_template = bool(client_payload.get("is_self_baseline_template"))
+    try:
+        ideal_compare_stroke_n = int(ideal_compare_stroke_num) if ideal_compare_stroke_num is not None else None
+    except (TypeError, ValueError):
+        ideal_compare_stroke_n = None
+    if isinstance(ideal_compare_mode, str) and not ideal_compare_mode.strip():
+        ideal_compare_mode = None
 
     strokes: List[Dict[str, Any]] = []
     for s in strokes_raw[:48]:
@@ -325,12 +382,22 @@ def generate_coaching_insights(
                 "stroke_num": s.get("stroke_num", s.get("number")),
                 "entry_angle": _num(s.get("entry_angle")),
                 "deviation_vs_ideal": _num(s.get("deviation_vs_ideal")),
+                "firmware_deviation": _num(s.get("firmware_deviation")),
                 "device_haptic": bool(s.get("device_haptic")),
                 "vs_ideal_alert": bool(s.get("vs_ideal_alert")),
             }
         )
 
-    prompt = _build_prompt(metrics, strokes, ideal_loaded)
+    prompt = _build_prompt(
+        metrics,
+        strokes,
+        ideal_loaded,
+        ideal_baseline_kind=ideal_baseline_kind,
+        same_session_as_ideal=same_session_as_ideal,
+        is_self_baseline_template=is_self_baseline_template,
+        ideal_compare_mode=ideal_compare_mode if isinstance(ideal_compare_mode, str) else None,
+        ideal_compare_stroke_num=ideal_compare_stroke_n,
+    )
     err_out: Optional[str] = None
     text_out: Optional[str] = None
     try:

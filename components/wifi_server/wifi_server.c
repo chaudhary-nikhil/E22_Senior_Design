@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "bno055.h"
 #include "cJSON.h"
@@ -142,6 +143,81 @@ static int cmp_file_names(const void *a, const void *b) {
   const char *const *sa = (const char *const *)a;
   const char *const *sb = (const char *const *)b;
   return strcmp(*sa, *sb);
+}
+
+static void free_pb_name_list(char **names, size_t n) {
+  if (!names)
+    return;
+  for (size_t i = 0; i < n; i++)
+    free(names[i]);
+  free(names);
+}
+
+/**
+ * Collect session protobuf filenames from SD (sorted). On ESP_OK, caller must
+ * free_pb_name_list(*out_names, *out_count).
+ */
+static esp_err_t build_pb_file_list(const char *mount_point, char ***out_names,
+                                    size_t *out_count) {
+  *out_names = NULL;
+  *out_count = 0;
+  DIR *dir = opendir(mount_point);
+  if (!dir) {
+    ESP_LOGE(TAG, "opendir(%s) failed", mount_point);
+    return ESP_FAIL;
+  }
+  size_t cap = 16;
+  char **names = malloc(cap * sizeof(char *));
+  if (!names) {
+    closedir(dir);
+    return ESP_ERR_NO_MEM;
+  }
+  size_t n = 0;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+#if defined(DT_REG)
+    if (entry->d_type != DT_REG)
+      continue;
+#endif
+    const char *fn = entry->d_name;
+    bool is_protobuf =
+        (strstr(fn, ".pb") != NULL) || (strstr(fn, ".PB") != NULL) ||
+        (strstr(fn, ".BIN") != NULL) || (strstr(fn, ".bin") != NULL);
+    if (!is_protobuf)
+      continue;
+    size_t L = strnlen(fn, 255);
+    if (L == 0 || L >= 64)
+      continue;
+    if (n == cap) {
+      size_t new_cap = cap * 2;
+      char **tmp = realloc(names, new_cap * sizeof(char *));
+      if (!tmp) {
+        free_pb_name_list(names, n);
+        closedir(dir);
+        return ESP_ERR_NO_MEM;
+      }
+      names = tmp;
+      cap = new_cap;
+    }
+    names[n] = malloc(L + 1);
+    if (!names[n]) {
+      free_pb_name_list(names, n);
+      closedir(dir);
+      return ESP_ERR_NO_MEM;
+    }
+    memcpy(names[n], fn, L);
+    names[n][L] = '\0';
+    n++;
+  }
+  closedir(dir);
+  if (n == 0) {
+    free(names);
+    return ESP_ERR_NOT_FOUND;
+  }
+  qsort(names, n, sizeof(char *), cmp_file_names);
+  *out_names = names;
+  *out_count = n;
+  return ESP_OK;
 }
 
 // Cleanup streaming state
@@ -866,10 +942,36 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
     return ESP_FAIL;
   }
 
-  if (!is_syncing || stream_state.file_count == 0) {
-    ESP_LOGW(TAG, "JSON data request rejected: No data available");
-    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "No data available");
+  /* Chunk buffer is required to read protobuf from SD; safe if user never started
+   * full sync before (e.g. AP open after registration only). */
+  if (init_streaming_state() != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Stream buffer unavailable");
     return ESP_FAIL;
+  }
+
+  char **fl_names = NULL;
+  size_t fl_count = 0;
+  bool fl_owned = false;
+  if (is_syncing && stream_state.file_count > 0 && stream_state.file_names) {
+    fl_names = stream_state.file_names;
+    fl_count = stream_state.file_count;
+  } else {
+    esp_err_t z = build_pb_file_list("/sdcard", &fl_names, &fl_count);
+    if (z != ESP_OK || fl_count == 0) {
+      ESP_LOGW(TAG,
+               "JSON: no session files (syncing=%d, build_err=%s)",
+               is_syncing ? 1 : 0,
+               z == ESP_ERR_NOT_FOUND ? "none" : esp_err_to_name(z));
+      httpd_resp_send_err(
+          req, HTTPD_404_NOT_FOUND,
+          "No session files on SD. Record a swim first, or this swim was "
+          "already synced (files cleared).");
+      return ESP_FAIL;
+    }
+    fl_owned = true;
+    ESP_LOGI(TAG, "data.json: on-demand export (%zu files, syncing=%d)",
+             fl_count, is_syncing ? 1 : 0);
   }
 
   httpd_resp_set_type(req, "application/json");
@@ -884,8 +986,8 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
   sg_t sg[32];
   size_t nsg = 0;
   uint32_t prev_id = UINT32_MAX;
-  for (size_t i = 0; i < stream_state.file_count && nsg < 32; i++) {
-    uint32_t sid = parse_session_id(stream_state.file_names[i]);
+  for (size_t i = 0; i < fl_count && nsg < 32; i++) {
+    uint32_t sid = parse_session_id(fl_names[i]);
     if (sid != prev_id) {
       sg[nsg].id = sid;
       sg[nsg].start = i;
@@ -914,7 +1016,7 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
     size_t sess_sent = 0;
 
     for (size_t fi = sg[si].start; fi < sg[si].start + sg[si].count; fi++) {
-      snprintf(fp, sizeof(fp), "%s/%s", mp, stream_state.file_names[fi]);
+      snprintf(fp, sizeof(fp), "%s/%s", mp, fl_names[fi]);
       FILE *f = fopen(fp, "rb");
       if (!f)
         continue;
@@ -957,6 +1059,8 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
           if (err != ESP_OK) {
             ESP_LOGE(TAG, "JSON chunk send failed: %s", esp_err_to_name(err));
             fclose(f);
+            if (fl_owned)
+              free_pb_name_list(fl_names, fl_count);
             return err;
           }
           sess_sent++;
@@ -978,12 +1082,17 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
   httpd_resp_send_chunk(req, footer, strlen(footer));
   httpd_resp_send_chunk(req, NULL, 0);
 
-  // Mark transfer complete so firmware can auto-return to idle
-  if (xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+  /* Only latch transfer state when a full sync session is active (main loop
+   * uses this to return to IDLE and optionally clear SD). */
+  if (is_syncing && stream_state.mutex &&
+      xSemaphoreTake(stream_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     stream_state.transfer_complete = true;
     stream_state.total_samples_sent = total_sent;
     xSemaphoreGive(stream_state.mutex);
   }
+
+  if (fl_owned)
+    free_pb_name_list(fl_names, fl_count);
 
   ESP_LOGI(
       TAG,
@@ -996,6 +1105,81 @@ static esp_err_t catch_all_handler(httpd_req_t *req) {
   ESP_LOGD(TAG, "Unknown URI requested: %s", req->uri);
   httpd_resp_send_404(req);
   return ESP_OK;
+}
+
+// ── Ideal stroke NVS metadata (entry angle + dashboard baseline labels; LIA stays on SD) ──
+#define GF_IDEAL_NVS_KEY "ideal_meta"
+#define GF_IDEAL_META_MAGIC 0xAFu
+
+typedef struct __attribute__((packed)) {
+  uint8_t magic;
+  uint8_t baseline_kind; /* 0 unknown, 1 single_stroke, 2 full_session, 3 custom */
+  int16_t baseline_stroke_num; /* -1 = N/A */
+  float ideal_entry_angle;
+} gf_ideal_nvs_meta_t;
+
+static bool gf_ideal_meta_load(gf_ideal_nvs_meta_t *out) {
+  if (!out)
+    return false;
+  memset(out, 0, sizeof(*out));
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READONLY, &nvs) != ESP_OK)
+    return false;
+  size_t sz = sizeof(*out);
+  esp_err_t e = nvs_get_blob(nvs, GF_IDEAL_NVS_KEY, out, &sz);
+  nvs_close(nvs);
+  return (e == ESP_OK && sz == sizeof(*out) && out->magic == GF_IDEAL_META_MAGIC);
+}
+
+static esp_err_t gf_ideal_meta_save(float ideal_entry_angle, int baseline_stroke_num,
+                                    const char *baseline_kind_str) {
+  uint8_t kind = 0;
+  if (baseline_kind_str && baseline_kind_str[0]) {
+    if (!strcasecmp(baseline_kind_str, "single_stroke"))
+      kind = 1;
+    else if (!strcasecmp(baseline_kind_str, "full_session"))
+      kind = 2;
+    else if (!strcasecmp(baseline_kind_str, "custom"))
+      kind = 3;
+  }
+  int16_t sn = -1;
+  if (baseline_stroke_num >= 0 && baseline_stroke_num <= 255)
+    sn = (int16_t)baseline_stroke_num;
+  gf_ideal_nvs_meta_t m = {.magic = GF_IDEAL_META_MAGIC,
+                           .baseline_kind = kind,
+                           .baseline_stroke_num = sn,
+                           .ideal_entry_angle = ideal_entry_angle};
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READWRITE, &nvs) != ESP_OK)
+    return ESP_FAIL;
+  esp_err_t err = nvs_set_blob(nvs, GF_IDEAL_NVS_KEY, &m, sizeof(m));
+  if (err == ESP_OK)
+    err = nvs_commit(nvs);
+  nvs_close(nvs);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG, "Ideal NVS meta: kind=%u stroke=%d entry=%.2f°", (unsigned)kind, (int)sn,
+             ideal_entry_angle);
+  }
+  return err;
+}
+
+static void gf_ideal_meta_clear(void) {
+  nvs_handle_t nvs;
+  if (nvs_open("goldenform", NVS_READWRITE, &nvs) != ESP_OK)
+    return;
+  nvs_erase_key(nvs, GF_IDEAL_NVS_KEY);
+  (void)nvs_commit(nvs);
+  nvs_close(nvs);
+}
+
+bool goldenform_ideal_boot_entry_angle(float *out_entry_angle) {
+  if (!out_entry_angle)
+    return false;
+  gf_ideal_nvs_meta_t m;
+  if (!gf_ideal_meta_load(&m))
+    return false;
+  *out_entry_angle = m.ideal_entry_angle;
+  return true;
 }
 
 // POST /api/ideal_stroke - receive ideal stroke data from dashboard
@@ -1042,6 +1226,18 @@ static esp_err_t ideal_stroke_post_handler(httpd_req_t *req) {
   }
   float ideal_entry_angle = (entry_angle_item && cJSON_IsNumber(entry_angle_item)) ? (float)entry_angle_item->valuedouble : 0.0f;
 
+  int post_baseline_stroke = -1;
+  cJSON *bn_item = cJSON_GetObjectItem(root, "baseline_stroke_num");
+  if (bn_item && cJSON_IsNumber(bn_item)) {
+    post_baseline_stroke = (int)bn_item->valuedouble;
+    if (post_baseline_stroke < 0 || post_baseline_stroke > 255)
+      post_baseline_stroke = -1;
+  }
+  const char *bk_str = NULL;
+  cJSON *bk_item = cJSON_GetObjectItem(root, "baseline_kind");
+  if (bk_item && cJSON_IsString(bk_item))
+    bk_str = bk_item->valuestring;
+
   int count = cJSON_GetArraySize(samples_arr);
   if (count <= 0 || count > 200) {
     cJSON_Delete(root);
@@ -1080,6 +1276,8 @@ static esp_err_t ideal_stroke_post_handler(httpd_req_t *req) {
   // Load into stroke detector immediately
   stroke_detector_load_ideal(ideal_data, count, ideal_entry_angle);
   free(ideal_data);
+
+  (void)gf_ideal_meta_save(ideal_entry_angle, post_baseline_stroke, bk_str);
 
   // Respond with success
   char resp[128];
@@ -1132,6 +1330,14 @@ static esp_err_t ideal_stroke_get_handler(httpd_req_t *req) {
   }
   cJSON_AddItemToObject(root, "samples", samples_arr);
   cJSON_AddNumberToObject(root, "ideal_entry_angle", stroke_detector_get_ideal_entry_angle());
+  gf_ideal_nvs_meta_t meta;
+  if (gf_ideal_meta_load(&meta)) {
+    static const char *kind_labels[] = {"unknown", "single_stroke", "full_session", "custom"};
+    unsigned ki = meta.baseline_kind <= 3 ? meta.baseline_kind : 0;
+    cJSON_AddStringToObject(root, "baseline_kind", kind_labels[ki]);
+    if (meta.baseline_stroke_num >= 0)
+      cJSON_AddNumberToObject(root, "baseline_stroke_num", meta.baseline_stroke_num);
+  }
   free(ideal_data);
 
   char *json_str = cJSON_PrintUnformatted(root);
@@ -1147,6 +1353,7 @@ static esp_err_t ideal_stroke_get_handler(httpd_req_t *req) {
 
 static esp_err_t ideal_stroke_delete_handler(httpd_req_t *req) {
   remove("/sdcard/ideal_stroke.bin");
+  gf_ideal_meta_clear();
   // Also clear it from stroke detector
   stroke_detector_load_ideal(NULL, 0, 0.0f);
 
@@ -1452,68 +1659,19 @@ esp_err_t wifi_server_start_sync(void) {
   // Give scheduler a chance to run
   vTaskDelay(pdMS_TO_TICKS(10));
 
-  // Collect .pb file names from SD card (protobuf format)
   const char *mount_point = "/sdcard";
-  DIR *dir = opendir(mount_point);
-  if (!dir) {
-    ESP_LOGE(TAG, "opendir(%s) failed", mount_point);
-    return ESP_FAIL;
-  }
-
-  size_t names_cap = 16;
-  stream_state.file_names = malloc(names_cap * sizeof(char *));
-  if (!stream_state.file_names) {
-    closedir(dir);
-    return ESP_ERR_NO_MEM;
-  }
-  stream_state.file_count = 0;
-
-  struct dirent *entry;
-  while ((entry = readdir(dir)) != NULL) {
-#if defined(DT_REG)
-    if (entry->d_type != DT_REG)
-      continue;
-#endif
-    const char *n = entry->d_name;
-    // Support both .pb (new) and .BIN/.bin (legacy) for backward compatibility
-    bool is_protobuf =
-        (strstr(n, ".pb") != NULL) || (strstr(n, ".PB") != NULL) ||
-        (strstr(n, ".BIN") != NULL) || (strstr(n, ".bin") != NULL);
-    if (!is_protobuf)
-      continue;
-
-    size_t L = strnlen(n, 255);
-    if (L == 0 || L >= 64)
-      continue;
-
-    if (stream_state.file_count == names_cap) {
-      size_t new_cap = names_cap * 2;
-      char **tmp = realloc(stream_state.file_names, new_cap * sizeof(char *));
-      if (!tmp)
-        break;
-      stream_state.file_names = tmp;
-      names_cap = new_cap;
-    }
-
-    stream_state.file_names[stream_state.file_count] = malloc(L + 1);
-    if (!stream_state.file_names[stream_state.file_count])
-      break;
-    memcpy(stream_state.file_names[stream_state.file_count], n, L);
-    stream_state.file_names[stream_state.file_count][L] = '\0';
-    stream_state.file_count++;
-  }
-  closedir(dir);
-
-  if (stream_state.file_count == 0) {
+  esp_err_t bl =
+      build_pb_file_list(mount_point, &stream_state.file_names, &stream_state.file_count);
+  if (bl == ESP_ERR_NOT_FOUND) {
     ESP_LOGW(TAG, "No .pb files found on SD card");
     ESP_LOGW(TAG, "Start a recording session first, then sync");
     cleanup_streaming_state();
     return ESP_ERR_NOT_FOUND;
   }
-
-  // Sort files ascending by filename
-  qsort(stream_state.file_names, stream_state.file_count, sizeof(char *),
-        cmp_file_names);
+  if (bl != ESP_OK) {
+    cleanup_streaming_state();
+    return bl;
+  }
 
   // Estimate sample counts from file sizes (fast — avoids reading every
   // protobuf record which can take many seconds on large sessions).

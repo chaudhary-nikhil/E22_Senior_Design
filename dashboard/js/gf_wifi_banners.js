@@ -1,5 +1,5 @@
 /**
- * GoldenForm: wearable Wi‑Fi banner and add-wearable helpers.
+ * GoldenForm: wearable Wi-Fi banner and add-wearable helpers.
  */
 
 /** Avoid overwriting the wrist dropdown on every poll; refresh from device when HW ID changes. */
@@ -22,9 +22,16 @@ function updateWearableConnectionBanner(res) {
     if (!el) return;
     if (!res || res.error || res.status === 'disconnected' || res.device_id === undefined) {
         lastBannerDeviceIdForRole = null;
-        el.innerHTML =
-            '<span class="wearable-banner-inner wearable-banner-inner--offline">' +
-            'Join the band’s <strong>GoldenForm</strong> Wi‑Fi on this computer, then <strong>Add this wearable</strong>.</span>';
+        const isReturning = cachedDeviceListLength > 0;
+        if (isReturning) {
+            el.innerHTML =
+                '<span class="wearable-banner-inner wearable-banner-inner--offline">' +
+                'Band not connected. Join the <strong>GoldenForm</strong> Wi-Fi on this computer to sync or view live data.</span>';
+        } else {
+            el.innerHTML =
+                '<span class="wearable-banner-inner wearable-banner-inner--offline">' +
+                'Join the band\u2019s <strong>GoldenForm</strong> Wi-Fi on this computer, then <strong>Add this wearable</strong>.</span>';
+        }
         if (hid) hid.value = '';
         if (hwHidden) hwHidden.value = '';
         return;
@@ -85,7 +92,7 @@ async function addWearableFromConnection() {
             res = await apiGet('/api/device_info');
         }
         if (!res || res.error || res.status === 'disconnected' || res.device_id === undefined) {
-            showToast('Join this computer to the band’s GoldenForm Wi‑Fi, then try again.', 'error');
+            showToast('Join this computer to the band\u2019s GoldenForm Wi-Fi, then try again.', 'error');
             return;
         }
         const roleEl = document.getElementById('dev-role');
@@ -125,7 +132,7 @@ async function addWearableFromConnection() {
             showToast((reg && reg.error) || 'Could not add wearable', 'error');
         }
     } catch (e) {
-        showToast('Could not reach the device. Check Wi‑Fi and try again.', 'error');
+        showToast('Could not reach the device. Check Wi-Fi and try again.', 'error');
     }
 }
 

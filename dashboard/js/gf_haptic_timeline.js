@@ -1,8 +1,8 @@
 /**
- * GoldenForm — Haptic: stroke/haptic timeline DOM (firmware haptic_fired flags).
+ * GoldenForm  --  Haptic: stroke/haptic timeline DOM (firmware haptic_fired flags).
  */
 // ── STROKE BOUNDARIES & HAPTIC TIMELINE ──
-/** Hard cap — each tick is a DOM node; dense haptic flags used to create 50k+ nodes and crash the tab. */
+/** Hard cap  --  each tick is a DOM node; dense haptic flags used to create 50k+ nodes and crash the tab. */
 
 function limitTimelineEvents(events, max) {
     if (!events || events.length <= max) return events;

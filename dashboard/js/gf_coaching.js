@@ -90,8 +90,13 @@ function updateCoachingInsights() {
         return;
     }
 
+    const idealFp = (typeof idealStrokeData !== 'undefined' && idealStrokeData && idealStrokeData.length)
+        ? String(idealStrokeData.length) + ':' + String(idealStrokeData[0] && idealStrokeData[0].lia_x != null ? idealStrokeData[0].lia_x : '0')
+        : '0';
+    const selfBl = (typeof gfSessionIsIdealBaselineForUi === 'function' && gfSessionIsIdealBaselineForUi()) ? '1' : '0';
     const hash = String(insightPd.length) + ':' + String(insightMetrics.stroke_count || 0) + ':' +
-        String(insightMetrics.avg_deviation || 0) + ':' + String(insightMetrics.avg_entry_angle || 0);
+        String(insightMetrics.avg_deviation || 0) + ':' + String(insightMetrics.avg_entry_angle || 0) + ':' +
+        idealFp + ':' + selfBl;
     if (hash === _coachingDataHash) return;
     _coachingDataHash = hash;
 
@@ -203,7 +208,7 @@ function _renderPerStrokeIssues(diagBox, strokes, metrics) {
         patterns.push({
             color: 'var(--red)',
             title: 'Band cued on ' + hapticStrokes.length + ' of ' + strokes.length + ' strokes',
-            detail: 'Strokes: ' + runDesc + '. Avg deviation: ' + _mean(hapticStrokes.map(s => s.devScore)).toFixed(2) + '. See the Analysis tab for per-stroke deviation and entry angles.'
+            detail: 'Strokes: ' + runDesc + '. Avg firmware deviation on cued strokes: ' + _mean(hapticStrokes.map(s => s.devScore)).toFixed(2) + '. Open <strong>Analysis</strong> for the full |LIA| chart and stroke table.'
         });
     }
 
@@ -355,18 +360,23 @@ function _renderCoachingPriorities(priorityBox, strokes, metrics) {
     priorities.sort((a, b) => b.severity - a.severity);
     const top = priorities.slice(0, 3);
 
+    let selfBaseNote = '';
+    if (typeof gfSessionIsIdealBaselineForUi === 'function' && gfSessionIsIdealBaselineForUi()) {
+        selfBaseNote = '<p style="margin:0 0 10px 0;font-size:0.82em;color:var(--text3);line-height:1.45;">This swim is your saved baseline template—vs-baseline scores are hidden so you are not judged against yourself. Load another session to see gaps vs this template.</p>';
+    }
+
     if (top.length === 0) {
         const cons = m.consistency || 0;
         const noHaptics = hapticCount === 0;
         if (cons >= 80 && noHaptics) {
-            priorityBox.innerHTML = '<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">Session looks solid across all metrics — no band cues fired. Keep this consistency and consider setting a more challenging ideal baseline.</div>';
+            priorityBox.innerHTML = selfBaseNote + '<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">Session looks solid across all metrics — no band cues fired. Keep this consistency and consider setting a more challenging ideal baseline.</div>';
         } else {
-            priorityBox.innerHTML = '<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">No major issues. ' + (cons < 80 ? 'Work on stroke-to-stroke consistency (' + cons.toFixed(0) + '%).' : 'Maintain this form.') + '</div>';
+            priorityBox.innerHTML = selfBaseNote + '<div style="padding:10px; background:rgba(34,197,94,0.1); color:var(--green); border-radius:6px; font-weight:500;">No major issues. ' + (cons < 80 ? 'Work on stroke-to-stroke consistency (' + cons.toFixed(0) + '%).' : 'Maintain this form.') + '</div>';
         }
         return;
     }
 
-    let html = '';
+    let html = selfBaseNote;
     top.forEach((p, i) => {
         const borderColor = i === 0 ? 'var(--red)' : 'var(--amber)';
         html += `<div style="padding:10px; background:var(--bg3); border-left:3px solid ${borderColor}; border-radius:4px; margin-bottom:8px;">
@@ -378,15 +388,64 @@ function _renderCoachingPriorities(priorityBox, strokes, metrics) {
 }
 
 let _aiInsightsSessionKey = '';
+function _aiInsightsKeyForAuto() {
+    const idealFp = (typeof idealStrokeData !== 'undefined' && idealStrokeData && idealStrokeData.length)
+        ? String(idealStrokeData.length) + ':' + String(idealStrokeData[0] && idealStrokeData[0].lia_x != null ? idealStrokeData[0].lia_x : '0')
+        : '0';
+    const selfBl = (typeof gfSessionIsIdealBaselineForUi === 'function' && gfSessionIsIdealBaselineForUi()) ? '1' : '0';
+    return String(sessionMetrics ? (sessionMetrics.stroke_count || 0) : 0) + ':' +
+        String(processedData ? processedData.length : 0) + ':' + idealFp + ':' + selfBl;
+}
 function _autoTriggerAiInsights() {
-    const key = String(sessionMetrics ? (sessionMetrics.stroke_count || 0) : 0) + ':' +
-        String(processedData ? processedData.length : 0);
-    if (key === _aiInsightsSessionKey || key === '0:0') return;
+    const key = _aiInsightsKeyForAuto();
+    if (key === _aiInsightsSessionKey) return;
+    if (!processedData || !processedData.length) return;
     _aiInsightsSessionKey = key;
-    const body = document.getElementById('ai-coaching-body');
-    if (body && (!body.textContent || body.textContent === 'Generating…' ||
-        body.textContent.startsWith('Load a session') || body.textContent.startsWith('No response'))) {
-        setTimeout(() => refreshAiCoachingInsights(), 200);
+    const aiBody = document.getElementById('ai-coaching-body');
+    if (aiBody) {
+        aiBody.innerHTML = '';
+        aiBody.textContent = 'Generating…';
+    }
+    setTimeout(() => refreshAiCoachingInsights(), 200);
+}
+
+/** Call when entering Insights so AI runs even if coaching hash short-circuited (tab-only navigation). */
+function gfEnsureInsightsTabAiCoaching() {
+    const bodyEl = document.getElementById('ai-coaching-body');
+    const key = _aiInsightsKeyForAuto();
+    const t = bodyEl ? String(bodyEl.textContent || '').trim() : '';
+    if (t === 'Generating…' && key === _aiInsightsSessionKey) return;
+    const looksEmpty = !t || t.startsWith('Load a session') || t.startsWith('No response') ||
+        t.startsWith('Unexpected response') || t.startsWith('AI request failed') || t.startsWith('Gemini unreachable') ||
+        t.startsWith('Network error') || t.startsWith('Too many AI') || t.startsWith('Offline.');
+    if (!sessionMetrics || !processedData || !processedData.length) {
+        if (bodyEl && looksEmpty) bodyEl.textContent = 'Load a session on the Session tab first.';
+        return;
+    }
+    if (key === _aiInsightsSessionKey && !looksEmpty) return;
+    _aiInsightsSessionKey = '';
+    _autoTriggerAiInsights();
+}
+
+function _gfCoachingIdealBaselineKind() {
+    if (typeof idealStrokeData === 'undefined' || !idealStrokeData || !idealStrokeData.length) return 'none';
+    const name = (typeof idealDisplayInfo !== 'undefined' && idealDisplayInfo && idealDisplayInfo.name)
+        ? String(idealDisplayInfo.name) : '';
+    if (/stroke\s+\d+/i.test(name)) return 'single_stroke';
+    const pd = typeof processedData !== 'undefined' && processedData ? processedData : [];
+    if (pd.length > 40 && idealStrokeData.length >= Math.floor(pd.length * 0.65)) return 'full_session';
+    return 'library_or_custom';
+}
+
+function _gfCoachingSameSessionAsIdeal(insightPd) {
+    try {
+        if (typeof idealDisplayInfo === 'undefined' || !idealDisplayInfo || idealDisplayInfo.sourceSessionId == null) return false;
+        if (typeof savedSessions === 'undefined' || typeof activeSessionIdx === 'undefined' || activeSessionIdx < 0) return false;
+        const s = savedSessions[activeSessionIdx];
+        if (!s || s.id == null) return false;
+        return Number(idealDisplayInfo.sourceSessionId) === Number(s.id);
+    } catch (e) {
+        return false;
     }
 }
 
@@ -436,9 +495,7 @@ function gfFormatInsightMarkdown(text) {
 async function refreshAiCoachingInsights() {
     const bodyEl = document.getElementById('ai-coaching-body');
     const metaEl = document.getElementById('ai-coaching-meta');
-    const btn = document.getElementById('ai-coaching-btn');
     if (!bodyEl) return;
-    if (btn) { btn.disabled = true; btn.textContent = '…'; }
     bodyEl.innerHTML = '';
     bodyEl.textContent = 'Generating…';
     if (metaEl) metaEl.textContent = '';
@@ -448,7 +505,6 @@ async function refreshAiCoachingInsights() {
     const insightMetrics = sessionMetrics;
     if (!insightMetrics || !insightPd || !insightPd.length) {
         bodyEl.textContent = 'Load a session on the Session tab first.';
-        if (btn) { btn.disabled = false; btn.textContent = 'Generate insights'; }
         return;
     }
 
@@ -470,18 +526,40 @@ async function refreshAiCoachingInsights() {
             if (q.deviation_score > devScore) devScore = Number(q.deviation_score);
             if (q.haptic_fired) hapticFired = true;
         }
+        let deviationVsIdeal = 0;
+        let vsIdealAlert = false;
+        if (typeof gfLookupVsIdealForStroke === 'function') {
+            const vi = gfLookupVsIdealForStroke(sb.strokeNum, sb.streamKey);
+            if (vi) {
+                deviationVsIdeal = Number(vi.deviation) || 0;
+                vsIdealAlert = !!vi.vsIdealAlert;
+            }
+        }
         strokes.push({
             stroke_num: sb.strokeNum,
             entry_angle: entryAngle,
             firmware_deviation: devScore,
+            deviation_vs_ideal: deviationVsIdeal,
+            vs_ideal_alert: vsIdealAlert,
             device_haptic: hapticFired
         });
     }
 
+    const hasIdeal = !!(typeof idealStrokeData !== 'undefined' && idealStrokeData && idealStrokeData.length);
+    const vsIdealAvg = (typeof gfVsIdealMetrics !== 'undefined' && gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal &&
+        typeof gfVsIdealMetrics.avgDeviation === 'number') ? gfVsIdealMetrics.avgDeviation : null;
     const payload = {
-        session_metrics: insightMetrics,
+        session_metrics: {
+            ...insightMetrics,
+            avg_deviation_vs_ideal: vsIdealAvg
+        },
         strokes,
-        ideal_loaded: !!(typeof idealStrokeData !== 'undefined' && idealStrokeData && idealStrokeData.length)
+        ideal_loaded: hasIdeal,
+        ideal_baseline_kind: _gfCoachingIdealBaselineKind(),
+        ideal_compare_mode: (typeof idealCompareMode !== 'undefined' && idealCompareMode) ? idealCompareMode : null,
+        ideal_compare_stroke_num: null,
+        same_session_as_ideal: _gfCoachingSameSessionAsIdeal(insightPd),
+        is_self_baseline_template: (typeof gfSessionIsIdealBaselineForUi === 'function' && gfSessionIsIdealBaselineForUi())
     };
 
     const extraHeaders = {};
@@ -491,11 +569,18 @@ async function refreshAiCoachingInsights() {
         }
     } catch (e) { /* ignore */ }
     const res = await apiPost('/api/coaching/insights', payload, { headers: extraHeaders });
-    if (btn) { btn.disabled = false; btn.textContent = 'Generate insights'; }
-    if (!res) { bodyEl.textContent = 'No response from server. Is the dashboard running?'; return; }
+    if (!res) {
+        bodyEl.textContent = 'No response from server. Start the dashboard app, and connect this computer to normal Wi‑Fi with internet (not only the band hotspot).';
+        return;
+    }
     if (res.status === 'unconfigured') { bodyEl.textContent = res.message || 'Set GEMINI_API_KEY in dashboard/.env on the server.'; return; }
     if (res.httpStatus === 429 || res.rate_limited) { bodyEl.textContent = res.error || 'Too many AI requests. Wait a few minutes and try again.'; return; }
-    if (res.status === 'error' || res._httpError) { bodyEl.textContent = res.error || res.detail || 'AI request failed.'; return; }
+    if (res.status === 'error' || res._httpError) {
+        const hint = res.hint ? String(res.hint) : '';
+        const core = res.error || res.detail || 'AI request failed.';
+        bodyEl.textContent = hint ? (core + ' ' + hint) : core;
+        return;
+    }
     if (res.status === 'ok' && res.text) {
         bodyEl.innerHTML = gfFormatInsightMarkdown(res.text);
         if (metaEl) metaEl.textContent = res.model ? ('Model: ' + res.model) : '';

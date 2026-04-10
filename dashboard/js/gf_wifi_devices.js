@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Device registry list (GET/POST /api/devices), IMU cube wrist flip.
+ * GoldenForm  --  Device registry list (GET/POST /api/devices), IMU cube wrist flip.
  */
 async function loadDevices() {
     const res = await apiGet('/api/devices');
@@ -18,7 +18,7 @@ async function loadDevices() {
     const list = document.getElementById('device-list');
     if (list) {
         if (!devices.length) {
-            list.innerHTML = '<p style="color:var(--text3);font-size:0.85em;">No wearables yet. Connect to each band’s Wi‑Fi and tap <strong>Add this wearable</strong> above.</p>';
+            list.innerHTML = '<p style="color:var(--text3);font-size:0.85em;">No wearables yet. Connect to each band\u2019s Wi-Fi and tap <strong>Add this wearable</strong> above.</p>';
         } else {
             const roleIcons = { wrist_right: '🤚', wrist_left: '✋' };
             list.innerHTML = devices.map((d, i) => {

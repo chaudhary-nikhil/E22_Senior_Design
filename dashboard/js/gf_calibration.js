@@ -134,7 +134,8 @@ function updateNavCalPill(res) {
     el.className = 'nav-cal-pill ' + (weak ? 'nav-cal-pill--warn' : 'nav-cal-pill--ok');
     const modeHint = (imuPlus || (!res && imuPlusLikely)) ? 'IMUPLUS' : 'NDOF';
     const srcLabel = source === 'live' ? 'Live' : 'Saved';
-    el.title = srcLabel + ' · ' + modeHint + ' · S' + cal.sys + ' G' + cal.gyro + ' A' + cal.accel + ' M' + cal.mag + sessionMinNote;
+    const pillExplain = 'Nav Cal = your wearable bench right now (live) or the last snapshot saved in this browser—not the worst moment inside an open recording.';
+    el.title = pillExplain + ' ' + srcLabel + ' · ' + modeHint + ' · S' + cal.sys + ' G' + cal.gyro + ' A' + cal.accel + ' M' + cal.mag + sessionMinNote;
 }
 
 /**
@@ -170,7 +171,7 @@ function updateSessionCalBanner() {
     el.hidden = false;
     if (n === 0) {
         el.className = 'session-cal-banner session-cal-banner--muted';
-        el.innerHTML = '<span class="session-cal-banner__icon">○</span><span>Recording has no per-sample cal. Check live <strong>Cal</strong> in the nav before the next swim.</span>';
+        el.innerHTML = '<span class="session-cal-banner__icon">○</span><span>Recording has no per-sample cal. The nav <strong>Cal</strong> pill shows live fusion or your saved browser snapshot; it can look better than this file if cal dipped during the swim.</span>';
         page.classList.remove('page-session--weak-cal');
         return;
     }
@@ -182,10 +183,10 @@ function updateSessionCalBanner() {
     const minTag = 'min S' + mins.sys + ' G' + mins.gyro + ' A' + mins.accel + ' M' + mins.mag;
     if (weak) {
         el.className = 'session-cal-banner session-cal-banner--warn';
-        el.innerHTML = '<span class="session-cal-banner__icon">!</span><span>Weak fusion in this file (' + minTag + '). 3D is indicative only. Calibrate the wearable, then re-record.</span>';
+        el.innerHTML = '<span class="session-cal-banner__icon">!</span><span><strong>Weak fusion in this file</strong> (' + minTag + ' = lowest per-sample quality in the recording). Use this for how trustworthy this swim’s orientation is. <strong>Nav Cal</strong> is separate: live bench or your last browser snapshot, often higher than the worst moment in the file.</span>';
     } else {
         el.className = 'session-cal-banner session-cal-banner--ok';
-        el.innerHTML = '<span class="session-cal-banner__icon">✓</span><span>Fusion OK in recording (' + minTag + ').</span>';
+        el.innerHTML = '<span class="session-cal-banner__icon">✓</span><span>Fusion OK in this recording (' + minTag + '). Nav <strong>Cal</strong> stays live/saved bench; this banner reflects samples in this file only.</span>';
     }
 }
 

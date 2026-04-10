@@ -1,7 +1,7 @@
 /**
- * GoldenForm — bootstrap (entry point).
+ * GoldenForm  --  bootstrap (entry point).
  * Loads last; registers window handlers and DOMContentLoaded.
- * Feature code lives under dashboard/js/gf_*.js (viz split: gf_viz_*, Wi‑Fi: gf_wifi_* / gf_onboarding_journey).
+ * Feature code lives under dashboard/js/gf_*.js (viz split: gf_viz_*, Wi-Fi: gf_wifi_* / gf_onboarding_journey).
  */
 
 // Expose handlers for inline HTML onclick usage
@@ -93,8 +93,10 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     } catch (e) { /* ignore */ }
     await safe(() => loadSavedSessions());
-    await safe(() => loadDevices());
-    await safe(() => loadIdealStroke());
+    await Promise.all([
+        safe(() => loadDevices()),
+        safe(() => loadIdealStroke())
+    ]);
     // Ensure Home stepper renders even if backend calls failed.
     try { if (typeof renderSetupJourney === 'function') renderSetupJourney(); } catch (e) { /* ignore */ }
 
@@ -107,10 +109,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     } catch (e) { /* ignore */ }
     if (activeSessionIdx < 0) {
         try { resetAnalysisPlaceholders(); } catch (e) { /* ignore */ }
-        if (typeof buildIdealComparison === 'function') await safe(() => buildIdealComparison());
-        try { updateCoachingInsights(); } catch (e) { /* ignore */ }
     }
     try { init3D(); } catch (e) { /* ignore */ }
+    /* Defer ideal + coaching so first paint and 3D init stay responsive. */
+    if (activeSessionIdx < 0) {
+        queueMicrotask(async () => {
+            if (typeof buildIdealComparison === 'function') await safe(() => buildIdealComparison());
+            try { updateCoachingInsights(); } catch (e) { /* ignore */ }
+        });
+    }
     /* If the default tab were ever Session, ensure the viz loop runs after init3D (init3D only
      * auto-starts RAF when currentTab === 'session'). */
     try {
@@ -132,18 +139,25 @@ window.addEventListener('DOMContentLoaded', async () => {
             window.refreshIcons = () => {};
         }
     } catch (e) { /* ignore */ }
+    let gfResizeT = null;
     window.addEventListener('resize', () => {
-        resizeSideViewCanvas();
-        if (processedData.length) drawSideViewViz(currentIndex);
-        if (renderer && camera) {
-            const c = document.getElementById('canvas3d');
-            if (c) {
-                const w = Math.min(Math.max(c.clientWidth || 800, 400), 1400);
-                const h = Math.min(Math.max(c.clientHeight || 450, 400), 900);
-                renderer.setSize(w, h, false);
-                camera.aspect = w / h;
-                camera.updateProjectionMatrix();
+        if (gfResizeT) clearTimeout(gfResizeT);
+        gfResizeT = setTimeout(() => {
+            gfResizeT = null;
+            try { resizeSideViewCanvas(); } catch (e) { /* ignore */ }
+            try {
+                if (processedData.length) drawSideViewViz(currentIndex);
+            } catch (e) { /* ignore */ }
+            if (renderer && camera) {
+                const c = document.getElementById('canvas3d');
+                if (c) {
+                    const w = Math.min(Math.max(c.clientWidth || 800, 400), 1400);
+                    const h = Math.min(Math.max(c.clientHeight || 450, 400), 900);
+                    renderer.setSize(w, h, false);
+                    camera.aspect = w / h;
+                    camera.updateProjectionMatrix();
+                }
             }
-        }
+        }, 120);
     });
 });

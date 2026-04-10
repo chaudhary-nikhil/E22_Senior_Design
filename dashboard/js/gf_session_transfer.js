@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Session data: localStorage + SQLite list, merge, load sample into viewer.
+ * GoldenForm  --  Session data: localStorage + SQLite list, merge, load sample into viewer.
  */
 async function loadSavedSessions() {
     try { savedSessions = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch { savedSessions = []; }
@@ -33,7 +33,7 @@ async function loadSavedSessions() {
             if (typeof updateNavCalPill === 'function') updateNavCalPill(null);
         }
     }
-    /* Do not auto-merge /api/sessions on load — that repopulated the list from SQLite and broke “empty first open”.
+    /* Do not auto-merge /api/sessions on load  --  that repopulated the list from SQLite and broke "empty first open".
        Sessions appear after Sync (/process) or merge; server DB is still used for save/merge APIs. */
     renderSessionList();
     /* renderSetupJourney: defer to loadDevices() in bootstrap so profile + sessions + device counts agree */
@@ -143,7 +143,7 @@ async function mergeLatestSessions() {
         renderSetupJourney();
     }
 }
-/** Show first-run strip vs quick actions — keeps Home aligned with PDP base path. */
+/** Show first-run strip vs quick actions  --  keeps Home aligned with PDP base path. */
 function updateHomeOnboardingPanels() {
     const quickActions = document.getElementById('quick-actions');
     if (!quickActions) return;
@@ -162,7 +162,7 @@ function renderSessionList() {
 
     if (!c) return;
     if (!savedSessions.length) {
-        c.innerHTML = '<p style="color:var(--text3);font-size:0.85em;padding:16px;">No sessions yet. Join the band’s <strong>GoldenForm_</strong> Wi‑Fi, then open Session and tap <strong>Sync now</strong> to download swims.</p>';
+        c.innerHTML = '<p style="color:var(--text3);font-size:0.85em;padding:16px;">No sessions yet. Join the band\u2019s <strong>GoldenForm_</strong> Wi-Fi, then open Session and tap <strong>Sync now</strong> to download swims.</p>';
         return;
     }
     c.innerHTML = savedSessions.map((s, i) => {
@@ -179,7 +179,7 @@ function deleteSession(i) {
     renderSetupJourney();
 }
 
-/** Clear this browser’s session list (localStorage only). SQLite copies remain until deleted server-side. */
+/** Clear this browser's session list (localStorage only). SQLite copies remain until deleted server-side. */
 function clearLocalSessions() {
     if (!savedSessions.length) {
         showToast('No sessions in this browser', 'info');

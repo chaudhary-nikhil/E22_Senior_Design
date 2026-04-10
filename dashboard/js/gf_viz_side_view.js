@@ -1,5 +1,5 @@
 /**
- * GoldenForm — 2D side canvas: LIA path per stroke, phase-colored segments, pitch / gyro overlay.
+ * GoldenForm  --  2D side canvas: LIA path per stroke, phase-colored segments, pitch / gyro overlay.
  */
 function resizeSideViewCanvas() {
     const canvas = document.getElementById('canvas-side-view');
@@ -17,7 +17,7 @@ function getLiaPositionSample(i) {
     const d = processedData[i];
     if (!d) return { px: 0, py: 0, pz: 0 };
     /* Prefer StrokeProcessor positions after per-stroke smoothing (same as 3D trail).
-     * Raw JSON positions are noisier; IMU+ world frame also drifts in yaw — smoothing helps visuals. */
+     * Raw JSON positions are noisier; IMU+ world frame also drifts in yaw  --  smoothing helps visuals. */
     const s = (typeof positionScale !== 'undefined' && positionScale > 0) ? positionScale : 3;
     if (typeof positionStreamPositions !== 'undefined' && positionStreamPositions &&
         positionStreamPositions.length === processedData.length && positionStreamPositions[i]) {
@@ -240,6 +240,31 @@ function drawSideViewViz(idx) {
     ctx.arc(mx, my, 6, 0, Math.PI * 2);
     ctx.fill();
 
+    let cueFlash = !!(d && d.haptic_fired);
+    if (!cueFlash && typeof hapticFlashUntil !== 'undefined' && hapticFlashUntil > Date.now()) {
+        cueFlash = true;
+    }
+    if (!cueFlash) {
+        for (let hi = Math.max(b.start, idx - 12); hi <= idx; hi++) {
+            const dd = processedData[hi];
+            if (!dd || !dd.haptic_fired) continue;
+            if (hi > b.start && processedData[hi - 1].haptic_fired) continue;
+            cueFlash = true;
+            break;
+        }
+    }
+    if (cueFlash) {
+        ctx.strokeStyle = 'rgba(232, 200, 120, 0.95)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(mx, my, 14, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(232, 200, 120, 0.22)';
+        ctx.beginPath();
+        ctx.arc(mx, my, 18, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
     const q = d.quaternion || {};
     const pitch = pitchDegFromQuaternion(q);
     const gdeg = gyroSagittalDeg(d.angular_velocity);
@@ -256,7 +281,7 @@ function drawSideViewViz(idx) {
     ctx.font = '11px system-ui, sans-serif';
     ctx.font = '10px system-ui, sans-serif';
     ctx.fillText(
-        'AoA: pitch (quat) ' + pitch.toFixed(0) + '° · gyro sagittal ' + gdeg.toFixed(0) + '° — IMU+ has no mag; yaw drifts; path is indicative',
+        'AoA: pitch (quat) ' + pitch.toFixed(0) + '° · gyro sagittal ' + gdeg.toFixed(0) + '°  --  IMU+ has no mag; yaw drifts; path is indicative',
         12,
         H - 12
     );

@@ -39,8 +39,8 @@ function getSetupJourneyFunnelState(snap) {
         phase = 'Step 5: Import a recording';
         currentKey = 'viz';
     } else {
-        phase = 'Step 5: Analyze';
-        currentKey = 'viz';
+        phase = 'Loop: next swim → Sync → Analyze';
+        currentKey = 'sync';
     }
     return { phase, currentKey, snap: s };
 }
@@ -124,7 +124,7 @@ function renderSetupPrimaryCta(snap) {
     else if (!s.calOk) { key = 'cal'; text = (s.expected > 1 ? 'Calibrate both bands' : 'Calibrate on Wi‑Fi'); }
     else if (!s.linkOkForJourney) { key = 'sync'; text = 'Check Session sync'; }
     else if (!s.hasSessionForJourney) { key = 'sync'; text = 'Start logging on the band'; }
-    else { key = 'viz'; text = 'Open Analysis'; }
+    else { key = 'sync'; text = 'Sync your next swim'; }
 
     btn.setAttribute('onclick', `setupJourneyGo('${key}')`);
     label.textContent = text;
@@ -173,7 +173,7 @@ function updateNavNextHint(snap) {
     else if (!calOk) el.textContent = 'Next: Calibrate (Wi‑Fi)';
     else if (!linkOkForJourney) el.textContent = 'Next: Sync link check';
     else if (!hasSessionForJourney) el.textContent = 'Next: Swim → Sync';
-    else el.textContent = 'Next: Replay + Insights';
+    else el.textContent = 'Next: Swim → Sync (repeat)';
 }
 
 function updateSyncPlaybookMulti() {
@@ -279,7 +279,7 @@ function renderSetupJourney() {
 
     const step5Label = hasSessionForJourney ? '5 · Analyze' : '5 · Record, then import';
     const step5Text = hasSessionForJourney
-        ? 'Replay 3D, charts, haptics, Insights.'
+        ? 'Replay and Insights anytime. When you swim again: log on the band, then Sync to import the new file.'
         : ('Swim offline → then Sync now to import.');
 
     const steps = [

@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Quaternion helper + gravity-based orientation for 3D viz alignment.
+ * GoldenForm  --  Quaternion helper + gravity-based orientation for 3D viz alignment.
  */
 function nq(q) {
     if (!q) return new THREE.Quaternion(0, 0, 0, 1);

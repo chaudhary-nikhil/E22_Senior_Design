@@ -26,9 +26,7 @@ function resetAnalysisPlaceholders() {
     if (tbody) tbody.innerHTML = '';
     idealCompareStrokeNum = null;
     idealCompareStreamKey = null;
-    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'stroke';
-    const icm = document.getElementById('ideal-compare-mode');
-    if (icm) icm.value = 'stroke';
+    if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'session';
 }
 
 function updateAnalysis() {
@@ -53,16 +51,19 @@ function updateAnalysis() {
     setText('haptic-count', m.haptic_count || 0);
     if (hintEl) hintEl.textContent = 'Band buzzes during swim';
 
+    buildIdealComparison();
+    buildStrokeTable();
+
     let avgDev = m.avg_deviation != null ? m.avg_deviation : 0;
+    if (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal && typeof gfVsIdealMetrics.avgDeviation === 'number') {
+        avgDev = gfVsIdealMetrics.avgDeviation;
+    }
     setText('avg-deviation', (typeof avgDev === 'number' ? avgDev : 0).toFixed(3));
 
     const score = computeFormScore(m, { avgDeviationOverride: avgDev });
     setText('form-score', score.toFixed(1));
     const scoreEl = document.getElementById('form-score');
     if (scoreEl) scoreEl.style.color = score >= 7 ? 'var(--green)' : score >= 5 ? 'var(--amber)' : 'var(--red)';
-
-    buildIdealComparison();
-    buildStrokeTable();
 }
 
 function setWidth(id, pct) { const el = document.getElementById(id); if (el) el.style.width = Math.max(1, pct) + '%'; }
@@ -134,6 +135,44 @@ function drawGauge(canvasId, value, min, max, idealLow, idealHigh) {
     ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fillStyle = '#C5A55A'; ctx.fill();
 }
 
+/**
+ * Match each table row to a stroke boundary by stroke number and start time so stream keys stay
+ * correct for merged sessions (Python breakdown order can differ from boundary order).
+ */
+function gfAttachStreamKeysToStrokeRows(rows) {
+    if (!rows || !rows.length || !processedData.length) return;
+    if (typeof computeStrokeBoundaries === 'function') computeStrokeBoundaries();
+    if (typeof strokeBoundaries === 'undefined' || !strokeBoundaries || !strokeBoundaries.length) return;
+    const startMs = processedData[0].timestamp || 0;
+    const used = new Set();
+    const targetSec = (r) => {
+        if (r.tsSec != null && Number.isFinite(Number(r.tsSec))) return Number(r.tsSec);
+        const rel = parseFloat(r.time);
+        if (Number.isFinite(rel)) return (startMs / 1000) + rel;
+        return startMs / 1000;
+    };
+    for (const r of rows) {
+        let bestB = -1;
+        let bestDist = Infinity;
+        const wantT = targetSec(r);
+        for (let b = 0; b < strokeBoundaries.length; b++) {
+            if (used.has(b)) continue;
+            const sb = strokeBoundaries[b];
+            if (sb.strokeNum !== r.num) continue;
+            const t0 = (processedData[sb.index].timestamp || 0) / 1000;
+            const dist = Math.abs(t0 - wantT);
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestB = b;
+            }
+        }
+        if (bestB >= 0) {
+            used.add(bestB);
+            r.streamKey = strokeBoundaries[bestB].streamKey || '';
+        }
+    }
+}
+
 function buildStrokeTable() {
     const tbody = document.getElementById('stroke-table-body');
     if (!tbody || !processedData.length) return;
@@ -146,25 +185,18 @@ function buildStrokeTable() {
     const startTime = processedData[0].timestamp || 0;
 
     if (sessionMetrics && sessionMetrics.stroke_breakdown && sessionMetrics.stroke_breakdown.length > 0) {
-        rows = sessionMetrics.stroke_breakdown.map((p, idx) => {
-            let streamKey = '';
-            if (typeof strokeBoundaries !== 'undefined' && strokeBoundaries && strokeBoundaries.length) {
-                const b = strokeBoundaries[idx];
-                if (b && b.strokeNum === p.number) streamKey = b.streamKey || '';
-                else {
-                    const hit = strokeBoundaries.find((sb) => sb.strokeNum === p.number);
-                    if (hit) streamKey = hit.streamKey || '';
-                }
-            }
+        rows = sessionMetrics.stroke_breakdown.map((p) => {
             return {
                 num: p.number,
-                streamKey,
+                streamKey: '',
+                tsSec: p.timestamp_s,
                 time: Math.max(0, p.timestamp_s - (startTime / 1000)).toFixed(1),
                 angle: p.entry_angle || 0,
                 haptic: p.haptic_fired,
                 deviation: p.deviation || 0
             };
         });
+        gfAttachStreamKeysToStrokeRows(rows);
     } else if (typeof strokeBoundaries !== 'undefined' && strokeBoundaries && strokeBoundaries.length > 0) {
         for (let b = 0; b < strokeBoundaries.length; b++) {
             const sb = strokeBoundaries[b];
@@ -185,6 +217,7 @@ function buildStrokeTable() {
             rows.push({
                 num: sb.strokeNum,
                 streamKey: sk,
+                tsSec: (p.timestamp || 0) / 1000,
                 label: sb.label || String(sb.strokeNum),
                 time: Math.max(0, (p.timestamp - startTime) / 1000).toFixed(1),
                 angle,
@@ -211,6 +244,7 @@ function buildStrokeTable() {
                 rows.push({
                     num: p.stroke_count,
                     streamKey: '',
+                    tsSec: (p.timestamp || 0) / 1000,
                     label: String(p.stroke_count),
                     time: Math.max(0, (p.timestamp - startTime) / 1000).toFixed(1),
                     angle,
@@ -221,29 +255,35 @@ function buildStrokeTable() {
             }
         }
     }
+    const selfBaseline = gfVsIdealMetrics && gfVsIdealMetrics.isSelfBaseline;
     tbody.innerHTML = rows.map(r => {
         const firstCol = r.label && r.label !== String(r.num) ? r.label : String(r.num);
-        const vi = (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal)
+        const vi = (gfVsIdealMetrics && gfVsIdealMetrics.hasIdeal && !selfBaseline)
             ? gfLookupVsIdealForStroke(r.num, r.streamKey)
             : null;
         const fwDev = r.deviation || 0;
         const fwHaptic = !!r.haptic;
         const clientDev = vi ? vi.deviation : 0;
-        const devShow = fwDev > 0 ? fwDev : (vi ? clientDev : 0);
-        const cueFire = fwHaptic;
+        const devShow = selfBaseline
+            ? fwDev
+            : (fwDev > 0 ? fwDev : (vi ? clientDev : 0));
         const cueTitle = fwHaptic
-            ? ('Band haptic fired · dev ' + devShow.toFixed(3))
-            : (vi ? ('vs ideal ' + devShow.toFixed(3) + ' · no band buzz') : 'No band haptic');
-        const rowClass = (cueFire ? 'row-haptic' : '') +
-            (idealCompareStrokeNum === r.num && (idealCompareStreamKey || '') === (r.streamKey || '')
-                ? ' analysis-row-selected'
-                : '');
-        const cueCell = cueFire
+            ? ('Band cue fired (haptic) · row deviation ' + devShow.toFixed(3))
+            : 'No band cue on this stroke (⚡ only when the wearable buzzed)';
+        const rowClass = fwHaptic ? 'row-haptic' : '';
+        const cueCell = fwHaptic
             ? `<span class="haptic-marker" title="${String(cueTitle).replace(/"/g, '&quot;')}">⚡</span>`
-            : `<span title="${String(cueTitle).replace(/"/g, '&quot;')}">✓</span>`;
-        const devClass = devShow > 0.7 ? 'text-red' : devShow > 0.3 ? 'text-amber' : 'text-green';
+            : `<span style="color:var(--text3)" title="${String(cueTitle).replace(/"/g, '&quot;')}">—</span>`;
+        let devCellHtml;
+        let devClass = 'text-green';
+        if (selfBaseline && fwDev <= 0) {
+            devCellHtml = '<span title="This session is your saved baseline—no vs-baseline score">—</span>';
+        } else {
+            devClass = devShow > 0.7 ? 'text-red' : devShow > 0.3 ? 'text-amber' : 'text-green';
+            devCellHtml = devShow.toFixed(3);
+        }
         const skJson = (r.streamKey != null && r.streamKey !== '') ? JSON.stringify(r.streamKey) : 'null';
-        return `<tr class="${rowClass}" style="cursor:pointer;" onclick="analysisStrokeRowClick(event, ${r.num}, ${skJson})"><td>${firstCol}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${cueCell}</td><td class="${devClass}">${devShow.toFixed(3)}</td><td onclick="event.stopPropagation(); setSingleStrokeAsIdeal(${r.num}, ${r.streamKey ? JSON.stringify(r.streamKey) : 'undefined'})"><button class="btn btn-gold btn-sm" style="padding:2px 6px; font-size:0.7em;">Set Ideal</button></td></tr>`;
+        return `<tr class="${rowClass}" style="cursor:pointer;" onclick="analysisStrokeRowClick(event, ${r.num}, ${skJson})"><td>${firstCol}</td><td>${r.time}s</td><td>${r.angle.toFixed(1)}°</td><td>${cueCell}</td><td class="${devClass}">${devCellHtml}</td></tr>`;
     }).join('');
 }
 

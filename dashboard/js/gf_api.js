@@ -1,5 +1,5 @@
 /**
- * GoldenForm — shared HTTP helpers (used by app.js).
+ * GoldenForm  --  shared HTTP helpers (used by app.js).
  * Load order: gf_api → gf_roles → gf_constants → app.js
  */
 const API = '';

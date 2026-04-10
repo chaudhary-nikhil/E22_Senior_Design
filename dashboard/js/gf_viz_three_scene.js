@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Three.js scene: wristband device, pool water surface, trail,
+ * GoldenForm  --  Three.js scene: wristband device, pool water surface, trail,
  * lights, orbit controls, and animation loop.
  */
 function addVizAxisLabelSprites() {

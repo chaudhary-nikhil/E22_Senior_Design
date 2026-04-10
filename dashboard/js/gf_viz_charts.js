@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Session IMU charts (accel, gyro, magnetometer).
+ * GoldenForm  --  Session IMU charts (accel, gyro, magnetometer).
  */
 
 const _chartStrokePlugin = {

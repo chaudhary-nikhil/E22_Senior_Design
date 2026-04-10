@@ -47,6 +47,11 @@ function updateIdealStrokePanel() {
             if (dt && !isNaN(dt.getTime())) parts.push('Saved ' + formatEasternDateTime(dt.getTime()));
         } else if (d.savedAt) parts.push('Saved ' + formatEasternDateTime(d.savedAt));
         if (d.sourceSessionName) parts.push('Source: ' + d.sourceSessionName);
+        if (d.baselineKind && d.baselineKind !== 'unknown') {
+            parts.push(d.baselineStrokeNum != null
+                ? ('Wearable meta: stroke ' + d.baselineStrokeNum + ' · ' + d.baselineKind)
+                : ('Wearable meta: ' + d.baselineKind));
+        }
         meta.textContent = parts.join(' · ');
     }
     refreshIdealViewerContext();
@@ -58,12 +63,29 @@ async function loadIdealStroke() {
     const res = await apiGet('/api/ideal_stroke');
     if (res && res.samples && res.samples.length) {
         idealStrokeData = res.samples;
+        let lsSsid = null;
+        let lsSsn = null;
+        try {
+            const rawLs = localStorage.getItem(LS_IDEAL_KEY);
+            if (rawLs) {
+                const o = JSON.parse(rawLs);
+                const nLs = o.samples ? o.samples.length : 0;
+                if (nLs === res.samples.length && nLs > 0) {
+                    lsSsid = o.sourceSessionId;
+                    lsSsn = o.sourceSessionName;
+                }
+            }
+        } catch (e) { /* ignore */ }
         idealDisplayInfo = {
             source: 'server',
             name: res.name || 'Baseline',
             numSamples: res.samples.length,
             createdAt: res.created_at || null,
-            id: res.id
+            id: res.id,
+            baselineKind: res.baseline_kind || null,
+            baselineStrokeNum: res.baseline_stroke_num != null ? res.baseline_stroke_num : null,
+            sourceSessionId: lsSsid != null ? lsSsid : null,
+            sourceSessionName: lsSsn || null
         };
         cacheIdealLocal(
             res.samples,
@@ -156,12 +178,15 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
         };
         updateIdealStrokePanel();
         if (typeof gfComputeVsIdealMetrics === 'function') gfComputeVsIdealMetrics();
-        buildIdealComparison();
-        if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+        if (typeof gfRefreshAnalysisOrIdealOnly === 'function') gfRefreshAnalysisOrIdealOnly();
+        else {
+            buildIdealComparison();
+            if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+        }
         if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
         if (isDeviceOnline) {
             pushIdealToDevice(true);
-            showToast('Stroke ' + strokeNum + ' set as ideal — pushing to wearable', 'success');
+            showToast('Stroke ' + strokeNum + ' set as ideal, pushing to wearable', 'success');
         } else {
             showToast('Ideal saved on this device. Sync on dashboard Wi‑Fi to store on the server.', 'info');
         }
@@ -209,8 +234,11 @@ async function setSingleStrokeAsIdeal(strokeNum, streamKey) {
         sourceSessionId: meta.sourceSessionId
     };
     updateIdealStrokePanel();
-    buildIdealComparison();
-    if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+    if (typeof gfRefreshAnalysisOrIdealOnly === 'function') gfRefreshAnalysisOrIdealOnly();
+    else {
+        buildIdealComparison();
+        if (typeof updateAnalysis === 'function' && sessionMetrics) updateAnalysis();
+    }
     if (typeof updateCoachingInsights === 'function') updateCoachingInsights();
     const err = (res && res.error) ? res.error : 'Could not reach dashboard';
     showToast('Saved ideal on this device only: ' + err, 'warn');
@@ -243,6 +271,7 @@ async function setCurrentAsIdeal() {
 
     const res = await apiPost('/api/ideal_stroke', { name: idealName, samples, ideal_entry_angle: avgAngle });
     if (res && res.status === 'ok') {
+        cacheIdealLocal(samples, avgAngle, idealName, meta);
         await loadIdealStroke();
         showToast('Ideal baseline saved. Pushing to wearable…', 'success');
         await pushIdealToDevice(true);
@@ -278,10 +307,24 @@ async function pushIdealToDevice(silent = false) {
         pendingIdealSync = true;
         return;
     }
-    const result = await apiPost('/api/ideal_stroke/push', {
+    const pushBody = {
         samples: idealStrokeData,
         ideal_entry_angle: sessionMetrics ? sessionMetrics.avg_entry_angle : 30.0
-    });
+    };
+    const d = idealDisplayInfo;
+    if (d && d.name) {
+        const m = String(d.name).match(/stroke\s+(\d+)/i);
+        if (m) pushBody.baseline_stroke_num = Number(m[1]);
+    }
+    if (typeof processedData !== 'undefined' && processedData && processedData.length > 40 &&
+        idealStrokeData.length >= Math.floor(processedData.length * 0.65)) {
+        pushBody.baseline_kind = 'full_session';
+    } else if (pushBody.baseline_stroke_num != null) {
+        pushBody.baseline_kind = 'single_stroke';
+    } else {
+        pushBody.baseline_kind = 'custom';
+    }
+    const result = await apiPost('/api/ideal_stroke/push', pushBody);
     if (!silent) {
         showToast(result && result.status === 'ok' ? 'Pushed to wearable' : 'Failed: ' + ((result && result.error) || 'unknown'), result && result.status === 'ok' ? 'success' : 'error');
     }

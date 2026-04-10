@@ -1,5 +1,5 @@
 /**
- * GoldenForm — Per-frame 3D + charts + side view + HUD updates during playback.
+ * GoldenForm  --  Per-frame 3D + charts + side view + HUD updates during playback.
  */
 function findNearestOtherStreamIndex(idx) {
     if (!processedData.length || idx < 0 || idx >= processedData.length) return -1;
