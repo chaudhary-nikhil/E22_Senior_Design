@@ -1,147 +1,44 @@
 # GoldenForm
 
-Modular ESP-IDF firmware supporting both **MPU6050** (6-axis) and **BNO055** (9-axis) IMU sensors with comprehensive visualization systems.
+ESP-IDF firmware and Python dashboard for **BNO055**-based swim stroke analysis: on-device logging, Wi‑Fi sync to the laptop/phone dashboard, 3D visualization, stroke metrics, and haptic coaching.
 
-## 🏊 BNO055 Swim Session Logger & Visualizer
+**PDP data path:** sessions are written to **SD** on the wearable and pulled by the dashboard over **Wi‑Fi** (`/process` / `data.json`). There is **no UART/serial pipeline** for production session transfer (USB is for `idf.py` flash/monitor only).
 
-A complete swim analysis system using BNO055 9-axis IMU with session logging and playback visualization.
+## Firmware
 
-### What It Does
-- Reads 9-axis IMU data from BNO055 sensor via ESP32
-- Logs complete swim sessions to JSON files
-- Provides playback visualization of logged sessions
-- Shows all sensor data: acceleration, gyroscope, magnetometer, quaternion, temperature, calibration
+- **Target**: set in your tree (e.g. `esp32s3`); see `sdkconfig.defaults`.
+- **Project name**: `GoldenForm` (`CMakeLists.txt` → `project(GoldenForm)`).
+- **Main components**: `imu_bno055`, `stroke_detector`, `haptic`, `storage`, `wifi_server`, `protobuf`, `bus_i2c`, etc. (`main/CMakeLists.txt`).
 
-### Hardware
-- ESP32 development board
-- BNO055 IMU sensor
-- Wiring: SDA=21, SCL=22, VCC=3.3V, GND=GND
-
-### Software
-- `main/app_main.c` - Main application (53 lines)
-- `components/imu_bno055/` - BNO055 sensor driver with clock stretching fixes
-- `components/bus_i2c/` - I2C communication with BNO055 compatibility
-- `components/serial_stream/` - Serial JSON output
-- `dashboard/session_logger.py` - Web server + serial reader (286 lines)
-- `dashboard/session_visualizer.html` - Clean HTML interface (228 lines)
-- `dashboard/visualizer.js` - Optimized JavaScript for fast JSON processing (798 lines)
-- `dashboard/sessions/` - Directory for JSON session files (organized storage)
-
-### Usage
 ```bash
-# 1. Flash ESP32
-source $HOME/esp/esp-idf/export.sh
+source $HOME/esp/esp-idf/export.sh   # or your IDF env
+cd /path/to/E22_Senior_Design
+idf.py set-target <chip>
 idf.py build flash monitor
+```
 
-# 2. Start Session Logger
+## Dashboard (primary)
+
+Serve the integrated app (handles `/process` sync from the wearable and static `integrated_session_viewer.html`):
+
+```bash
 cd dashboard
-python3 session_logger.py
-
-# 3. Open Web Interface
-# Navigate to: http://localhost:8016
-# Click "Start Logging" to begin session
-# Swim with ESP32 attached
-# Click "Stop Logging" to save session to dashboard/sessions/
-# Load saved session and click "Play" for visualization
+python3 wifi_session_processor.py
+# Open the URL printed (default port from `PORT`, often 8004)
 ```
 
-### Features
-- **Real-time Logging**: Only works with actual ESP32 serial data
-- **Session Management**: Start/stop logging with timestamps from t=0
-- **Complete Data**: All 9-axis BNO055 data logged and visualized
-- **Professional Charts**: Acceleration, gyroscope, magnetometer charts
-- **Dynamic Orientation Analysis**: Automatically determines IMU starting orientation from acceleration data
-- **Accurate Coordinate Mapping**: Maps BNO055 coordinate system to Three.js visualization correctly
-- **Stroke Detection**: Automatic swimming stroke detection and analysis
-- **Future GPS Integration**: Position tracking will be added via GPS module later
-- **Clean Codebase**: Minimal, easy-to-understand code
-- **Fast Processing**: Optimized JavaScript for quick JSON data rendering
-- **Modular Structure**: Separated HTML, CSS, and JavaScript for maintainability
+Key files: `integrated_session_viewer.html`, `app.css`, `app.js`, `js/gf_*.js`, `wifi_session_processor.py` (uses `simple_imu_visualizer.StrokeProcessor` for session processing).
 
----
+## Optional: USB session logger / legacy playback
 
-## 🔄 MPU6050 Live Visualization System
+`session_logger.py` + `session_visualizer.html` + `visualizer.js` remain for JSON sessions captured over serial; use the integrated dashboard above for the full GoldenForm flow (profile, devices, merge, ideal stroke).
 
-The original MPU6050-based live visualization system (preserved from main branch).
+## Data shape
 
-### Files
-- `components/imu_mpu6050/` - MPU6050 sensor driver
-- `dashboard/simple_imu_visualizer.py` - Live MPU6050 visualization
-- `dashboard/simple_imu_3d.html` - MPU6050 HTML interface
+Logged / synced samples include IMU, quaternion, calibration, stroke counts, and haptic fields as produced by the firmware and `StrokeProcessor` (see `dashboard/wifi_session_processor.py` and `dashboard/simple_imu_visualizer.py`).
 
-### Usage
-```bash
-# Flash ESP32 with MPU6050 firmware
-idf.py set-target esp32
-idf.py build flash monitor
+## Requirements
 
-# Start MPU6050 visualizer
-cd dashboard
-python3 simple_imu_visualizer.py
-```
-
----
-
-## 🏗️ Build System
-
-### ESP-IDF Setup
-```bash
-idf.py set-target esp32
-idf.py build flash monitor
-```
-
-### Structure
-- `components/bus_i2c`: thin I²C helpers
-- `components/imu_mpu6050`: MPU6050 register driver (6-axis)
-- `components/imu_bno055`: BNO055 register driver (9-axis with fusion)
-- `components/fusion`: placeholder Madgwick/Mahony API
-- `components/ble`: stubs for BLE services (enable later)
-- `components/storage`: stubs for SD/FATFS or SPIFFS/LittleFS
-- `components/logging`: app-wide logging helpers
-- `components/serial_stream`: JSON serial output
-- `main`: application tasks and wiring
-
-### Configuration
-- Keep `sdkconfig` out of git; use `sdkconfig.defaults` to share sane defaults
-- Use feature flags in `Kconfig.projbuild` to toggle BLE/Storage/Fusion choices
-- Prefer `vTaskDelayUntil` for fixed-rate sampling loops
-
----
-
-## 📊 Data Format
-
-### BNO055 Session Data
-Each logged data point contains:
-```json
-{
-  "t": 158229,
-  "session_time": 0.0,
-  "ax": 0.1, "ay": 0.2, "az": 9.8,
-  "gx": 0.01, "gy": 0.02, "gz": 0.03,
-  "mx": 20.1, "my": -5.2, "mz": -10.3,
-  "roll": 15.2, "pitch": -8.1, "yaw": 23.4,
-  "qw": 0.9234, "qx": 0.1234, "qy": 0.2345, "qz": 0.3456,
-  "temp": 25.6,
-  "cal": {"sys": 3, "gyro": 3, "accel": 3, "mag": 3}
-}
-```
-
-**Field Explanations:**
-- `t`: ESP32 system uptime in milliseconds (raw FreeRTOS tick count)
-- `session_time`: Time relative to session start (starts at 0.0 seconds)
-- `ax/ay/az`: Acceleration in m/s²
-- `gx/gy/gz`: Gyroscope in rad/s  
-- `mx/my/mz`: Magnetometer in µT
-- `roll/pitch/yaw`: Euler angles in degrees
-- `qw/qx/qy/qz`: Quaternion components for 3D rotation
-- `temp`: Temperature in °C
-- `cal`: Calibration status (0-3 for each sensor)
-
----
-
-## 🔧 Requirements
-
-- ESP-IDF framework
-- Python 3.7+
-- BNO055 IMU sensor (for swim analysis)
-- MPU6050 IMU sensor (for live visualization)
+- ESP-IDF (version aligned with this repo’s `esp-idf` or your install)
+- Python 3 for the dashboard
+- BNO055 + ESP32 as wired in project configuration

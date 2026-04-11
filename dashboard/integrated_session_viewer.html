@@ -1,1588 +1,678 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GoldenForm Session Viewer</title>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            padding: 20px;
-            padding-bottom: 40px;
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: #111;
-            color: #e0e0e0;
-            overflow-y: auto;
-            overflow-x: hidden;
-        }
-
-        .container {
-            display: grid;
-            grid-template-columns: 1fr 360px;
-            grid-template-rows: 40vh 1fr;
-            gap: 15px;
-            min-height: calc(100vh - 80px);
-            padding-bottom: 30px;
-        }
-
-        .visualization {
-            grid-row: 1 / 2;
-            grid-column: 1 / 2;
-            background: #1a1a1a;
-            border-radius: 12px;
-            display: flex;
-            flex-direction: column;
-            position: relative;
-        }
-
-        .charts {
-            grid-row: 2 / 3;
-            grid-column: 1 / 2;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            background: #1a1a1a;
-            padding: 15px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            min-height: 280px;
-        }
-
-        .chart-container {
-            background: #222;
-            padding: 12px;
-            border-radius: 8px;
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-        }
-        .chart-container h4 {
-            margin: 0 0 10px 0;
-            color: #aaa;
-            text-align: center;
-            flex-shrink: 0;
-            font-size: 0.85em;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .chart-wrapper { flex: 1; position: relative; min-height: 0; }
-
-        .controls {
-            grid-row: 1 / 3;
-            grid-column: 2 / 3;
-            padding: 0;
-            background: #1a1a1a;
-            border-radius: 12px;
-            overflow-y: auto;
-            min-width: 300px;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* Session List Panel */
-        .session-panel {
-            padding: 16px;
-            border-bottom: 1px solid #2a2a2a;
-        }
-        .session-panel-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-        .session-panel-header h3 {
-            margin: 0;
-            font-size: 1em;
-            color: #fff;
-        }
-        .session-panel-header .badge {
-            background: #2a2a2a;
-            color: #888;
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 0.75em;
-        }
-
-        .session-cards {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            max-height: 240px;
-            overflow-y: auto;
-        }
-
-        .session-card {
-            padding: 10px 12px;
-            background: #222;
-            border: 1px solid #333;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.15s;
-            position: relative;
-        }
-        .session-card:hover { background: #282828; border-color: #444; }
-        .session-card.active {
-            background: #1a2a3a;
-            border-color: #3b82f6;
-        }
-        .session-card-name {
-            font-weight: 600;
-            font-size: 0.9em;
-            margin-bottom: 2px;
-            color: #fff;
-        }
-        .session-card-meta {
-            font-size: 0.75em;
-            color: #888;
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .session-card-meta span { white-space: nowrap; }
-        .session-card .delete-btn {
-            position: absolute;
-            top: 6px;
-            right: 6px;
-            width: 20px;
-            height: 20px;
-            border: none;
-            background: transparent;
-            color: #666;
-            font-size: 14px;
-            cursor: pointer;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0;
-            line-height: 1;
-        }
-        .session-card .delete-btn:hover { background: #3a1a1a; color: #f66; }
-
-        .no-sessions {
-            text-align: center;
-            color: #555;
-            padding: 20px 10px;
-            font-size: 0.85em;
-        }
-
-        /* Controls area */
-        .controls-body {
-            padding: 16px;
-            flex: 1;
-            overflow-y: auto;
-        }
-
-        .metric {
-            margin: 8px 0;
-            padding: 10px 12px;
-            background: #222;
-            border-radius: 8px;
-            font-size: 13px;
-            line-height: 1.5;
-        }
-        .metric strong { font-weight: 600; color: #ccc; }
-
-        .metric input[type="range"],
-        .metric input[type="number"] { width: 100%; margin-top: 6px; }
-
-        .status {
-            padding: 10px;
-            margin: 8px 0;
-            border-radius: 8px;
-            text-align: center;
-            font-weight: 600;
-            font-size: 0.85em;
-        }
-        .connected { background: #1a2e1a; color: #6ee06e; }
-        .disconnected { background: #2e1a1a; color: #e06e6e; }
-
-        button {
-            width: 100%;
-            background: #3b82f6;
-            color: white;
-            border: none;
-            padding: 11px 14px;
-            border-radius: 8px;
-            cursor: pointer;
-            margin: 5px 0;
-            font-size: 13px;
-            font-weight: 600;
-            transition: background 0.15s, transform 0.05s;
-        }
-        button:hover { background: #2563eb; }
-        button:active { transform: translateY(1px); }
-        button:disabled { background: #333; opacity: 0.5; cursor: not-allowed; }
-
-        .sync-btn {
-            background: linear-gradient(135deg, #3b82f6, #6366f1);
-            font-size: 14px;
-            padding: 12px;
-        }
-        .sync-btn:hover { background: linear-gradient(135deg, #2563eb, #4f46e5); }
-
-        #canvas {
-            border: 1px solid #333;
-            border-radius: 12px 12px 0 0;
-            width: 100%;
-            flex: 1;
-            min-height: 200px;
-            display: block;
-            background: #111;
-        }
-
-        .playback-bar {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 14px;
-            background: #1e1e1e;
-            border-radius: 0 0 12px 12px;
-            flex-shrink: 0;
-        }
-        .play-btn {
-            width: 42px;
-            height: 42px;
-            font-size: 18px;
-            padding: 0;
-            border-radius: 50%;
-            background: #3b82f6 !important;
-            flex-shrink: 0;
-            margin: 0;
-        }
-        .play-btn:hover { background: #2563eb !important; }
-        .playback-bar button:not(.play-btn) {
-            width: 32px; height: 32px; padding: 0; margin: 0; flex-shrink: 0;
-            font-size: 14px; background: #333;
-        }
-        .playback-bar button:not(.play-btn):hover { background: #444; }
-        .playback-bar .progress-bar {
-            flex: 1; height: 8px; background: #333; border-radius: 4px;
-            cursor: pointer; position: relative; min-width: 80px;
-        }
-        .playback-bar .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #3b82f6, #06b6d4);
-            border-radius: 4px;
-            width: 0%;
-            transition: width 0.1s;
-        }
-        .playback-time {
-            font-size: 0.85em;
-            min-width: 6em;
-            font-variant-numeric: tabular-nums;
-            color: #888;
-        }
-
-        .stroke-analysis-panel {
-            background: linear-gradient(135deg, #1a2a3f 0%, #222f3f 100%);
-            border: 1px solid #2a4a6f;
-        }
-        .stroke-analysis-rows { margin-top: 8px; font-size: 0.9em; }
-        .stroke-row { display: flex; justify-content: space-between; margin: 3px 0; gap: 12px; }
-        .stroke-row span:first-child { flex-shrink: 0; white-space: nowrap; color: #aaa; }
-        .stroke-row span:last-child { color: #60a5fa; text-align: right; }
-
-        .section-title {
-            font-size: 0.7em;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #555;
-            margin: 14px 0 6px 0;
-        }
-
-        /* Branding header */
-        .brand-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 16px 10px;
-            border-bottom: 1px solid #222;
-        }
-        .brand-header h2 {
-            margin: 0;
-            font-size: 1.1em;
-            font-weight: 700;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        .connection-dot {
-            width: 8px; height: 8px; border-radius: 50%;
-            display: inline-block; margin-right: 6px;
-            background: #ef4444;
-            box-shadow: 0 0 4px #ef4444;
-            transition: all 0.3s;
-        }
-        .connection-dot.ok {
-            background: #22c55e;
-            box-shadow: 0 0 6px #22c55e;
-        }
-        .conn-label {
-            font-size: 0.7em;
-            color: #888;
-            display: flex;
-            align-items: center;
-        }
-
-        /* Data integrity badge */
-        .integrity-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 0.75em;
-            padding: 2px 8px;
-            border-radius: 10px;
-            background: #1a2e1a;
-            color: #6ee06e;
-            margin-left: 6px;
-        }
-        .integrity-badge.warn {
-            background: #2e2a1a;
-            color: #e0c06e;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>GoldenForm · Swim Analysis</title>
+    <meta name="description" content="GoldenForm swim stroke analysis and real-time haptic feedback system">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#0d0d1a">
+    <link rel="stylesheet" href="/app.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
+
 <body>
-    <div class="container">
-        <div class="visualization">
-            <canvas id="canvas" width="800" height="400"></canvas>
-            <div class="playback-bar">
-                <button class="play-btn" id="play-pause-btn" onclick="togglePlayback()" title="Play / Pause">&#9654;</button>
-                <button onclick="resetPlayback()" title="Reset">&#9198;</button>
-                <button onclick="skipBackward()" title="Back 1s">&#9194;</button>
-                <button onclick="skipForward()" title="Forward 1s">&#9193;</button>
-                <div class="progress-bar" onclick="seekPlayback(event)" title="Click to seek">
-                    <div class="progress-fill" id="progress-fill"></div>
-                </div>
-                <span id="playback-time" class="playback-time">0:00 / 0:00</span>
-            </div>
+    <nav class="app-nav">
+        <span class="nav-brand">GoldenForm</span>
+        <div class="nav-tabs">
+            <button type="button" class="nav-tab active" id="tab-home" data-tab-target="home">Home</button>
+            <button type="button" class="nav-tab" id="tab-session" data-tab-target="session">Session</button>
+            <button type="button" class="nav-tab" id="tab-analysis" data-tab-target="analysis">Analysis</button>
+            <button type="button" class="nav-tab" id="tab-insights" data-tab-target="insights">Insights</button>
+            <button type="button" class="nav-tab" id="tab-settings" data-tab-target="settings">Settings</button>
+        </div>
+        <div class="nav-right-cluster">
+            <button type="button" class="nav-cal-pill nav-cal-pill--muted" id="nav-cal-pill" onclick="switchTab('session')" title="IMU fusion quality (opens Session)" aria-label="Calibration status, open Session tab">Cal …</button>
+            <div class="nav-next-hint" id="nav-next-hint" title="Suggested next action">Loading…</div>
+            <button type="button" class="btn btn-outline btn-sm nav-logout" id="nav-logout-btn" onclick="logoutUser()" style="display:none;">Log out</button>
+            <div class="nav-status"><span class="status-dot"></span><span id="conn-text">Offline</span></div>
+        </div>
+    </nav>
+
+    <div class="page active" id="page-home">
+        <div class="hero-section">
+            <h1 class="hero-title">Welcome, <span id="home-user-name">Swimmer</span></h1>
+            <p class="hero-sub">Skill Level: <span class="badge badge-gold" id="home-skill">Beginner</span></p>
         </div>
 
-        <div class="charts">
-            <div class="chart-container">
-                <h4>Acceleration (m/s&sup2;)</h4>
-                <div class="chart-wrapper"><canvas id="accelChart"></canvas></div>
+        <div class="card setup-journey-card" id="setup-journey-wrap">
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                <span>Your setup path</span>
+                <span class="badge badge-outline" id="setup-journey-phase" style="font-size:0.75em;">Loading…</span>
             </div>
-            <div class="chart-container">
-                <h4>Angular Velocity (rad/s)</h4>
-                <div class="chart-wrapper"><canvas id="gyroChart"></canvas></div>
+            <p class="setup-journey-lead" id="setup-journey-lead">Tap the next step. You only need Wi‑Fi for setup and syncing.</p>
+            <div class="setup-progress" aria-label="Setup progress">
+                <div class="setup-progress__track">
+                    <div class="setup-progress__fill" id="setup-progress-fill" style="width:0%;"></div>
+                </div>
+                <div class="setup-progress__meta"><span id="setup-progress-label">0/5</span></div>
+            </div>
+            <div class="setup-chips" id="setup-chips" aria-label="Setup status chips"></div>
+            <div class="setup-primary-cta-row">
+                <button type="button" class="btn btn-gold setup-primary-cta" id="setup-primary-cta" onclick="setupJourneyGo('profile')">
+                    <span class="cta-ic" aria-hidden="true"><i data-lucide="sparkles"></i></span>
+                    <span id="setup-primary-cta-label">Get started</span>
+                </button>
+                <button type="button" class="btn btn-outline btn-sm" id="setup-secondary-cta" onclick="switchTab('settings')">
+                    <span class="cta-ic" aria-hidden="true"><i data-lucide="settings-2"></i></span>
+                    Settings
+                </button>
+            </div>
+            <div class="setup-journey" id="setup-journey" aria-label="Setup steps"></div>
+            <div id="setup-journey-continue" class="setup-continue-wrap" aria-live="polite"></div>
+        </div>
+        <div class="grid-3">
+            <div class="card stat-card">
+                <div class="card-title">Last Session Strokes</div>
+                <div class="card-value" id="home-last-strokes">--</div>
+            </div>
+            <div class="card stat-card">
+                <div class="card-title">Stroke Rate</div>
+                <div class="card-value" id="home-last-rate">--</div>
+                <div class="card-sub">strokes/min</div>
+            </div>
+            <div class="card stat-card">
+                <div class="card-title">Consistency</div>
+                <div class="card-value" id="home-last-consistency">--</div>
+            </div>
+            <div class="card stat-card">
+                <div class="card-title">Band Cues</div>
+                <div class="card-value" id="home-last-haptic">--</div>
+                <div class="card-sub">haptic fired</div>
+            </div>
+            <div class="card stat-card">
+                <div class="card-title">Last Distance</div>
+                <div class="card-value" id="home-last-distance">--</div>
+                <div class="card-sub">meters</div>
             </div>
         </div>
-
-        <div class="controls">
-            <!-- Brand + Connection Status -->
-            <div class="brand-header">
-                <h2>GoldenForm</h2>
-                <span class="conn-label">
-                    <span class="connection-dot" id="conn-dot"></span>
-                    <span id="conn-text">Not synced</span>
-                </span>
-            </div>
-
-            <!-- Session List Panel -->
-            <div class="session-panel">
-                <div class="session-panel-header">
-                    <h3>Sessions</h3>
-                    <span class="badge" id="session-count-badge">0 saved</span>
-                </div>
-                <button class="sync-btn" onclick="syncFromDevice()">Sync Sessions from Device</button>
-                <div id="sync-status" class="status disconnected" style="display:none;"></div>
-                <div class="session-cards" id="session-cards"></div>
-                <div class="no-sessions" id="no-sessions">
-                    No sessions yet.<br>Record on device, then hold button to sync.
-                </div>
-            </div>
-
-            <!-- Controls Body -->
-            <div class="controls-body">
-                <div class="metric session-summary">
-                    <strong>Session Summary</strong>
-                    <span class="integrity-badge" id="data-integrity" style="display:none;">
-                        <span id="integrity-icon">&#10003;</span> <span id="integrity-text">Verified</span>
-                    </span><br>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;margin-top:4px;">
-                        <span>Samples: <strong id="sample-count">0</strong></span>
-                        <span>Duration: <strong id="duration">0:00</strong></span>
-                        <span>Strokes: <strong id="session-stroke-count">0</strong></span>
-                        <span>Turns: <strong id="session-turn-count">0</strong></span>
-                        <span>Rate: <strong id="session-rate">--</strong></span>
-                        <span>Consistency: <strong id="session-consistency">--</strong></span>
-                    </div>
-                    <div id="session-laps" style="margin-top:4px;font-size:0.85em;color:#888;"></div>
-                </div>
-
-                <div class="section-title">Playback Data</div>
-                <details class="metric" style="cursor:pointer;">
-                    <summary><strong>IMU Data (at playback)</strong></summary>
-                    <div style="margin-top:8px;">
-                        <strong>Accel:</strong> X <span id="ax">0</span> Y <span id="ay">0</span> Z <span id="az">0</span><br>
-                        <strong>Gyro:</strong> X <span id="gx">0</span> Y <span id="gy">0</span> Z <span id="gz">0</span><br>
-                        <strong>Pos:</strong> X <span id="px">0</span> Y <span id="py">0</span> Z <span id="pz">0</span><br>
-                        <strong>Quat:</strong> W <span id="qw">1</span> X <span id="qx">0</span> Y <span id="qy">0</span> Z <span id="qz">0</span>
-                    </div>
-                </details>
-
-                <div class="metric">
-                    <strong>Arc Scale</strong>
-                    <input type="range" id="scaleSlider" min="0.5" max="10" step="0.1" value="3" oninput="updateScale(this.value)">
-                    <div style="display:flex;justify-content:space-between;font-size:0.8em;color:#888;">
-                        <span>Current: <span id="scaleValue">3.0x</span></span>
-                        <input type="number" id="scaleInput" min="0.5" max="10" step="0.1" value="3"
-                               oninput="updateScale(this.value)" style="width:60px;margin:0;">
-                    </div>
-                </div>
-
-                <div class="section-title">Stroke Analysis</div>
-                <div class="metric">
-                    <strong>Stroke Count</strong><br>
-                    <span id="stroke-count" style="font-size:1.6em;font-weight:bold;">0</span>
-                    <span style="font-size:0.8em;color:#666;"> / <span id="stroke-count-total">0</span> total</span>
-                </div>
-
-                <div class="metric stroke-analysis-panel">
-                    <strong style="color:#7eb8ff;">Stroke Details</strong>
-                    <div class="stroke-analysis-rows">
-                        <div class="stroke-row"><span>Last duration:</span><span id="last-stroke-time">--</span></div>
-                        <div class="stroke-row"><span>Arc sweep:</span><span id="stroke-length">--</span></div>
-                        <div class="stroke-row"><span>Rate:</span><span id="stroke-rate">--</span></div>
-                        <div class="stroke-row"><span>Consistency:</span><span id="stroke-consistency">--</span></div>
-                        <div class="stroke-row"><span>Turns:</span><span id="playback-turns">0</span></div>
-                    </div>
-                    <div id="stroke-phase" style="font-size:0.8em;color:#888;margin-top:4px;"></div>
-                </div>
-
-                <div class="section-title">3D View</div>
-                <div class="metric" style="background:#1a2a1a;border:1px solid #2a3a2a;">
-                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-                        <input type="checkbox" id="show-hand" onchange="toggleHand()" checked>
-                        <span style="font-size:0.85em;">Show 3D hand along stroke path</span>
-                    </label>
-                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px;">
-                        <input type="checkbox" id="overlay-strokes" onchange="toggleStrokeOverlay()" checked>
-                        <span style="font-size:0.85em;">Overlay past strokes</span>
-                    </label>
-                    <div id="strokes-displayed-row" style="margin-top:6px;font-size:0.8em;color:#666;display:none;">
-                        Strokes shown: <span id="strokes-displayed">0</span>
-                    </div>
-                    <div style="margin-top:4px;font-size:0.75em;color:#555;">Each stroke = one color. Current stroke = white.</div>
-                </div>
-
-                <div style="display:flex;gap:6px;margin-top:8px;">
-                    <button onclick="resetView()" style="flex:1;">Reset View</button>
-                    <button onclick="clearStrokes()" style="flex:1;background:#444;">Clear Trails</button>
-                </div>
-
-                <div class="section-title">Device Calibration</div>
-                <div class="metric" id="cal-panel" style="font-size:0.85em;">
-                    <div id="cal-session-note" style="font-size:0.85em;color:#888;margin-bottom:6px;">No session data</div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
-                        <span>System: <strong id="cal-sys">0</strong>/3</span>
-                        <span>Gyro: <strong id="cal-gyro">0</strong>/3</span>
-                        <span>Accel: <strong id="cal-accel">0</strong>/3</span>
-                        <span>Mag: <strong id="cal-mag">0</strong>/3</span>
-                    </div>
-                    <div id="cal-bar" style="margin-top:6px;height:4px;border-radius:2px;background:#333;overflow:hidden;">
-                        <div id="cal-fill" style="height:100%;width:0%;background:linear-gradient(90deg,#ef4444,#eab308,#22c55e);border-radius:2px;transition:width 0.3s;"></div>
-                    </div>
-                    <div id="cal-summary" style="font-size:0.8em;color:#888;margin-top:3px;">No data</div>
-                </div>
-                <div id="tracking-status" style="display:none;"></div>
+        <div class="card" id="quick-actions" style="margin-top:16px;display:none;">
+            <div class="card-title">Quick actions</div>
+            <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;">
+                <button type="button" class="btn btn-gold" onclick="switchTab('session')">Session</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('analysis')">Analysis</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('insights')">Insights</button>
+                <button type="button" class="btn btn-outline" onclick="switchTab('settings')">Settings</button>
             </div>
         </div>
     </div>
 
-    <script src="/viz/three.min.js"></script>
-    <script src="/viz/OrbitControls.js"></script>
-    <script src="/viz/chart.umd.min.js"></script>
-    <script>
-        // =====================================================================
-        // GLOBALS
-        // =====================================================================
-        let scene, camera, renderer, imuCube, handMesh, controls = null;
-        let positionLine = null, liveTrailLine = null, waterPlane = null;
-        let positionScale = 3.0;
-        let strokeTrails = [];
-        let currentStrokePoints = [], currentStrokeAccelMags = [];
-        let lastStrokeCount = 0;
-        let initialQuaternion = null, isCalibrated = false, resetPending = false;
-        let strokeHistory = [];
-        let strokeStartTime = null;
-        let showOverlay = true;
-        const MAX_STROKES_DISPLAYED = 10;
-        const MIN_STROKE_POINTS = 10;
-
-        let accelChart, gyroChart;
-        let playbackStrokeSegments = [];
-
-        // Session state
-        let processedData = [];
-        let sessionMetrics = null;
-        let currentIndex = 0;
-        let isPlaying = false;
-        let playbackInterval = null;
-
-        // Multi-session management
-        const STORAGE_KEY = 'goldenform_sessions';
-        const MAX_SAVED_SESSIONS = 5;
-        let savedSessions = [];
-        let activeSessionIdx = -1;
-
-        // =====================================================================
-        // UTILITY
-        // =====================================================================
-        function formatTime(totalSeconds) {
-            const s = Number.isFinite(totalSeconds) ? Math.max(0, totalSeconds) : 0;
-            const m = Math.floor(s / 60);
-            const sec = Math.floor(s % 60);
-            return String(m).padStart(1, '0') + ':' + String(sec).padStart(2, '0');
-        }
-
-        function formatDate(iso) {
-            try {
-                const d = new Date(iso);
-                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-                       ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-            } catch { return ''; }
-        }
-
-        // =====================================================================
-        // SESSION PERSISTENCE (localStorage)
-        // =====================================================================
-        function loadSavedSessions() {
-            try {
-                const raw = localStorage.getItem(STORAGE_KEY);
-                savedSessions = raw ? JSON.parse(raw) : [];
-            } catch { savedSessions = []; }
-            renderSessionList();
-        }
-
-        function persistSessions() {
-            try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(savedSessions));
-            } catch (e) {
-                console.warn('Failed to save sessions to localStorage:', e);
-                if (savedSessions.length > 3) {
-                    savedSessions = savedSessions.slice(-3);
-                    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(savedSessions)); }
-                    catch { /* give up */ }
-                }
-            }
-        }
-
-        function addSession(sessionObj) {
-            savedSessions.push(sessionObj);
-            while (savedSessions.length > MAX_SAVED_SESSIONS) {
-                savedSessions.shift();
-            }
-            persistSessions();
-            renderSessionList();
-        }
-
-        function deleteSession(idx) {
-            if (idx < 0 || idx >= savedSessions.length) return;
-            savedSessions.splice(idx, 1);
-            persistSessions();
-            if (activeSessionIdx === idx) {
-                activeSessionIdx = savedSessions.length > 0 ? savedSessions.length - 1 : -1;
-                if (activeSessionIdx >= 0) selectSession(activeSessionIdx);
-                else clearVisualization();
-            } else if (activeSessionIdx > idx) {
-                activeSessionIdx--;
-            }
-            renderSessionList();
-        }
-
-        function renderSessionList() {
-            const container = document.getElementById('session-cards');
-            const noSessions = document.getElementById('no-sessions');
-            const badge = document.getElementById('session-count-badge');
-
-            badge.textContent = savedSessions.length + ' saved';
-
-            if (savedSessions.length === 0) {
-                container.innerHTML = '';
-                noSessions.style.display = '';
-                return;
-            }
-            noSessions.style.display = 'none';
-
-            let html = '';
-            for (let i = savedSessions.length - 1; i >= 0; i--) {
-                const s = savedSessions[i];
-                const isActive = i === activeSessionIdx;
-                const dur = formatTime(s.duration || 0);
-                const samples = s.sampleCount || 0;
-                const strokes = s.strokeCount || 0;
-                const turns = s.turnCount || 0;
-                const dateStr = formatDate(s.syncedAt);
-                html += `<div class="session-card${isActive ? ' active' : ''}" onclick="selectSession(${i})">
-                    <div class="session-card-name">${escapeHtml(s.name)}</div>
-                    <div class="session-card-meta">
-                        <span>${dateStr}</span>
-                        <span>${dur}</span>
-                        <span>${samples} samples</span>
-                        <span>${strokes} strokes${turns > 0 ? ' \u2022 ' + turns + ' turns' : ''}</span>
+    <div class="page" id="page-session">
+        <header class="page-heading page-heading--compact">
+            <h1 class="page-heading__title">Session</h1>
+            <p class="page-heading__sub">Replay · 3D · sync</p>
+        </header>
+        <div id="session-cal-banner" class="session-cal-banner" role="status" aria-live="polite" hidden></div>
+        <div class="grid-23">
+            <div>
+                <div class="card viz-card viz-side-card">
+                    <div class="card-title">Side view: LIA position and device tilt</div>
+                    <p class="viz-side-lead">Forward and vertical motion for each stroke. With two bands merged, paths use <strong>solid = this stroke’s band</strong> and <strong>dashed = other band</strong> (same time window). Use <strong>Speed</strong> to slow playback.</p>
+                    <div class="viz-side-canvas-wrap">
+                        <canvas id="canvas-side-view" width="880" height="340"></canvas>
                     </div>
-                    <button class="delete-btn" onclick="event.stopPropagation();deleteSession(${i})" title="Remove">&times;</button>
-                </div>`;
-            }
-            container.innerHTML = html;
-        }
-
-        function escapeHtml(s) {
-            const d = document.createElement('div');
-            d.textContent = s;
-            return d.innerHTML;
-        }
-
-        async function selectSession(idx) {
-            if (idx < 0 || idx >= savedSessions.length) return;
-            activeSessionIdx = idx;
-            const session = savedSessions[idx];
-
-            processedData = session.processedData || [];
-            sessionMetrics = session.metrics || null;
-
-            // Re-process through server to use latest stroke/position algorithm
-            if (processedData.length > 0) {
-                try {
-                    setConnectionStatus(false, 'Re-processing...');
-                    const resp = await fetch('/reprocess', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ processedData: processedData })
-                    });
-                    if (resp.ok) {
-                        const result = await resp.json();
-                        if (result.processedData && result.processedData.length > 0) {
-                            processedData = result.processedData;
-                            sessionMetrics = result.metrics || sessionMetrics;
-                            session.processedData = processedData;
-                            session.metrics = sessionMetrics;
-                            persistSessions();
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Re-process unavailable, using cached data:', e.message);
-                }
-            }
-
-            updateSessionSummary(sessionMetrics);
-            setConnectionStatus(true, 'Session loaded');
-
-            isCalibrated = true;
-            buildPlaybackStrokeSegments();
-            resetPlayback();
-            renderSessionList();
-        }
-
-        function clearVisualization() {
-            processedData = [];
-            sessionMetrics = null;
-            currentIndex = 0;
-            pausePlayback();
-            clearChartData();
-            if (liveTrailLine && typeof THREE !== 'undefined') {
-                liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-            }
-            if (handMesh) handMesh.visible = false;
-            strokeTrails.forEach(t => { if (scene) scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
-            strokeTrails = [];
-            document.getElementById('sample-count').textContent = '0';
-            document.getElementById('duration').textContent = '0:00';
-            document.getElementById('session-stroke-count').textContent = '0';
-            document.getElementById('session-turn-count').textContent = '0';
-            document.getElementById('session-rate').textContent = '--';
-            document.getElementById('session-consistency').textContent = '--';
-            const lapsEl = document.getElementById('session-laps');
-            if (lapsEl) lapsEl.textContent = '';
-            const calNote = document.getElementById('cal-session-note');
-            if (calNote) { calNote.textContent = 'No session data'; calNote.style.color = '#888'; }
-            const phaseEl = document.getElementById('stroke-phase');
-            if (phaseEl) phaseEl.textContent = '';
-            document.getElementById('playback-turns').textContent = '0';
-            updatePlaybackTime();
-        }
-
-        // =====================================================================
-        // CONNECTION STATUS (Req 6-2-1)
-        // =====================================================================
-        function setConnectionStatus(connected, label) {
-            const dot = document.getElementById('conn-dot');
-            const text = document.getElementById('conn-text');
-            if (dot) dot.className = connected ? 'connection-dot ok' : 'connection-dot';
-            if (text) text.textContent = label || (connected ? 'Connected' : 'Not synced');
-        }
-
-        function setDataIntegrity(sampleCount) {
-            const badge = document.getElementById('data-integrity');
-            const icon = document.getElementById('integrity-icon');
-            const text = document.getElementById('integrity-text');
-            if (!badge) return;
-            if (sampleCount > 0) {
-                badge.style.display = '';
-                badge.className = 'integrity-badge';
-                icon.innerHTML = '&#10003;';
-                text.textContent = sampleCount + ' samples verified';
-            } else {
-                badge.style.display = 'none';
-            }
-        }
-
-        // =====================================================================
-        // SYNC FROM DEVICE
-        // =====================================================================
-        let syncInProgress = false;
-
-        async function syncFromDevice() {
-            if (syncInProgress) return;
-            syncInProgress = true;
-
-            const syncBtn = document.querySelector('.sync-btn');
-            if (syncBtn) { syncBtn.disabled = true; syncBtn.textContent = 'Syncing...'; }
-
-            const statusEl = document.getElementById('sync-status');
-            statusEl.style.display = '';
-            statusEl.textContent = 'Connecting to device...';
-            statusEl.className = 'status disconnected';
-            setConnectionStatus(false, 'Syncing...');
-
-            try {
-                const response = await fetch('/process', { mode: 'cors', cache: 'no-cache' });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const result = await response.json();
-
-                if (result.error) throw new Error(result.error);
-
-                const sessions = result.sessions || [];
-                if (sessions.length === 0) throw new Error('No sessions received');
-
-                const now = new Date().toISOString();
-                let addedCount = 0;
-                let totalSamples = 0;
-
-                const integrity = result.integrity || {};
-
-                for (const sess of sessions) {
-                    if (!sess.processed_data || sess.processed_data.length === 0) continue;
-
-                    const duration = sess.duration || 0;
-                    const sampleCount = sess.processed_samples || sess.processed_data.length;
-                    const strokeCount = sess.metrics?.stroke_count || 0;
-                    const turnCount = sess.metrics?.turn_count || 0;
-                    const syncedAt = sess.syncedAt || now;
-
-                    addSession({
-                        id: `${now}_${sess.id}`,
-                        name: sess.name || `Session ${sess.id}`,
-                        syncedAt: syncedAt,
-                        duration: duration,
-                        sampleCount: sampleCount,
-                        strokeCount: strokeCount,
-                        turnCount: turnCount,
-                        processedData: sess.processed_data,
-                        metrics: sess.metrics
-                    });
-                    addedCount++;
-                    totalSamples += sampleCount;
-                }
-
-                const integrityLabel = integrity.verified !== false ? 'verified' : 'mismatch';
-                statusEl.textContent = `Synced ${addedCount} session${addedCount !== 1 ? 's' : ''} \u2022 ${totalSamples} samples (${integrityLabel})`;
-                statusEl.className = 'status connected';
-                setConnectionStatus(true, integrity.verified !== false ? 'Synced \u2713' : 'Synced (integrity warning)');
-
-                if (savedSessions.length > 0) {
-                    selectSession(savedSessions.length - 1);
-                }
-
-                setTimeout(() => { statusEl.style.display = 'none'; }, 4000);
-
-            } catch (error) {
-                console.error('Sync error:', error);
-                statusEl.textContent = 'Error: ' + (error.message || 'Sync failed');
-                statusEl.className = 'status disconnected';
-                setConnectionStatus(false, 'Sync failed');
-
-                alert('Could not sync session data.\n\nMake sure:\n' +
-                      '1. Device in SYNC mode (hold button, LED blinking)\n' +
-                      '2. Connected to WiFi: GoldenForm\n' +
-                      '3. Python server running (wifi_session_processor.py)\n' +
-                      '4. Click Sync only ONCE while LED is blinking');
-            } finally {
-                syncInProgress = false;
-                if (syncBtn) { syncBtn.disabled = false; syncBtn.textContent = 'Sync Sessions from Device'; }
-            }
-        }
-
-        // Legacy alias
-        function loadSessionFromWiFi() { syncFromDevice(); }
-
-        // =====================================================================
-        // SESSION SUMMARY
-        // =====================================================================
-        function updateSessionSummary(metrics) {
-            const totalStrokes = metrics?.stroke_count ??
-                (processedData.length > 0 ? (processedData[processedData.length - 1].stroke_count ?? 0) : 0);
-            const totalTurns = metrics?.turn_count ??
-                (processedData.length > 0 ? (processedData[processedData.length - 1].turn_count ?? 0) : 0);
-            document.getElementById('session-stroke-count').textContent = totalStrokes;
-            document.getElementById('session-turn-count').textContent = totalTurns;
-            document.getElementById('sample-count').textContent = processedData.length;
-            setDataIntegrity(processedData.length);
-
-            const lapsEl = document.getElementById('session-laps');
-            if (totalTurns > 0 && lapsEl) {
-                const laps = Math.ceil((totalTurns + 1) / 2);
-                lapsEl.textContent = `~${laps} lap${laps !== 1 ? 's' : ''} (${totalTurns} wall turn${totalTurns !== 1 ? 's' : ''})`;
-            } else if (lapsEl) {
-                lapsEl.textContent = '';
-            }
-
-            if (metrics) {
-                document.getElementById('duration').textContent = formatTime(metrics.duration || 0);
-                document.getElementById('session-rate').textContent =
-                    totalStrokes > 0 && metrics.stroke_rate != null ? metrics.stroke_rate.toFixed(1) + ' /min' : '0.0 /min';
-                document.getElementById('session-consistency').textContent =
-                    totalStrokes > 0 && metrics.consistency != null ? metrics.consistency.toFixed(0) + '%' : '--';
-            } else if (processedData.length > 0) {
-                const t0 = processedData[0]?.timestamp || 0;
-                const tEnd = processedData[processedData.length - 1]?.timestamp || 0;
-                document.getElementById('duration').textContent = formatTime((tEnd - t0) / 1000);
-                document.getElementById('session-rate').textContent = '0.0 /min';
-                document.getElementById('session-consistency').textContent = '--';
-            }
-
-            updateSessionCalibrationQuality();
-        }
-
-        function updateSessionCalibrationQuality() {
-            if (processedData.length === 0) return;
-            let accelGood = 0, gyroGood = 0;
-            for (const p of processedData) {
-                const cal = p.calibration || {};
-                if ((cal.accel ?? 0) >= 2) accelGood++;
-                if ((cal.gyro ?? 0) >= 2) gyroGood++;
-            }
-            const n = processedData.length;
-            const accelPct = Math.round(accelGood / n * 100);
-            const gyroPct = Math.round(gyroGood / n * 100);
-            const calNote = document.getElementById('cal-session-note');
-            if (calNote) {
-                if (accelPct >= 80 && gyroPct >= 80) {
-                    calNote.textContent = 'Good calibration throughout session';
-                    calNote.style.color = '#4ade80';
-                } else if (accelPct >= 40 || gyroPct >= 40) {
-                    calNote.textContent = `Partial cal: accel ${accelPct}%, gyro ${gyroPct}% of session`;
-                    calNote.style.color = '#eab308';
-                } else {
-                    calNote.textContent = `Low cal: accel ${accelPct}%, gyro ${gyroPct}% - data quality limited`;
-                    calNote.style.color = '#ef4444';
-                }
-            }
-        }
-
-        // =====================================================================
-        // 3D SCENE
-        // =====================================================================
-        // Simple 3D hand mesh (palm + fingers) for stroke path visualization.
-        // Palm = flat box in XY, fingers extend along +Z. Scale fits arc visualization.
-        function createHandModel() {
-            if (typeof THREE === 'undefined') return null;
-            const group = new THREE.Group();
-            const mat = new THREE.MeshPhongMaterial({
-                color: 0xe8b88b,
-                emissive: 0x1a1008,
-                specular: 0x442211,
-                shininess: 20,
-                flatShading: false
-            });
-            const cyl = (rTop, rBot, h, seg = 10) =>
-                new THREE.CylinderGeometry(rTop, rBot, h, seg);
-
-            // Palm - slightly trapezoidal, thicker at wrist
-            const palmGeo = new THREE.BoxGeometry(0.09, 0.06, 0.035);
-            const palm = new THREE.Mesh(palmGeo, mat.clone());
-            palm.position.set(0, 0, 0);
-            group.add(palm);
-
-            // Finger segments: [proximal, middle, distal] lengths (index, middle, ring, pinky)
-            const fingerSegs = [
-                [0.032, 0.028, 0.022],  // index
-                [0.035, 0.031, 0.024],  // middle (longest)
-                [0.033, 0.029, 0.022],  // ring
-                [0.025, 0.022, 0.018]   // pinky (shortest)
-            ];
-            const fingerBaseY = [-0.022, -0.008, 0.008, 0.022];  // spread from center
-
-            for (let f = 0; f < 4; f++) {
-                const segs = fingerSegs[f];
-                let z = 0.0175;
-                let r = 0.012;
-                for (let s = 0; s < 3; s++) {
-                    const seg = new THREE.Mesh(cyl(r, r * 1.08, segs[s], 8), mat.clone());
-                    seg.position.set(fingerBaseY[f], 0, z + segs[s] / 2);
-                    seg.rotation.x = Math.PI / 2;
-                    group.add(seg);
-                    z += segs[s];
-                    r *= 0.85;  // taper
-                }
-            }
-
-            // Thumb - 2 segments, angled from side of palm
-            const thumbGrp = new THREE.Group();
-            thumbGrp.position.set(-0.055, -0.028, -0.01);
-            thumbGrp.rotation.z = 0.5;   // angle out from palm
-            thumbGrp.rotation.x = -0.3;  // curl toward fingers
-            const t1 = new THREE.Mesh(cyl(0.011, 0.012, 0.028, 8), mat.clone());
-            t1.position.set(0, 0, 0.014); t1.rotation.x = Math.PI / 2;
-            thumbGrp.add(t1);
-            const t2 = new THREE.Mesh(cyl(0.009, 0.011, 0.022, 8), mat.clone());
-            t2.position.set(0, 0, 0.039); t2.rotation.x = Math.PI / 2;
-            thumbGrp.add(t2);
-            group.add(thumbGrp);
-
-            // Wrist stub
-            const wrist = new THREE.Mesh(cyl(0.035, 0.04, 0.03, 10), mat.clone());
-            wrist.position.set(0, 0, -0.04);
-            wrist.rotation.x = Math.PI / 2;
-            group.add(wrist);
-
-            group.scale.setScalar(1.4);
-            return group;
-        }
-
-        function initScene() {
-            try {
-                const canvas = document.getElementById('canvas');
-                if (!canvas || typeof THREE === 'undefined') {
-                    console.error('Canvas or Three.js not available');
-                    return;
-                }
-
-                scene = new THREE.Scene();
-                scene.background = new THREE.Color(0x111111);
-
-                camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / Math.max(canvas.clientHeight, 1), 0.1, 1000);
-                camera.position.set(3, 3, 3);
-                camera.lookAt(0, 0, 0);
-
-                try {
-                    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-                } catch (e) {
-                    console.error('WebGL init failed:', e);
-                    return;
-                }
-
-                const w = canvas.clientWidth || canvas.width || 800;
-                const h = canvas.clientHeight || canvas.height || 400;
-                renderer.setSize(w, h, false);
-                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-                camera.aspect = w / h;
-                camera.updateProjectionMatrix();
-
-                if (THREE.OrbitControls) {
-                    controls = new THREE.OrbitControls(camera, renderer.domElement);
-                    controls.enableDamping = true;
-                    controls.dampingFactor = 0.08;
-                    controls.target.set(0, 0, 0);
-                    controls.update();
-                    controls.saveState();
-                }
-
-                scene.add(new THREE.GridHelper(10, 10, 0x333333, 0x1a1a1a));
-                scene.add(new THREE.AxesHelper(2));
-
-                const geo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-                imuCube = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0xff4444 }));
-                imuCube.castShadow = true;
-                scene.add(imuCube);
-
-                handMesh = createHandModel();
-                if (handMesh) {
-                    handMesh.visible = true;
-                    scene.add(handMesh);
-                }
-
-                const plGeo = new THREE.BufferGeometry();
-                plGeo.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0,0,0,0], 3));
-                positionLine = new THREE.Line(plGeo, new THREE.LineBasicMaterial({
-                    color: 0x00ff00, opacity: 0.6, transparent: true
-                }));
-                scene.add(positionLine);
-
-                const ltGeo = new THREE.BufferGeometry();
-                ltGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-                liveTrailLine = new THREE.Line(ltGeo, new THREE.LineBasicMaterial({
-                    color: 0xffffff, opacity: 0.95, transparent: true
-                }));
-                scene.add(liveTrailLine);
-
-                scene.add(new THREE.AmbientLight(0x404040, 0.6));
-                const dl = new THREE.DirectionalLight(0xffffff, 0.8);
-                dl.position.set(5, 5, 5);
-                dl.castShadow = true;
-                scene.add(dl);
-
-                animate();
-            } catch (error) {
-                console.error('3D scene init error:', error);
-            }
-        }
-
-        function animate() {
-            requestAnimationFrame(animate);
-            if (renderer && scene && camera) {
-                if (controls) controls.update();
-                renderer.render(scene, camera);
-            }
-        }
-
-        // =====================================================================
-        // CHARTS
-        // =====================================================================
-        function initCharts() {
-            const accelCanvas = document.getElementById('accelChart');
-            const gyroCanvas = document.getElementById('gyroChart');
-            if (!accelCanvas || !gyroCanvas) return;
-            if (typeof Chart === 'undefined') {
-                console.error('Chart.js not loaded - charts unavailable');
-                return;
-            }
-
-            const base = {
-                responsive: true, maintainAspectRatio: false, animation: false,
-                interaction: { mode: 'index', intersect: false },
-                scales: {
-                    x: {
-                        ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8, font: { size: 10 } },
-                        grid: { color: '#1a1a1a' }
-                    },
-                    y: {
-                        ticks: { color: '#666', font: { size: 10 } },
-                        grid: { color: '#1a1a1a' }
-                    }
-                },
-                plugins: {
-                    legend: { labels: { color: '#999', boxWidth: 10, font: { size: 10 }, padding: 8 } },
-                    tooltip: { enabled: true, backgroundColor: '#222', titleFont: { size: 11 }, bodyFont: { size: 10 } }
-                }
-            };
-
-            accelChart = new Chart(accelCanvas.getContext('2d'), {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [
-                        { label: 'X', data: [], borderColor: '#f87171', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
-                        { label: 'Y', data: [], borderColor: '#60a5fa', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
-                        { label: 'Z', data: [], borderColor: '#34d399', tension: 0.25, pointRadius: 0, borderWidth: 1.5 }
-                    ]
-                },
-                options: JSON.parse(JSON.stringify(base))
-            });
-
-            gyroChart = new Chart(gyroCanvas.getContext('2d'), {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [
-                        { label: 'X', data: [], borderColor: '#fb923c', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
-                        { label: 'Y', data: [], borderColor: '#a78bfa', tension: 0.25, pointRadius: 0, borderWidth: 1.5 },
-                        { label: 'Z', data: [], borderColor: '#94a3b8', tension: 0.25, pointRadius: 0, borderWidth: 1.5 }
-                    ]
-                },
-                options: JSON.parse(JSON.stringify(base))
-            });
-        }
-
-        function clearChartData() {
-            [accelChart, gyroChart].forEach(c => {
-                if (!c) return;
-                c.data.labels = [];
-                c.data.datasets.forEach(ds => { ds.data = []; });
-                c.update('none');
-            });
-        }
-
-        const CHART_WINDOW_SAMPLES = 200;
-
-        function updateChartsForPlayback(upToIndex) {
-            if (!accelChart || !gyroChart || processedData.length === 0) return;
-            const center = Math.max(0, Math.min(Math.floor(upToIndex), processedData.length - 1));
-            const halfWin = Math.floor(CHART_WINDOW_SAMPLES / 2);
-            let start = Math.max(0, center - halfWin);
-            let end = Math.min(processedData.length, start + CHART_WINDOW_SAMPLES);
-            if (end - start < CHART_WINDOW_SAMPLES) start = Math.max(0, end - CHART_WINDOW_SAMPLES);
-
-            const t0 = processedData[0]?.timestamp || 0;
-            const labels = [], axArr = [], ayArr = [], azArr = [], gxArr = [], gyArr = [], gzArr = [];
-            const cursorIdx = center - start;
-            for (let i = start; i < end; i++) {
-                const d = processedData[i];
-                const tSec = (d.timestamp - t0) / 1000;
-                labels.push(tSec >= 60 ? Math.floor(tSec / 60) + ':' + ('0' + (tSec % 60).toFixed(0)).slice(-2) : tSec.toFixed(1) + 's');
-                axArr.push(d.acceleration?.ax ?? 0); ayArr.push(d.acceleration?.ay ?? 0); azArr.push(d.acceleration?.az ?? 0);
-                gxArr.push(d.angular_velocity?.gx ?? 0); gyArr.push(d.angular_velocity?.gy ?? 0); gzArr.push(d.angular_velocity?.gz ?? 0);
-            }
-            accelChart.data.labels = labels;
-            accelChart.data.datasets[0].data = axArr; accelChart.data.datasets[1].data = ayArr; accelChart.data.datasets[2].data = azArr;
-            gyroChart.data.labels = labels;
-            gyroChart.data.datasets[0].data = gxArr; gyroChart.data.datasets[1].data = gyArr; gyroChart.data.datasets[2].data = gzArr;
-
-            [accelChart, gyroChart].forEach(chart => {
-                if (!chart.options.plugins) chart.options.plugins = {};
-                chart.options.plugins.annotation = {
-                    annotations: {
-                        cursor: { type: 'line', xMin: cursorIdx, xMax: cursorIdx, borderColor: '#ffffff55', borderWidth: 1, borderDash: [4, 2] }
-                    }
-                };
-            });
-
-            accelChart.update('none'); gyroChart.update('none');
-        }
-
-        // =====================================================================
-        // PLAYBACK
-        // =====================================================================
-        function togglePlayback() { isPlaying ? pausePlayback() : startPlayback(); }
-
-        function startPlayback() {
-            if (processedData.length === 0 || currentIndex >= processedData.length) return;
-            isPlaying = true;
-            document.getElementById('play-pause-btn').innerHTML = '&#9208;';
-            playbackStep();
-        }
-
-        function pausePlayback() {
-            isPlaying = false;
-            document.getElementById('play-pause-btn').innerHTML = '&#9654;';
-            if (playbackInterval) { clearTimeout(playbackInterval); playbackInterval = null; }
-        }
-
-        function playbackStep() {
-            if (!isPlaying || currentIndex >= processedData.length) { pausePlayback(); return; }
-            updateVisualizationFromProcessed(currentIndex);
-            updatePlaybackTime();
-            const currentT = processedData[currentIndex]?.timestamp || 0;
-            currentIndex++;
-            if (currentIndex < processedData.length) {
-                const nextT = processedData[currentIndex]?.timestamp || 0;
-                playbackInterval = setTimeout(playbackStep, Math.max(1, nextT - currentT));
-            } else { pausePlayback(); }
-        }
-
-        function resetPlayback() {
-            pausePlayback();
-            currentIndex = 0;
-            if (processedData.length > 0) updateVisualizationFromProcessed(0);
-            updatePlaybackTime();
-        }
-
-        function skipBackward() {
-            if (processedData.length === 0) return;
-            const target = Math.max(processedData[0]?.timestamp || 0, (processedData[currentIndex]?.timestamp || 0) - 1000);
-            while (currentIndex > 0 && (processedData[currentIndex]?.timestamp || 0) > target) currentIndex--;
-            if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
-            updatePlaybackTime();
-        }
-
-        function skipForward() {
-            if (processedData.length === 0) return;
-            const target = (processedData[currentIndex]?.timestamp || 0) + 1000;
-            while (currentIndex < processedData.length - 1 && (processedData[currentIndex]?.timestamp || 0) < target) currentIndex++;
-            if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
-            updatePlaybackTime();
-        }
-
-        function seekPlayback(event) {
-            const bar = event.currentTarget;
-            const rect = bar.getBoundingClientRect();
-            if (rect.width <= 0 || processedData.length === 0) return;
-            const frac = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-            currentIndex = Math.max(0, Math.min(processedData.length - 1, Math.floor(frac * processedData.length)));
-            if (processedData.length > 0) updateVisualizationFromProcessed(currentIndex);
-            updatePlaybackTime();
-        }
-
-        function updatePlaybackTime() {
-            if (processedData.length === 0) {
-                document.getElementById('playback-time').textContent = '0:00 / 0:00';
-                document.getElementById('progress-fill').style.width = '0%';
-                return;
-            }
-            const ct = processedData[currentIndex]?.timestamp || 0;
-            const t0 = processedData[0]?.timestamp || 0;
-            const te = processedData[processedData.length - 1]?.timestamp || 0;
-            document.getElementById('playback-time').textContent =
-                `${formatTime((ct - t0) / 1000)} / ${formatTime((te - t0) / 1000)}`;
-            document.getElementById('progress-fill').style.width =
-                `${(currentIndex / processedData.length) * 100}%`;
-        }
-
-
-        // =====================================================================
-        // STROKE VISUALIZATION
-        // Each stroke is drawn as displacement from its start, so every stroke
-        // starts and ends at the origin (0,0,0). That shows the circular arc
-        // clearly and resets to origin after each stroke for form feedback.
-        // Arc Scale = sphere radius. Distinct color per stroke for comparison.
-        // =====================================================================
-
-        const TRAIL_SMOOTH_WINDOW = 5;
-        const STROKE_COLORS = [0x00d4ff, 0xff9500, 0x00ff88, 0xbf5fff, 0xffff00, 0xff4444, 0x4488ff];  // cyan, orange, green, purple, yellow, red, blue
-
-        function nq(q) {
-            const w = q?.qw ?? 1, x = q?.qx ?? 0, y = q?.qy ?? 0, z = q?.qz ?? 0;
-            const m = Math.hypot(w, x, y, z);
-            return m > 1e-8 ? new THREE.Quaternion(x/m, y/m, z/m, w/m) : new THREE.Quaternion(0,0,0,1);
-        }
-
-        // Displacement from stroke start: tip position minus start position.
-        // So every stroke starts at (0,0,0) and ends at (0,0,0) = clear reset to origin.
-        function trailPtDisplacement(dataQ, refQ, scale) {
-            const tip = new THREE.Vector3(0, 0, scale);
-            tip.applyQuaternion(nq(dataQ));
-            const start = new THREE.Vector3(0, 0, scale);
-            start.applyQuaternion(nq(refQ));
-            return tip.sub(start);
-        }
-
-        function getSegStart(upToIndex) {
-            const sc = processedData[upToIndex]?.stroke_count ?? 0;
-            for (let i = upToIndex; i >= 0; i--) {
-                if ((processedData[i]?.stroke_count ?? 0) < sc) return i + 1;
-            }
-            return 0;
-        }
-
-        function smoothTrailPoints(points, windowSize) {
-            if (!points.length || windowSize < 2) return points;
-            const half = Math.floor(windowSize / 2);
-            const out = [];
-            for (let i = 0; i < points.length; i++) {
-                let x = 0, y = 0, z = 0, n = 0;
-                for (let j = Math.max(0, i - half); j <= Math.min(points.length - 1, i + half); j++) {
-                    x += points[j].x; y += points[j].y; z += points[j].z;
-                    n++;
-                }
-                out.push(new THREE.Vector3(x/n, y/n, z/n));
-            }
-            return out;
-        }
-
-        // =====================================================================
-        // VISUALIZATION UPDATE
-        // =====================================================================
-        function updateVisualizationFromProcessed(index) {
-            if (index < 0 || index >= processedData.length) return;
-            const p = processedData[index];
-            updateDisplay(p);
-            updateIMUVisualization(p);
-            updateChartsForPlayback(index);
-            updatePlaybackTrail(index);
-            updateStrokeOverlaysForPlayback(index);
-            updateStrokeMetricsForPlayback(index);
-        }
-
-        function updateDisplay(data) {
-            if (!data) return;
-            const acc = data.acceleration || {}, ang = data.angular_velocity || {};
-            const pos = data.position || {}, quat = data.quaternion || {};
-            document.getElementById('ax').textContent = (acc.ax ?? 0).toFixed(3);
-            document.getElementById('ay').textContent = (acc.ay ?? 0).toFixed(3);
-            document.getElementById('az').textContent = (acc.az ?? 0).toFixed(3);
-            document.getElementById('gx').textContent = (ang.gx ?? 0).toFixed(3);
-            document.getElementById('gy').textContent = (ang.gy ?? 0).toFixed(3);
-            document.getElementById('gz').textContent = (ang.gz ?? 0).toFixed(3);
-            document.getElementById('px').textContent = (pos.px ?? 0).toFixed(3);
-            document.getElementById('py').textContent = (pos.py ?? 0).toFixed(3);
-            document.getElementById('pz').textContent = (pos.pz ?? 0).toFixed(3);
-            document.getElementById('qw').textContent = (quat.qw ?? 1).toFixed(3);
-            document.getElementById('qx').textContent = (quat.qx ?? 0).toFixed(3);
-            document.getElementById('qy').textContent = (quat.qy ?? 0).toFixed(3);
-            document.getElementById('qz').textContent = (quat.qz ?? 0).toFixed(3);
-
-            if (data.calibration) {
-                const cal = data.calibration;
-                document.getElementById('cal-sys').textContent = cal.sys;
-                document.getElementById('cal-gyro').textContent = cal.gyro;
-                document.getElementById('cal-accel').textContent = cal.accel;
-                document.getElementById('cal-mag').textContent = cal.mag;
-                const total = (cal.sys + cal.gyro + cal.accel + cal.mag);
-                const pct = Math.round((total / 12) * 100);
-                const fill = document.getElementById('cal-fill');
-                if (fill) fill.style.width = pct + '%';
-                const summary = document.getElementById('cal-summary');
-                if (summary) {
-                    if (pct >= 75) summary.textContent = 'Fully calibrated';
-                    else if (pct >= 50) summary.textContent = 'Partially calibrated';
-                    else summary.textContent = 'Needs calibration';
-                }
-                const ts = document.getElementById('tracking-status');
-                if (data.tracking_active) {
-                    ts.textContent = 'Tracking: ACTIVE';
-                    ts.className = 'status connected';
-                } else {
-                    ts.textContent = 'Tracking: Ready';
-                    ts.className = 'status';
-                    ts.style.backgroundColor = '#222';
-                    ts.style.color = '#888';
-                }
-            }
-        }
-
-        function updateIMUVisualization(data) {
-            if (!data || !imuCube) return;
-            const q = data.quaternion || {};
-            const tq = nq(q);
-
-            // Main-branch style: cube at origin, rotates with raw quaternion
-            imuCube.position.set(0, 0, 0);
-            imuCube.setRotationFromQuaternion(tq);
-
-            // Green while actively stroking, red otherwise
-            const isTracking = data.tracking_active || false;
-            if (imuCube.material) imuCube.material.color.setHex(isTracking ? 0x44ff44 : 0xff4444);
-
-            // Position line: from origin to current displacement (so it resets to origin each stroke)
-            let tipVec = new THREE.Vector3(0, 0, 0);
-            if (positionLine) {
-                const segStart = getSegStart(currentIndex);
-                const refQ = processedData[segStart]?.quaternion;
-                tipVec = refQ ? trailPtDisplacement(q, refQ, positionScale) : new THREE.Vector3(0, 0, 0);
-                const pa = positionLine.geometry.attributes.position.array;
-                pa[3] = tipVec.x; pa[4] = tipVec.y; pa[5] = tipVec.z;
-                positionLine.geometry.attributes.position.needsUpdate = true;
-            }
-
-            // 3D hand: placed at stroke path tip, oriented with quaternion
-            if (handMesh) {
-                handMesh.position.copy(tipVec);
-                handMesh.setRotationFromQuaternion(tq);
-                handMesh.visible = (document.getElementById('show-hand')?.checked ?? true);
-            }
-
-            document.getElementById('stroke-count').textContent = data.stroke_count || 0;
-        }
-
-        function updatePlaybackTrail(upToIndex) {
-            if (!liveTrailLine || !scene || processedData.length === 0) return;
-            const n = Math.min(Math.max(0, upToIndex) + 1, processedData.length);
-            if (n < 2) {
-                liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-                return;
-            }
-            const segStart = getSegStart(n - 1);
-            const refQ = processedData[segStart]?.quaternion;
-            const points = [];
-            for (let i = segStart; i < n; i++) {
-                const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, positionScale);
-                points.push(pt.clone());
-            }
-            const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
-            const flat = [];
-            smoothed.forEach(p => { flat.push(p.x, p.y, p.z); });
-            liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute(flat, 3));
-            liveTrailLine.geometry.attributes.position.needsUpdate = true;
-        }
-
-        // =====================================================================
-        // STROKE SEGMENTS & OVERLAYS
-        // =====================================================================
-        function buildPlaybackStrokeSegments() {
-            playbackStrokeSegments = [];
-            let last = 0, start = 0;
-            for (let i = 0; i < processedData.length; i++) {
-                const c = processedData[i].stroke_count ?? 0;
-                if (c > last) {
-                    if (last > 0 && start < i) playbackStrokeSegments.push({ startIdx: start, endIdx: i - 1, strokeNum: last });
-                    start = i; last = c;
-                }
-            }
-            if (last > 0 && start < processedData.length)
-                playbackStrokeSegments.push({ startIdx: start, endIdx: processedData.length - 1, strokeNum: last });
-        }
-
-        function updateStrokeOverlaysForPlayback(upToIndex) {
-            if (!scene) return;
-            strokeTrails.forEach(t => { scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
-            strokeTrails = [];
-            if (!(document.getElementById('overlay-strokes')?.checked ?? true)) return;
-
-            let shown = 0;
-            for (const seg of playbackStrokeSegments) {
-                if (seg.endIdx > upToIndex || shown >= MAX_STROKES_DISPLAYED) break;
-                const endBound = Math.min(seg.endIdx, upToIndex);
-                const refQ = processedData[seg.startIdx]?.quaternion;
-                const points = [];
-                for (let i = seg.startIdx; i <= endBound; i++) {
-                    const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, positionScale);
-                    points.push(pt.clone());
-                }
-                const smoothed = smoothTrailPoints(points, TRAIL_SMOOTH_WINDOW);
-                if (smoothed.length >= 2) { createStrokeTrail(smoothed, seg.strokeNum); shown++; }
-            }
-            document.getElementById('strokes-displayed').textContent = strokeTrails.length + ' of ' + playbackStrokeSegments.length;
-            const srow = document.getElementById('strokes-displayed-row');
-            if (srow) srow.style.display = strokeTrails.length > 0 ? '' : 'none';
-        }
-
-        function updateStrokeMetricsForPlayback(upToIndex) {
-            if (processedData.length === 0) return;
-            const idx = Math.max(0, Math.min(Math.floor(upToIndex), processedData.length - 1));
-            const d = processedData[idx];
-            const currentStrokes = d.stroke_count ?? 0;
-            const currentTurns = d.turn_count ?? 0;
-            document.getElementById('stroke-count').textContent = currentStrokes;
-            document.getElementById('stroke-count-total').textContent = sessionMetrics?.stroke_count ?? currentStrokes;
-
-            const completed = playbackStrokeSegments.filter(s => s.endIdx <= upToIndex);
-            if (completed.length === 0) {
-                if (sessionMetrics && sessionMetrics.stroke_count > 0) {
-                    document.getElementById('last-stroke-time').textContent =
-                        sessionMetrics.avg_stroke_time != null ? sessionMetrics.avg_stroke_time.toFixed(2) + ' s' : '--';
-                    document.getElementById('stroke-length').textContent = '--';
-                    document.getElementById('stroke-rate').textContent =
-                        sessionMetrics.stroke_rate != null ? sessionMetrics.stroke_rate.toFixed(1) + ' /min' : '--';
-                    document.getElementById('stroke-consistency').textContent =
-                        sessionMetrics.consistency != null ? sessionMetrics.consistency.toFixed(0) + '%' : '--';
-                } else {
-                    document.getElementById('last-stroke-time').textContent = '--';
-                    document.getElementById('stroke-length').textContent = '--';
-                    document.getElementById('stroke-rate').textContent = '0.0 /min';
-                    document.getElementById('stroke-consistency').textContent = '--';
-                }
-                return;
-            }
-            const last = completed[completed.length - 1];
-            const startT = processedData[last.startIdx]?.timestamp || 0;
-            const endT = processedData[last.endIdx]?.timestamp || 0;
-            document.getElementById('last-stroke-time').textContent = ((endT - startT) / 1000).toFixed(2) + ' s';
-
-            let pathLen = 0;
-            let prevPt = null;
-            const refQ = processedData[last.startIdx]?.quaternion;
-            for (let i = last.startIdx; i <= last.endIdx; i++) {
-                const pt = trailPtDisplacement(processedData[i]?.quaternion, refQ, 1.0);
-                if (prevPt) pathLen += pt.distanceTo(prevPt);
-                prevPt = pt.clone();
-            }
-            const arcDeg = pathLen * (180 / Math.PI);
-            document.getElementById('stroke-length').textContent = arcDeg.toFixed(0) + '°';
-
-            if (completed.length >= 2) {
-                const fs = processedData[completed[0].startIdx]?.timestamp || 0;
-                const le = processedData[completed[completed.length - 1].endIdx]?.timestamp || 0;
-                const totalSec = (le - fs) / 1000;
-                document.getElementById('stroke-rate').textContent =
-                    totalSec > 0 ? (completed.length / (totalSec / 60)).toFixed(1) + ' /min' : '--';
-                const durs = completed.map(s => ((processedData[s.endIdx]?.timestamp || 0) - (processedData[s.startIdx]?.timestamp || 0)) / 1000);
-                const avgD = durs.reduce((a, b) => a + b, 0) / durs.length;
-                const variance = durs.reduce((s, v) => s + (v - avgD) ** 2, 0) / durs.length;
-                const cv = avgD > 0 ? (Math.sqrt(variance) / avgD) * 100 : 0;
-                document.getElementById('stroke-consistency').textContent = Math.max(0, 100 - cv).toFixed(0) + '%';
-            } else {
-                document.getElementById('stroke-rate').textContent = '--';
-                document.getElementById('stroke-consistency').textContent = '--';
-            }
-
-            document.getElementById('playback-turns').textContent = currentTurns;
-            const phaseEl = document.getElementById('stroke-phase');
-            if (phaseEl) {
-                const debug = d.stroke_debug || {};
-                if (debug.turn_lockout) phaseEl.textContent = 'Phase: Wall turn';
-                else if (debug.is_gliding) phaseEl.textContent = 'Phase: Gliding';
-                else if (d.tracking_active) phaseEl.textContent = 'Phase: Stroking';
-                else phaseEl.textContent = 'Phase: Idle';
-            }
-        }
-
-        function createStrokeTrail(points, strokeNum) {
-            if (!points || points.length < 2) return;
-            const positions = [];
-            points.forEach(p => { positions.push(p.x, p.y, p.z); });
-            const color = STROKE_COLORS[(strokeNum - 1) % STROKE_COLORS.length];
-            const geo = new THREE.BufferGeometry();
-            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            const mat = new THREE.LineBasicMaterial({
-                color: color,
-                linewidth: 2,
-                opacity: showOverlay ? 0.85 : 0,
-                transparent: true
-            });
-            const line = new THREE.Line(geo, mat);
-            line.visible = showOverlay;
-            scene.add(line);
-            strokeTrails.push(line);
-        }
-
-        // =====================================================================
-        // UI CONTROLS
-        // =====================================================================
-        function toggleHand() {
-            if (handMesh) handMesh.visible = document.getElementById('show-hand').checked;
-        }
-        function toggleStrokeOverlay() {
-            showOverlay = document.getElementById('overlay-strokes').checked;
-            if (processedData.length > 0) updateStrokeOverlaysForPlayback(currentIndex);
-        }
-        function toggleWaterPlane() { /* removed */ }
-        function resetView() {
-            updateScale(3.0);
-            if (controls) { controls.reset(); controls.update(); }
-            else if (camera) { camera.position.set(3, 3, 3); camera.lookAt(0, 0, 0); }
-        }
-        function clearStrokes() {
-            if (scene) {
-                strokeTrails.forEach(t => { scene.remove(t); t.geometry?.dispose(); t.material?.dispose(); });
-            }
-            strokeTrails = []; strokeHistory = [];
-            currentStrokePoints = []; currentStrokeAccelMags = [];
-            lastStrokeCount = 0; strokeStartTime = null;
-            if (liveTrailLine) liveTrailLine.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
-            if (processedData.length > 0 && currentIndex < processedData.length) updateVisualizationFromProcessed(currentIndex);
-            document.getElementById('strokes-displayed').textContent = '0';
-        }
-        function updateScale(value) {
-            const v = Math.max(0.5, Math.min(10, parseFloat(value) || 3));
-            positionScale = v;
-            document.getElementById('scaleSlider').value = v;
-            document.getElementById('scaleInput').value = v.toFixed(1);
-            document.getElementById('scaleValue').textContent = v.toFixed(1) + 'x';
-            if (processedData.length > 0) {
-                updateVisualizationFromProcessed(currentIndex);
-            }
-        }
-
-        // =====================================================================
-        // INIT
-        // =====================================================================
-        window.addEventListener('load', function() {
-            setTimeout(function() {
-                initScene();
-                initCharts();
-            }, 150);
-            updateScale(3.0);
-            loadSavedSessions();
-            if (savedSessions.length > 0) {
-                selectSession(savedSessions.length - 1);
-            }
-        });
-
-        window.addEventListener('resize', function() {
-            if (!renderer || !camera) return;
-            const canvas = document.getElementById('canvas');
-            const w = canvas.clientWidth, h = canvas.clientHeight;
-            if (w > 0 && h > 0) {
-                camera.aspect = w / h;
-                camera.updateProjectionMatrix();
-                renderer.setSize(w, h, false);
-            }
-        });
-    </script>
+                </div>
+                <details class="viz-3d-details" open>
+                    <summary class="viz-3d-summary">3D view: drag to rotate, pinch to zoom. Collapse for more side view.</summary>
+                    <div class="card viz-card viz-card--nested3d">
+                        <canvas id="canvas3d" width="800" height="450"></canvas>
+                        <p style="font-size:0.78em;color:var(--text3);margin:8px 0 0;line-height:1.4;">Two bands merged: <strong>two cubes</strong> (nearest time on each stream) and <strong>two trail colors</strong>.</p>
+                    </div>
+                </details>
+                <div class="playback-bar">
+                    <button type="button" class="play-btn" id="play-btn" onclick="togglePlayback()" aria-label="Play/Pause">▶</button>
+                    <button type="button" class="pb-btn" onclick="resetPlayback()" title="Reset" aria-label="Reset to start">⏮</button>
+                    <button type="button" class="pb-btn" onclick="replayFromStart()" title="Replay from start" aria-label="Replay from start">↻</button>
+                    <button type="button" class="pb-btn" onclick="stepFrame(-1)" title="Previous frame" aria-label="Previous frame">◀</button>
+                    <button type="button" class="pb-btn" onclick="skipBackward()" title="Skip back" aria-label="Skip back">⏪</button>
+                    <button type="button" class="pb-btn" onclick="skipForward()" title="Skip forward" aria-label="Skip forward">⏩</button>
+                    <button type="button" class="pb-btn" onclick="stepFrame(1)" title="Next frame" aria-label="Next frame">▶</button>
+                    <div class="progress-container">
+                        <div class="progress-track progress-track--scrub" id="progress-scrubber" role="slider" tabindex="0" aria-label="Scrub session timeline" data-scrubber="1">
+                            <div class="progress-fill" id="progress-fill"></div>
+                            <div class="progress-playhead" id="progress-playhead" aria-hidden="true"></div>
+                        </div>
+                        <div class="haptic-timeline" id="haptic-timeline"></div>
+                    </div>
+                    <div class="playback-time-block">
+                        <span class="time-label" id="play-time">0:00 / 0:00</span>
+                        <span class="time-label time-fine" id="play-time-fine"></span>
+                        <span class="time-label time-frame" id="play-frame">-</span>
+                    </div>
+                </div>
+                <div class="viz-analysis-bar" style="margin-top:10px;padding:10px 12px;background:var(--bg3);border-radius:8px;font-size:0.82em;color:var(--text2);display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;">
+                    <span style="color:var(--text3);width:100%;margin-bottom:2px;"><strong>Tab</strong> timeline · <strong>←/→</strong> one frame (hold Shift: 10) · <strong>3D</strong> drag / pinch to zoom</span>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="Off by default. When on, camera follows the cube during Play only."><input type="checkbox" id="viz-follow-device" /> Follow device while playing</label>
+                    <label style="display:flex;align-items:center;gap:6px;">Range
+                        <select id="viz-stroke-playback" style="max-width:160px;padding:4px 8px;border-radius:4px;background:var(--bg2);color:var(--text1);border:1px solid var(--bg4);">
+                            <option value="0">All strokes</option>
+                        </select>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-stroke" /> Loop stroke</label>
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="viz-loop-full" /> Loop full session</label>
+                    <label style="display:flex;align-items:center;gap:6px;" title="Default slower for side-view stroke analysis">Speed <input type="range" id="viz-playback-speed" min="0.05" max="4" step="0.05" value="0.35" style="width:120px;vertical-align:middle;" /><span id="viz-speed-label">0.35×</span></label>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="focusVizOnDevice()">Focus on cube</button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset camera</button>
+                </div>
+                <div class="timeline-legend">
+                    <span class="legend-item"><span class="legend-dot stroke-dot"></span>Stroke</span>
+                    <span class="legend-item"><span class="legend-dot haptic-dot"></span>Haptic Fired</span>
+                </div>
+                <p class="viz-drift-hint" style="font-size:0.78em;color:var(--text3);margin:10px 0 0;line-height:1.45;">
+                    Path shows motion during the pull; colors follow stroke phase. Two-band merge keeps each wrist in order.
+                </p>
+                <div class="grid-2" style="margin-top:12px;">
+                    <div class="chart-card">
+                        <h4>Acceleration: LIA (m/s²)</h4>
+                        <div class="chart-wrap"><canvas id="accelChart"></canvas></div>
+                    </div>
+                    <div class="chart-card">
+                        <h4>Angular velocity (rad/s)</h4>
+                        <div class="chart-wrap"><canvas id="gyroChart"></canvas></div>
+                    </div>
+                </div>
+                <div class="chart-card" style="margin-top:12px;">
+                    <h4>Magnetometer (µT)</h4>
+                    <div class="chart-wrap chart-wrap--tall"><canvas id="magChart"></canvas></div>
+                </div>
+            </div>
+            <div>
+                <div class="card sync-playbook-card" id="sync-playbook-wrap">
+                    <div class="card-title">Wi‑Fi sync (wearable has no dashboard)</div>
+                    <ol class="sync-playbook" id="sync-playbook">
+                        <li data-step="1"><span class="sync-ic" aria-hidden="true"><i data-lucide="hand"></i></span><strong>Hold Sync</strong> on the band → hotspot appears.</li>
+                        <li data-step="2"><span class="sync-ic" aria-hidden="true"><i data-lucide="wifi"></i></span><strong>Join</strong> that Wi‑Fi on your computer.</li>
+                        <li data-step="3"><span class="sync-ic" aria-hidden="true"><i data-lucide="download"></i></span><strong>Sync now</strong> = link check (0 sessions is OK).</li>
+                        <li data-step="4"><span class="sync-ic" aria-hidden="true"><i data-lucide="waves"></i></span><strong>After a swim</strong>, <strong>Sync now</strong> imports the file.</li>
+                    </ol>
+                    <p class="sync-playbook-note sync-playbook-note--first" id="sync-playbook-first" style="display:none;"></p>
+                    <p class="sync-playbook-note" id="sync-playbook-multi"></p>
+                </div>
+                <div class="card">
+                    <div class="card-header"><span class="card-title">Sessions</span><span class="badge badge-gold"
+                            id="session-count-badge">0</span></div>
+                    <p class="card-sub" style="font-size:0.72em;color:var(--text3);margin:0 0 10px;line-height:1.45;"><strong>Sync now</strong> imports swims from the band. To save or inspect the stored payload later, select a session and use <strong>Export raw JSON</strong>.</p>
+                    <div style="display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap;">
+                        <button type="button" class="btn btn-gold" style="flex:1;min-width:120px;" id="sync-btn" onclick="syncFromDevice()" title="Download sessions from the wearable while connected to its GoldenForm Wi‑Fi.">Sync now</button>
+                        <button type="button" class="btn btn-blue" style="flex:1;min-width:120px;" id="merge-btn"
+                            onclick="mergeLatestSessions()">Merge Devices</button>
+                    </div>
+                    <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+                        <button type="button" class="btn btn-outline btn-sm" id="export-raw-json-btn" onclick="exportSessionRawJson()" title="Download raw JSON stored with the selected session (no Wi‑Fi required).">Export raw JSON</button>
+                    </div>
+                    <details class="session-advanced-details" style="margin:0 0 10px;font-size:0.78em;color:var(--text3);">
+                        <summary style="cursor:pointer;color:var(--text2);user-select:none;list-style-position:outside;padding:4px 0;">Advanced</summary>
+                        <div style="margin-top:8px;padding-left:2px;">
+                            <button type="button" class="btn btn-outline btn-sm" id="replay-ap-json-btn" onclick="replayApJsonToSession()" title="Live fetch from 192.168.4.1/data.json only while the band is actively transferring. Normal import: Sync now.">Replay AP JSON</button>
+                            <p style="margin:8px 0 0;line-height:1.45;max-width:42em;">For debugging: pulls JSON directly from the wearable during an active transfer. Use <strong>Sync now</strong> for regular imports.</p>
+                        </div>
+                    </details>
+                    <p style="font-size:0.7em;color:var(--text3);margin-bottom:8px;"><button type="button" class="btn btn-outline btn-sm" onclick="clearLocalSessions()" title="Remove sessions from this device">Clear local list</button></p>
+                    <div id="sync-status" style="display:none;margin-bottom:8px;"></div>
+                    <div class="session-list" id="session-cards"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Session Summary</div>
+                    <div class="summary-grid">
+                        <span>Strokes: <strong id="sum-strokes">-</strong></span>
+                        <span>Turns: <strong id="sum-turns">-</strong></span>
+                        <span>Distance: <strong id="sum-distance">-</strong></span>
+                        <span>Pace: <strong id="sum-pace">-</strong></span>
+                        <span>Duration: <strong id="sum-duration">-</strong></span>
+                        <span>Rate: <strong id="sum-rate">-</strong></span>
+                        <span>Consistency: <strong id="sum-consistency">-</strong></span>
+                        <span>Band cues: <strong id="sum-haptic">-</strong></span>
+                        <span>Samples: <strong id="sum-samples">-</strong></span>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Live Playback</div>
+                    <div class="live-data">
+                        <div>Stroke: <strong id="live-strokes">0</strong></div>
+                        <div>Phase: <strong id="live-phase" class="phase-label">idle</strong></div>
+                        <div>Entry angle: <strong id="live-angle">0°</strong></div>
+                        <div>‖ω‖ now: <strong id="live-gyro">0.00</strong> <span class="live-unit">rad/s</span></div>
+                        <div>‖ω‖ at water entry: <strong id="live-entry-gyro">-</strong> <span class="live-unit">rad/s</span></div>
+                        <div>Haptic / dev.: <strong id="live-deviation">0.000</strong></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">3D Controls</div>
+                    <div style="margin-top:8px;">
+                        <label>Position scale: <span id="scale-val">3.0x</span></label>
+                        <input type="range" min="0.5" max="10" step="0.1" value="3" oninput="updateScale(this.value)"
+                            style="width:100%;">
+                    </div>
+                    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-size:0.9em;">
+                        <input type="checkbox" id="show-cube" checked>
+                        <span>Show 3D IMU cube</span>
+                    </label>
+                    <div style="display:flex;gap:6px;margin-top:8px;">
+                        <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset View</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="clearViz()">Clear Trails</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="page" id="page-analysis">
+        <header class="page-heading page-heading--compact">
+            <h1 class="page-heading__title">Analysis</h1>
+            <p class="page-heading__sub">Scores · ideal compare · strokes</p>
+        </header>
+        <div class="grid-3">
+            <div class="card stat-card" style="text-align:center;">
+                <div class="card-title">Form Score</div>
+                <div class="card-value" id="form-score" style="font-size:3em;">--</div>
+                <div class="card-sub">/ 10</div>
+            </div>
+            <div class="card stat-card" style="text-align:center;">
+                <div class="card-title">Angle of Attack</div>
+                <canvas id="gauge-aoa" width="200" height="110" style="margin:0 auto;display:block;"></canvas>
+                <div style="font-size:1.4em;font-weight:700;margin-top:4px;" id="aoa-value">--</div>
+                <div class="card-sub">Ideal: <span id="aoa-ideal">30°</span></div>
+            </div>
+            <div class="card stat-card" style="text-align:center;">
+                <div class="card-title">Form cues</div>
+                <div class="card-value" id="haptic-count">0</div>
+                <div class="card-sub" id="haptic-card-hint" style="font-size:0.78em;opacity:0.9;margin-bottom:6px;">Band buzzes during swim</div>
+                <div class="card-sub">Avg deviation (vs saved baseline when set): <span id="avg-deviation">0.000</span></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">Stroke Phases</div>
+            <div class="phase-bar" style="margin-top:10px;">
+                <div class="phase-seg phase-glide" id="phase-glide" style="width:25%;"><span
+                        id="phase-glide-pct">0%</span></div>
+                <div class="phase-seg phase-catch" id="phase-catch" style="width:15%;"><span id="phase-catch-pct">0%</span></div>
+                <div class="phase-seg phase-pull" id="phase-pull" style="width:35%;"><span id="phase-pull-pct">0%</span>
+                </div>
+                <div class="phase-seg phase-recovery" id="phase-recovery" style="width:25%;"><span
+                        id="phase-recovery-pct">0%</span></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--text3);margin-top:6px;">
+                <span>🔵 Glide</span><span>🟢 Catch</span><span>🔴 Pull</span><span>🟣 Recovery</span>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Ideal vs Actual Comparison</span>
+                <span class="badge badge-gold" id="ideal-similarity">--%</span>
+            </div>
+            <p id="ideal-compare-lead" class="card-sub" style="margin:0 0 10px;line-height:1.45;font-size:0.84em;color:var(--text2);">Each line is <strong>|LIA|</strong> for the whole session, resampled to match your baseline length.</p>
+            <div id="ideal-compare-toolbar" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px;font-size:0.82em;color:var(--text2);">
+                <span class="badge badge-outline" style="font-size:0.78em;">Full session vs baseline</span>
+                <button type="button" class="btn btn-gold btn-sm" style="padding:4px 10px;font-size:0.9em;" onclick="setCurrentAsIdeal()">Set session as ideal</button>
+            </div>
+            <div id="ideal-comparison-content">
+                <p id="ideal-compare-caption" style="display:none;font-size:0.82em;color:var(--text2);margin:0 0 10px;line-height:1.45;"></p>
+                <div id="ideal-compare-chart-host" style="height:220px;position:relative;margin-top:4px;">
+                    <canvas id="ideal-compare-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">Per-Stroke Breakdown</div>
+            <p class="card-sub" style="margin:0 0 8px;font-size:0.82em;color:var(--text3);">Click a row to jump playback to that stroke. The chart above always compares the full session to your baseline.</p>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Time (rel. s)</th>
+                            <th>Entry Angle</th>
+                            <th title="⚡ only when the band fired a haptic during the swim (not app-only vs-ideal hints)">Cue</th>
+                            <th title="Firmware deviation when the band had a baseline at record time; otherwise client |LIA| vs saved baseline (hidden when this file is the baseline)">Deviation</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stroke-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="page" id="page-insights">
+        <header class="page-heading page-heading--compact">
+            <h1 class="page-heading__title">Insights</h1>
+            <p class="page-heading__sub">Coaching · trends</p>
+        </header>
+        <p id="insights-source-hint" class="insights-source-hint" hidden></p>
+        <div class="card coaching-ai-card" style="margin-bottom:16px;">
+            <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                <span class="card-title">AI Coaching (Gemini)</span>
+            </div>
+            <p style="font-size:0.8em;color:var(--text3);margin:0 0 10px;line-height:1.45;">Personalized analysis from Gemini, generated automatically when a session is loaded.</p>
+            <div id="ai-coaching-body" class="coaching-ai-body" style="min-height:48px;color:var(--text2);font-size:0.92em;line-height:1.55;"></div>
+            <p id="ai-coaching-meta" style="font-size:0.72em;color:var(--text3);margin:10px 0 0;"></p>
+        </div>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-title">Top Coaching Priorities</div>
+            <div id="coaching-priorities" style="margin-top:12px; display:flex; flex-direction:column; gap:10px;">
+                <p style="color:var(--text3); font-size:0.9em;">Sync a session first. Priorities appear here.</p>
+            </div>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:16px;">
+            <div class="card">
+                <div class="card-title">Stroke Patterns</div>
+                <div id="stroke-diagnosis-list" style="margin-top:12px; max-height: 400px; overflow-y: auto;">
+                    <p style="color:var(--text3); font-size:0.9em;">Patterns appear after syncing a session.</p>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">Session Consistency</div>
+                <div id="consistency-heatmap" style="margin-top:12px; display:flex; flex-wrap:wrap; gap:4px;">
+                </div>
+                <p style="font-size:0.75em;color:var(--text3);margin-top:8px;">Each block = one stroke. Green=consistent with session average, Yellow=minor variation, Red=significant outlier.</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Progress Over Time</div>
+            <div style="height:300px;margin-top:12px;"><canvas id="progress-chart"></canvas></div>
+            <p id="insights-empty" style="color:var(--text3);text-align:center;padding:20px;font-size:0.9em;"></p>
+        </div>
+    </div>
+
+    <div class="page" id="page-settings">
+        <header class="page-heading">
+            <h1 class="page-heading__title">Settings</h1>
+            <p class="page-heading__sub">Profile, wearables, IMU calibration, baseline</p>
+        </header>
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-title">Profile</div>
+                <form onsubmit="saveProfileFromSettings(event)" style="margin-top:12px;">
+                    <label>Email</label>
+                    <input type="email" id="settings-email-display" autocomplete="email"
+                        style="margin-bottom:10px;" title="Used for sign-in">
+                    <label>Name</label><input type="text" id="settings-name" placeholder="Your name"
+                        style="margin-bottom:10px;">
+                    <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                        <span>Units</span>
+                        <select id="settings-units" style="max-width:140px;">
+                            <option value="in">in / ft</option>
+                            <option value="cm">cm</option>
+                        </select>
+                    </label>
+                    <label>Height <span style="color:var(--text3);font-weight:400;">(e.g. 5'10" or 70)</span></label>
+                    <input type="text" id="settings-height" placeholder="5'10&quot;"
+                        style="margin-bottom:10px;">
+                    <label>Wingspan <span style="color:var(--text3);font-weight:400;">(fingertip to fingertip)</span></label>
+                    <input type="text" id="settings-wingspan" placeholder="72"
+                        style="margin-bottom:10px;">
+                    <label>Skill Level</label>
+                    <select id="settings-skill" style="margin-bottom:12px;">
+                        <option value="beginner">Beginner</option>
+                        <option value="intermediate">Intermediate</option>
+                        <option value="advanced">Advanced</option>
+                        <option value="competitive">Competitive</option>
+                    </select>
+                    <label>Pool Length (m)</label><input type="number" id="settings-pool-length" placeholder="25" style="margin-bottom:12px;">
+                    <label>How many wearables?</label>
+                    <input type="number" id="settings-wearable-count" min="1" max="2" value="1" style="margin-bottom:12px;" title="1 or 2 (left and right)">
+                    <p class="settings-field-hint">1 = one wrist, 2 = both. The checklist uses this.</p>
+                    <button class="btn btn-gold" type="submit">Save Profile</button>
+                </form>
+            </div>
+            <div class="card device-registration-card">
+                <div class="card-title">Wearables</div>
+                <p class="device-reg-lead">On the band, <strong>hold sync</strong> until the <strong>GoldenForm</strong> hotspot appears. On this computer, <strong>join that Wi‑Fi</strong> in Settings or the menu bar (password <strong>goldenform123</strong>), pick which wrist, then <strong>Add this wearable</strong>.</p>
+                <div id="connected-wearable-banner" class="connected-wearable-banner" role="status" aria-live="polite"></div>
+                <div id="device-reg-slot" class="device-reg-slot" role="status"></div>
+                <div class="card-title card-title--sub">Your bands</div>
+                <div id="device-list" class="device-list-wrap" style="margin-top:10px;"></div>
+                <input type="hidden" id="dev-wifi-ssid" value="" autocomplete="off">
+                <input type="hidden" id="dev-hw-id" value="">
+                <label for="dev-role">Which wrist?</label>
+                <select id="dev-role" style="margin-bottom:12px;max-width:280px;">
+                    <option value="wrist_right">Right wrist</option>
+                    <option value="wrist_left">Left wrist</option>
+                </select>
+                <div class="device-reg-actions">
+                    <button type="button" class="btn btn-gold" onclick="addWearableFromConnection()">Add this wearable</button>
+                </div>
+                <p class="settings-field-hint" style="margin-top:10px;">The app reads the hardware ID from the band after you connect. Two bands: use one Wi‑Fi at a time and add each separately.</p>
+            </div>
+        </div>
+
+        <div class="card card--calibration" id="card-imu-calibration">
+            <div class="card-header card-header--cal">
+                <div>
+                    <div class="card-title">IMU calibration (sensor fusion)</div>
+                    <p class="cal-product-note">To see live calibration, join the band’s <strong>GoldenForm</strong> Wi‑Fi on this computer while the band is in Sync mode. Once Gyro + Accel are ready, you can leave Wi‑Fi and start logging. After your swim, come back to Sync mode and use <strong>Session → Sync now</strong>.</p>
+                </div>
+            </div>
+            <p class="cal-explainer">Each channel is 0 to 3 while you are connected. Open the <strong>guide</strong> for the figure eight and face tilts. We save a snapshot in this browser when quality goes up (you can save manually too).</p>
+            <div id="cal-ready-banner" class="cal-ready-banner" hidden role="status" aria-live="polite"></div>
+            <div class="cal-guide-row">
+                <button type="button" class="btn btn-outline btn-sm" onclick="openCalibrationGuide()">Calibration guide</button>
+            </div>
+            <div class="cal-grid">
+                <div class="cal-item"><span class="cal-label">System</span><span class="cal-badge cal-warn" id="cal-sys">--</span></div>
+                <div class="cal-item"><span class="cal-label">Gyro</span><span class="cal-badge cal-warn" id="cal-gyro">--</span></div>
+                <div class="cal-item"><span class="cal-label">Accel</span><span class="cal-badge cal-warn" id="cal-accel">--</span></div>
+                <div class="cal-item"><span class="cal-label">Mag</span><span class="cal-badge cal-warn" id="cal-mag">--</span></div>
+            </div>
+            <div class="cal-quality-row">Quality <strong id="cal-quality">--</strong></div>
+            <p id="cal-hint" class="cal-hint"></p>
+            <p id="cal-saved-strip" class="cal-saved-strip"></p>
+            <div class="cal-save-row">
+                <button type="button" class="btn btn-outline btn-sm" id="cal-save-btn" onclick="saveCalibrationSnapshotManual()">Save calibration snapshot</button>
+            </div>
+        </div>
+
+        <div class="card card--ideal" style="margin-top:16px;">
+            <div class="card-title">Ideal stroke baseline</div>
+            <p class="ideal-viewer-context" id="ideal-viewer-context"></p>
+            <div class="ideal-baseline-block">
+                <p class="ideal-status-line" id="ideal-status">No ideal baseline saved</p>
+                <p class="ideal-meta-line" id="ideal-meta"></p>
+                <div class="ideal-actions-row">
+                    <button type="button" class="btn btn-gold" onclick="setCurrentAsIdeal()">Save current session as ideal</button>
+                    <button type="button" class="btn btn-outline" style="border-color:#ef4444;color:#ef4444" onclick="deleteIdealStroke()">Delete baseline</button>
+                </div>
+            </div>
+        </div>
+        <div class="card card--haptic" style="margin-top:16px;">
+            <div class="card-title">Haptics</div>
+            <p class="settings-field-hint">Thresholds sync when the wearable is on Wi‑Fi. In the water, cues run on the band so they stay fast. Wi‑Fi is for setup and for pulling files after a swim.</p>
+            <details class="settings-diagnostics">
+                <summary>Diagnostics</summary>
+                <p class="settings-field-hint">For bench checks only. Not needed for normal swims.</p>
+                <button type="button" class="btn btn-outline btn-sm" onclick="testHapticDevice()">Test motor</button>
+            </details>
+        </div>
+    </div>
+
+    <!-- Default to showing auth modal on first paint.
+         JS hides it immediately after a valid login (prevents demo startup getting stuck on Home). -->
+    <div class="modal-overlay" id="auth-modal">
+        <div class="modal" style="max-width:420px;">
+            <div class="modal-brand">GoldenForm</div>
+            <div class="auth-tabs" role="tablist">
+                <button type="button" class="auth-tab auth-tab--active" id="auth-tab-login" onclick="setAuthTab('login')">Sign in</button>
+                <button type="button" class="auth-tab" id="auth-tab-register" onclick="setAuthTab('register')">Create account</button>
+            </div>
+            <div id="auth-panel-login">
+                <p style="color:var(--text2);font-size:0.88em;margin:12px 0 14px;">Use the email and password for your GoldenForm account. Sessions and devices stay in the local database on this machine.</p>
+                <form onsubmit="loginUser(event)">
+                    <label>Email</label>
+                    <input type="email" id="login-email" autocomplete="username" required style="margin-bottom:10px;">
+                    <label>Password</label>
+                    <div style="position:relative;margin-bottom:14px;">
+                        <input type="password" id="login-password" autocomplete="current-password" required style="width:100%;padding-right:40px;">
+                        <button type="button" class="pw-toggle" onclick="togglePasswordVisibility('login-password', this)" title="Show password" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:1.1em;padding:2px;">👁</button>
+                    </div>
+                    <button class="btn btn-gold" type="submit" style="width:100%;">Sign in</button>
+                </form>
+            </div>
+            <div id="auth-panel-register" hidden>
+                <p style="color:var(--text2);margin-bottom:6px;font-size:0.84em;line-height:1.4;">Create an account — data is stored locally on this computer.</p>
+                <form onsubmit="createAccountFromModal(event)" style="font-size:0.92em;">
+                    <label>Name <span style="color:var(--red);">*</span></label>
+                    <input type="text" id="reg-name" placeholder="Your name" required style="margin-bottom:6px;" minlength="2">
+                    <label>Email <span style="color:var(--red);">*</span></label>
+                    <input type="email" id="reg-email" autocomplete="email" required style="margin-bottom:6px;">
+                    <label>Password <span style="color:var(--red);">*</span></label>
+                    <div style="position:relative;margin-bottom:8px;">
+                        <input type="password" id="reg-password" autocomplete="new-password" required minlength="6" style="width:100%;padding-right:40px;">
+                        <button type="button" class="pw-toggle" onclick="togglePasswordVisibility('reg-password', this)" title="Show password" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:1.1em;padding:2px;">👁</button>
+                    </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;">
+                        <div>
+                            <label style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                                <span>Units</span>
+                                <select id="reg-units" style="max-width:90px;font-size:0.9em;">
+                                    <option value="in">in / ft</option>
+                                    <option value="cm">cm</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div>
+                            <label>Skill</label>
+                            <select id="reg-skill" style="font-size:0.9em;">
+                                <option value="beginner">Beginner</option>
+                                <option value="intermediate">Intermediate</option>
+                                <option value="advanced">Advanced</option>
+                                <option value="competitive">Competitive</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Height</label>
+                            <input type="text" id="reg-height" placeholder="5'10&quot;">
+                        </div>
+                        <div>
+                            <label>Wingspan</label>
+                            <input type="text" id="reg-wingspan" placeholder="72">
+                        </div>
+                        <div>
+                            <label>Pool (m)</label>
+                            <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100">
+                        </div>
+                        <div>
+                            <label>Wearables</label>
+                            <input type="number" id="reg-wearable-count" min="1" max="2" value="1">
+                        </div>
+                    </div>
+                    <button class="btn btn-gold" type="submit" style="width:100%;margin-top:12px;">Create account</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="cal-guide-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="cal-guide-title">
+        <div class="modal" style="max-width:540px;max-height:90vh;overflow-y:auto;">
+            <div class="modal-brand">GoldenForm</div>
+            <h2 id="cal-guide-title" style="margin-bottom:6px;">Calibration Guide</h2>
+            <p style="color:var(--text2);font-size:0.86em;margin-bottom:14px;line-height:1.5;">Your wearable has a motion sensor (IMU) that needs to learn its surroundings before it can accurately track your strokes. This is called <strong>calibration</strong>. You only need to do this once — the device remembers it after all values reach 3/3.</p>
+
+            <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+                <p style="font-size:0.82em;color:var(--text1);margin:0 0 6px;font-weight:600;">Before you start</p>
+                <ul style="margin:0;padding:0 0 0 16px;color:var(--text2);font-size:0.82em;line-height:1.55;">
+                    <li>Make sure you are connected to the wearable's Wi-Fi network (it creates its own hotspot named <strong>GoldenForm_XXXX</strong>).</li>
+                    <li>The calibration badges on this page update in real time — watch them go from <span style="color:var(--red);">0/3</span> to <span style="color:var(--green);">3/3</span> as you move.</li>
+                    <li>Work on a desk or table, away from metal, magnets, and electronics.</li>
+                </ul>
+            </div>
+
+            <h3 style="font-size:0.9em;color:var(--text1);margin:0 0 10px;">Step-by-step (follow this order)</h3>
+
+            <div style="margin-bottom:14px;">
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                    <span style="font-size:1.4em;line-height:1;">1</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">Gyroscope (Gyro)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">Place the wearable <strong>flat on a table</strong> and leave it <strong>completely still</strong> for about 5 seconds. Don't touch the table — even small vibrations can reset progress. You should see Gyro jump to 3/3 quickly.</p>
+                    </div>
+                </div>
+
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                    <span style="font-size:1.4em;line-height:1;">2</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">Accelerometer (Accel)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">Pick up the wearable and <strong>slowly tilt it to rest on each of its 6 faces</strong> — think of it like a dice: top, bottom, left side, right side, front, back. Hold each position steady for 2–3 seconds before moving to the next. No need to rush.</p>
+                    </div>
+                </div>
+
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                    <span style="font-size:1.4em;line-height:1;">3</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">Magnetometer (Mag)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">Hold the wearable in front of you and <strong>draw a large figure-8 (infinity sign) in the air</strong>, about arm's length wide. Move smoothly and keep going for 10–15 seconds. Stay away from laptops, phones, metal furniture, and speakers — they interfere with the magnetic reading.</p>
+                    </div>
+                </div>
+
+                <div style="display:flex;align-items:flex-start;gap:10px;background:var(--bg3);border-radius:8px;padding:10px 12px;">
+                    <span style="font-size:1.4em;line-height:1;">4</span>
+                    <div>
+                        <strong style="color:var(--text1);font-size:0.88em;">System (Sys)</strong>
+                        <p style="color:var(--text2);font-size:0.82em;margin:4px 0 0;line-height:1.5;">This one fuses all three sensors together. <strong>Slowly rotate the wearable in random directions</strong> — imagine stirring a pot, then tilting the pot side to side, then flipping it. Mix pitch (nodding), roll (tilting), and yaw (turning). Smooth, deliberate movements for about 10 seconds. This is usually the last to lock in.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:10px;">
+                <p style="font-size:0.82em;color:var(--green);margin:0 0 4px;font-weight:600;">When you're done</p>
+                <p style="font-size:0.8em;color:var(--text2);margin:0;line-height:1.5;">Once all four badges show <strong style="color:var(--green);">3/3</strong>, the card will say "Good to swim" and the device permanently saves the calibration. You can disconnect from Wi-Fi and start logging your swim. If you power-cycle the device before all four reach 3/3, you'll need to calibrate again.</p>
+            </div>
+
+            <div style="background:var(--bg3);border-radius:8px;padding:10px 14px;margin-bottom:16px;">
+                <p style="font-size:0.82em;color:var(--amber);margin:0 0 4px;font-weight:600;">Troubleshooting</p>
+                <ul style="margin:0;padding:0 0 0 16px;color:var(--text2);font-size:0.8em;line-height:1.55;">
+                    <li><strong>Values stuck at 0/3?</strong> Make sure you're connected to the wearable's Wi-Fi. Refresh the page if badges aren't updating.</li>
+                    <li><strong>Mag won't reach 3/3?</strong> Move further from metal and electronics. Try a different room. The figure-8 motion should be wide and slow.</li>
+                    <li><strong>System keeps dropping?</strong> This is normal — the System register is sensitive during motion. Keep doing slow rotations and it will lock in.</li>
+                    <li><strong>Lost calibration after restart?</strong> The device only saves permanently once all four reach 3/3 in the same session. Try again from Step 1.</li>
+                </ul>
+            </div>
+
+            <button type="button" class="btn btn-gold" style="width:100%;" onclick="closeCalibrationGuide()">Got it</button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.145.0/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.145.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script defer src="/js/gf_api.js"></script>
+    <script defer src="/js/gf_roles.js"></script>
+    <script defer src="/js/gf_constants.js"></script>
+    <script defer src="/js/gf_bootstrap.js"></script>
+    <script defer src="/js/gf_time.js"></script>
+    <script defer src="/js/gf_state.js"></script>
+    <script defer src="/js/gf_app_nav_profile.js"></script>
+    <script defer src="/js/gf_session_transfer.js"></script>
+    <script defer src="/js/gf_wifi_banners.js"></script>
+    <script defer src="/js/gf_wifi_devices.js"></script>
+    <script defer src="/js/gf_wifi_poll_sync.js"></script>
+    <script defer src="/js/gf_viz_stroke_fields.js"></script>
+    <script defer src="/js/gf_haptic_timeline.js"></script>
+    <script defer src="/js/gf_playback.js"></script>
+    <script defer src="/js/gf_session_summary.js"></script>
+    <script defer src="/js/gf_calibration.js"></script>
+    <script defer src="/js/gf_onboarding_journey.js"></script>
+    <script defer src="/js/gf_analysis.js"></script>
+    <script defer src="/js/gf_ideal_comparison.js"></script>
+    <script defer src="/js/gf_progress.js"></script>
+    <script defer src="/js/gf_coaching.js"></script>
+    <script defer src="/js/gf_ideal_samples.js"></script>
+    <script defer src="/js/gf_ideal_device.js"></script>
+    <script defer src="/js/gf_viz_charts.js"></script>
+    <script defer src="/js/gf_viz_math.js"></script>
+    <script defer src="/js/gf_viz_integration.js"></script>
+    <script defer src="/js/gf_viz_three_scene.js"></script>
+    <script defer src="/js/gf_viz_side_view.js"></script>
+    <script defer src="/js/gf_viz_render.js"></script>
+    <script defer src="/js/gf_viz_controls.js"></script>
+    <script defer src="/js/gf_realtime.js"></script>
+    <script defer src="/app.js"></script>
+
+    <!-- Lightweight free icon set (no build tooling required). -->
+    <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 </body>
+
 </html>

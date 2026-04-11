@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 // WiFi Access Point Configuration
-#define WIFI_AP_SSID              "GoldenForm"
+#define WIFI_AP_SSID_BASE         "GoldenForm"
 #define WIFI_AP_PASSWORD          "goldenform123"
 #define WIFI_AP_CHANNEL           1
 #define WIFI_AP_MAX_CONNECTIONS   4
@@ -25,10 +25,30 @@ typedef enum {
 } wifi_server_state_t;
 
 /**
- * @brief Initialize WiFi Access Point and HTTP server
+ * @brief Prepare WiFi subsystem (NVS, TCP/IP, event loop) without starting the AP.
+ *        Call once at boot.
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t wifi_server_init(void);
+
+/**
+ * @brief Start the WiFi AP and HTTP server (makes the SSID visible).
+ *        Call when entering sync mode.
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t wifi_server_start_ap(void);
+
+/**
+ * @brief SSID string used for the AP (after wifi_server_start_ap), including device suffix.
+ */
+const char *wifi_server_get_ap_ssid(void);
+
+/**
+ * @brief Stop the WiFi AP and HTTP server (SSID disappears).
+ *        Call when leaving sync mode.
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t wifi_server_stop_ap(void);
 
 /**
  * @brief Get WiFi server state
@@ -67,10 +87,41 @@ bool wifi_server_is_syncing(void);
 bool wifi_server_is_transfer_complete(void);
 
 /**
+ * @brief Check if WiFi AP is currently active (SSID visible)
+ * @return true if AP is running
+ */
+bool wifi_server_is_ap_active(void);
+
+/**
+ * @brief Protobuf `device_role` field for logged samples: 0 = wrist_right, 4 = wrist_left.
+ *        Value is stored in NVS (user-settable via POST /api/user_config); Kconfig is only the factory default.
+ */
+uint32_t goldenform_device_role_pb(void);
+
+/**
+ * @brief Set wrist role from dashboard strings "wrist_left" or "wrist_right"; persists to NVS.
+ */
+esp_err_t goldenform_set_device_role_str(const char *role);
+
+/**
+ * @brief Called when POST /api/registration_done completes successfully (after HTTP response is sent).
+ *        Firmware uses this to clear registration linger state, stop the status LED blink, and shut down the AP.
+ */
+void wifi_server_set_registration_done_callback(void (*cb)(void));
+
+/**
  * @brief Deinitialize WiFi server
  * @return esp_err_t ESP_OK on success
  */
 esp_err_t wifi_server_deinit(void);
+
+/**
+ * @brief Ideal entry angle last pushed with /api/ideal_stroke (persisted in NVS).
+ *        Use after loading LIA samples from SD so reboot matches dashboard haptics.
+ * @param out_entry_angle valid angle in degrees when return value is true
+ * @return true if NVS holds metadata from a prior ideal upload
+ */
+bool goldenform_ideal_boot_entry_angle(float *out_entry_angle);
 
 #ifdef __cplusplus
 }

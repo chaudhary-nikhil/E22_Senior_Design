@@ -153,56 +153,92 @@ extern "C" {
 
 // Power modes
 typedef enum {
-    BNO055_POWER_MODE_NORMAL = 0x00,
-    BNO055_POWER_MODE_LOWPOWER = 0x01,
-    BNO055_POWER_MODE_SUSPEND = 0x02
+  BNO055_POWER_MODE_NORMAL = 0x00,
+  BNO055_POWER_MODE_LOWPOWER = 0x01,
+  BNO055_POWER_MODE_SUSPEND = 0x02
 } bno055_powermode_t;
 
 // Operation modes
 typedef enum {
-    BNO055_OPERATION_MODE_CONFIG = 0x00,
-    BNO055_OPERATION_MODE_ACCONLY = 0x01,
-    BNO055_OPERATION_MODE_MAGONLY = 0x02,
-    BNO055_OPERATION_MODE_GYRONLY = 0x03,
-    BNO055_OPERATION_MODE_ACCMAG = 0x04,
-    BNO055_OPERATION_MODE_ACCGYRO = 0x05,
-    BNO055_OPERATION_MODE_MAGGYRO = 0x06,
-    BNO055_OPERATION_MODE_AMG = 0x07,
-    BNO055_OPERATION_MODE_IMUPLUS = 0x08,
-    BNO055_OPERATION_MODE_COMPASS = 0x09,
-    BNO055_OPERATION_MODE_M4G = 0x0A,
-    BNO055_OPERATION_MODE_NDOF_FMC_OFF = 0x0B,
-    BNO055_OPERATION_MODE_NDOF = 0x0C
+  BNO055_OPERATION_MODE_CONFIG = 0x00,
+  BNO055_OPERATION_MODE_ACCONLY = 0x01,
+  BNO055_OPERATION_MODE_MAGONLY = 0x02,
+  BNO055_OPERATION_MODE_GYRONLY = 0x03,
+  BNO055_OPERATION_MODE_ACCMAG = 0x04,
+  BNO055_OPERATION_MODE_ACCGYRO = 0x05,
+  BNO055_OPERATION_MODE_MAGGYRO = 0x06,
+  BNO055_OPERATION_MODE_AMG = 0x07,
+  BNO055_OPERATION_MODE_IMUPLUS = 0x08,
+  BNO055_OPERATION_MODE_COMPASS = 0x09,
+  BNO055_OPERATION_MODE_M4G = 0x0A,
+  BNO055_OPERATION_MODE_NDOF_FMC_OFF = 0x0B,
+  BNO055_OPERATION_MODE_NDOF = 0x0C
 } bno055_opmode_t;
 
 // Data structure for BNO055 sample
 typedef struct {
-    uint32_t t_ms;
-    // Raw sensor data
-    float ax, ay, az;  // Accelerometer (m/s²)
-    float gx, gy, gz;  // Gyroscope (rad/s)
-    float mx, my, mz;  // Magnetometer (μT)
-    // Fused data
-    float roll, pitch, yaw;  // Euler angles (degrees)
-    float qw, qx, qy, qz;    // Quaternion
-    float lia_x; // Linear Acceleration (m/s²)
-    float lia_y;
-    float lia_z;
-    float temp;              // Temperature (°C)
+  uint32_t t_ms;
+  // Raw sensor data
+  float ax, ay, az; // Accelerometer (m/s²)
+  float gx, gy, gz; // Gyroscope (rad/s)
+  float mx, my, mz; // Magnetometer (μT)
+  // Fused data
+  float roll, pitch, yaw; // Euler angles (degrees)
+  float qw, qx, qy, qz;   // Quaternion
+  float lia_x;            // Linear Acceleration (m/s²)
+  float lia_y;
+  float lia_z;
+  float temp; // Temperature (°C)
 
-    // Calibration status
-    uint8_t sys_cal, gyro_cal, accel_cal, mag_cal;
+  // Calibration status
+  uint8_t sys_cal, gyro_cal, accel_cal, mag_cal;
+
+  // Haptic feedback (populated by stroke detector)
+  uint8_t haptic_fired;  // 1 if haptic was triggered this sample
+  float deviation_score; // 0.0 = perfect match, higher = worse
+  uint8_t haptic_reason; // Bitfield: HAPTIC_REASON_DTW_HIGH | ENTRY_BAD | PULL_SHORT
+  float pull_duration_ms; // Duration of pull/integration window (ms)
+
+  // Multi-device metadata (populated from Kconfig)
+  uint8_t device_id;   // CONFIG_GOLDENFORM_DEVICE_ID
+  uint8_t device_role; // 0=right wrist, 4=left wrist (legacy values ignored)
+
+  // Session running counts (populated from stroke detector)
+  uint32_t stroke_count;
+  uint32_t turn_count;
+
+  uint32_t breath_count; /* protobuf field; always 0 in current firmware */
+
+  // Angle of attack at water entry (degrees, set by stroke detector)
+  float entry_angle;
 } bno055_sample_t;
 
 // Function prototypes
 esp_err_t bno055_init(int port, uint8_t addr);
-esp_err_t bno055_set_operation_mode(int port, uint8_t addr, bno055_opmode_t mode);
-esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys, uint8_t *gyro, uint8_t *accel, uint8_t *mag);
+esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
+                                    bno055_opmode_t mode);
+esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys,
+                                        uint8_t *gyro, uint8_t *accel,
+                                        uint8_t *mag);
+/**
+ * @brief Last fusion calibration values from the most recent bno055_read_sample() (same numbers as IMU loop / serial).
+ *        Use this for HTTP /api/device_info instead of a second I2C read to avoid bus contention with the sampling task.
+ */
+void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
+                                 uint8_t *mag);
+/**
+ * @brief Last operation mode requested via bno055_set_operation_mode().
+ *        Used by HTTP /api/device_info so the dashboard can interpret calibration
+ *        readiness correctly (e.g. IMUPLUS ignores magnetometer fusion).
+ */
+uint8_t bno055_get_last_opmode(void);
 esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out);
 esp_err_t bno055_reset(int port, uint8_t addr);
 esp_err_t bno055_start_calibration(int port, uint8_t addr);
-esp_err_t bno055_save_calibration_data(int port, uint8_t addr, uint8_t *cal_data);
-esp_err_t bno055_load_calibration_data(int port, uint8_t addr, const uint8_t *cal_data);
+esp_err_t bno055_save_calibration_data(int port, uint8_t addr,
+                                       uint8_t *cal_data);
+esp_err_t bno055_load_calibration_data(int port, uint8_t addr,
+                                       const uint8_t *cal_data);
 
 #ifdef __cplusplus
 }
