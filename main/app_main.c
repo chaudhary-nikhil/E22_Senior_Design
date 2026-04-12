@@ -55,8 +55,8 @@ static const char *TAG = "GOLDENFORM";
 
 // Status LEDs on GPIO 40, 41, 42
 #define POWER_LED_GPIO 40  // Always on when powered
-#define STATUS_LED_GPIO 41 // ON during logging, BLINKS during syncing
-#define ERROR_LED_GPIO 42  // ON when any error occurs (IMU, SD card, WiFi)
+#define STATUS_LED_GPIO 9 // ON during logging, BLINKS during syncing
+#define ERROR_LED_GPIO 1  // ON when any error occurs (IMU, SD card, WiFi)
 
 // ============== Application State Machine ==============
 typedef enum {
@@ -93,7 +93,8 @@ static bool system_has_error = false;
 
 // ============== Error LED Control ==============
 static void error_led_set(bool on) {
-  gpio_set_level(ERROR_LED_GPIO, on ? 1 : 0);
+  // gpio_set_level(ERROR_LED_GPIO, on ? 1 : 0);
+  gpio_set_level(ERROR_LED_GPIO, on ? 0 : 1);
   if (on) {
     system_has_error = true;
     ESP_LOGW(TAG, "Error LED ON (GPIO%d)", ERROR_LED_GPIO);

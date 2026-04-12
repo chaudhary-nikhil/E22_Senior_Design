@@ -17,7 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
+// #include <sys/statvfs.h>
 #include <dirent.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -90,7 +90,7 @@ static esp_err_t open_new_data_file(void);
 static esp_err_t close_current_file(void);
 static esp_err_t flush_psram_to_sd(void);
 static void flush_task(void *arg);
-static bool check_sd_space(void);
+// static bool check_sd_space(void);
 
 // ============== Public API Implementation ==============
 
@@ -380,23 +380,23 @@ esp_err_t storage_get_current_sample_count(uint32_t *count) {
     return ESP_OK;
 }
 
-esp_err_t storage_get_free_space(uint64_t *free_bytes) {
-    if (!free_bytes) return ESP_ERR_INVALID_ARG;
+// esp_err_t storage_get_free_space(uint64_t *free_bytes) {
+//     if (!free_bytes) return ESP_ERR_INVALID_ARG;
     
-    struct statvfs stat;
-    int ret = statvfs(mount_point, &stat);
-    if (ret != 0) {
-        // statvfs may not be implemented on all filesystems (errno 88 = ENOSYS)
-        // This is expected for some SD card filesystems, so use DEBUG level instead of ERROR
-        ESP_LOGD(TAG, "statvfs not available: errno=%d (%s) - space check disabled", errno, strerror(errno));
-        return ESP_FAIL;
-    }
+//     struct statvfs stat;
+//     int ret = statvfs(mount_point, &stat);
+//     if (ret != 0) {
+//         // statvfs may not be implemented on all filesystems (errno 88 = ENOSYS)
+//         // This is expected for some SD card filesystems, so use DEBUG level instead of ERROR
+//         ESP_LOGD(TAG, "statvfs not available: errno=%d (%s) - space check disabled", errno, strerror(errno));
+//         return ESP_FAIL;
+//     }
     
-    *free_bytes = (uint64_t)stat.f_bsize * stat.f_bavail;
-    ESP_LOGD(TAG, "SD free space: %llu bytes (block size: %lu, available blocks: %lu)",
-             (unsigned long long)*free_bytes, (unsigned long)stat.f_bsize, (unsigned long)stat.f_bavail);
-    return ESP_OK;
-}
+//     *free_bytes = (uint64_t)stat.f_bsize * stat.f_bavail;
+//     ESP_LOGD(TAG, "SD free space: %llu bytes (block size: %lu, available blocks: %lu)",
+//              (unsigned long long)*free_bytes, (unsigned long)stat.f_bsize, (unsigned long)stat.f_bavail);
+//     return ESP_OK;
+// }
 
 esp_err_t storage_get_stats(storage_stats_t *stats) {
     if (!stats) return ESP_ERR_INVALID_ARG;
@@ -415,7 +415,7 @@ esp_err_t storage_get_stats(storage_stats_t *stats) {
         stats->total_samples_dropped = buf_stats.overflows;
     }
 
-    storage_get_free_space(&stats->sd_free_bytes);
+    // storage_get_free_space(&stats->sd_free_bytes);
 
     return ESP_OK;
 }
@@ -863,36 +863,36 @@ static esp_err_t close_current_file(void) {
     return ESP_OK;
 }
 
-static bool check_sd_space(void) {
-    uint64_t free_bytes = 0;
-    esp_err_t ret = storage_get_free_space(&free_bytes);
-    if (ret != ESP_OK) {
-        // statvfs may not be implemented on this filesystem (errno 88 = ENOSYS)
-        // This is expected and non-critical - assume space is available
-        // Only log at DEBUG level to reduce spam (already logged in storage_get_free_space)
-        return true;  // Assume space is available if check fails
-    }
+// static bool check_sd_space(void) {
+//     uint64_t free_bytes = 0;
+//     // esp_err_t ret = storage_get_free_space(&free_bytes);
+//     // if (ret != ESP_OK) {
+//     //     // statvfs may not be implemented on this filesystem (errno 88 = ENOSYS)
+//     //     // This is expected and non-critical - assume space is available
+//     //     // Only log at DEBUG level to reduce spam (already logged in storage_get_free_space)
+//     //     return true;  // Assume space is available if check fails
+//     // }
     
-    if (free_bytes < SD_FULL_THRESHOLD_BYTES) {
-        ESP_LOGE(TAG, "SD card low on space: %llu bytes free (threshold: %d bytes)", 
-                 (unsigned long long)free_bytes, SD_FULL_THRESHOLD_BYTES);
-        return false;
-    }
+//     if (free_bytes < SD_FULL_THRESHOLD_BYTES) {
+//         ESP_LOGE(TAG, "SD card low on space: %llu bytes free (threshold: %d bytes)", 
+//                  (unsigned long long)free_bytes, SD_FULL_THRESHOLD_BYTES);
+//         return false;
+//     }
     
-    return true;
-}
+//     return true;
+// }
 
 static esp_err_t flush_psram_to_sd(void) {
     if (!current_file) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    // Check SD space before write
-    if (!check_sd_space()) {
-        ESP_LOGW(TAG, "SD card full - stopping recording");
-        current_state = STORAGE_STATE_SD_FULL;
-        return ESP_ERR_NO_MEM;
-    }
+    // // Check SD space before write
+    // if (!check_sd_space()) {
+    //     ESP_LOGW(TAG, "SD card full - stopping recording");
+    //     current_state = STORAGE_STATE_SD_FULL;
+    //     return ESP_ERR_NO_MEM;
+    // }
 
     // Check for file rollover
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
