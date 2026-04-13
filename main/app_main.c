@@ -7,6 +7,7 @@
 #include "bus_i2c.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "dummy_imu.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -44,7 +45,7 @@ static const char *TAG = "GOLDENFORM";
  *  - Starting the Wi‑Fi AP draws a current spike; a weak USB cable/supply can brown out the chip (looks like reset).
  *    Use a short USB cable, powered hub, or battery that can deliver enough peak current.
  * Hold duration for sync: BUTTON_HOLD_MS (short press is record/stop only). */
-#define BUTTON_GPIO 0
+#define BUTTON_GPIO 12
 
 // LED Configuration
 // Set LED_ENABLED to 0 to disable LED (required when no LED is wired or GPIO
@@ -55,8 +56,8 @@ static const char *TAG = "GOLDENFORM";
 
 // Status LEDs on GPIO 40, 41, 42
 #define POWER_LED_GPIO 40  // Always on when powered
-#define STATUS_LED_GPIO 41 // ON during logging, BLINKS during syncing
-#define ERROR_LED_GPIO 42  // ON when any error occurs (IMU, SD card, WiFi)
+#define STATUS_LED_GPIO 9 // ON during logging, BLINKS during syncing
+#define ERROR_LED_GPIO 1  // ON when any error occurs (IMU, SD card, WiFi)
 
 // ============== Application State Machine ==============
 typedef enum {
@@ -99,6 +100,7 @@ static uint32_t ap_post_reg_start_ms = 0;
 
 // Subsystem status
 static bool bno055_available = false;
+static bool dummy_imu_available = false;
 static bool storage_available = false;
 static bool wifi_available = false;
 static bool system_has_error = false;
@@ -314,6 +316,9 @@ static void transition_to_logging(void) {
 
   session_sample_count = 0;
   session_start_time = esp_timer_get_time() / 1000;
+  if (dummy_imu_available) {
+    dummy_imu_reset();
+  }
 
   stroke_detector_reset_session();
 
@@ -594,11 +599,11 @@ void app_main(void) {
       }
     }
     if (!bno055_available) {
-      ESP_LOGE(
-          TAG,
-          "IMU initialization failed after %d attempts - entering error state",
-          IMU_MAX_RETRIES);
-      error_led_set(true);
+      dummy_imu_available = true;
+      ESP_LOGW(TAG,
+               "IMU initialization failed after %d attempts - using demo replay "
+               "samples from demo_jsons for SD/WiFi pipeline validation",
+               IMU_MAX_RETRIES);
     }
   }
 
@@ -741,6 +746,7 @@ void app_main(void) {
   ESP_LOGI(TAG, "==========================================");
   ESP_LOGI(TAG, "System Status:");
   ESP_LOGI(TAG, "  BNO055 IMU: %s", bno055_available ? "OK" : "NOT FOUND");
+  ESP_LOGI(TAG, "  Dummy IMU replay: %s", dummy_imu_available ? "ENABLED" : "OFF");
   ESP_LOGI(TAG, "  SD Card: %s", storage_available ? "OK" : "NOT FOUND");
   ESP_LOGI(TAG, "  WiFi AP: %s", wifi_available ? "OK" : "FAILED");
   ESP_LOGI(TAG, "  Haptic: %s", haptic_is_available() ? "OK" : "NOT AVAILABLE");
@@ -824,13 +830,17 @@ void app_main(void) {
 
     /* IMU samples → protobuf on SD; dashboard integrates via StrokeProcessor after Wi‑Fi sync.
      * (USB/UART is IDF console only — not the PDP data path.) */
-    if (bno055_available) {
+    if (bno055_available || dummy_imu_available) {
       bno055_sample_t sample;
-      err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
+      if (bno055_available) {
+        err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
+      } else {
+        err = dummy_imu_next_sample(&sample) ? ESP_OK : ESP_FAIL;
+      }
       if (err == ESP_OK) {
         // Calibration monitoring - log status changes and announce full
         // calibration
-        {
+        if (bno055_available) {
           static int8_t prev_sys = -1, prev_gyro = -1, prev_accel = -1,
                         prev_mag = -1;
           static bool fully_calibrated_announced = false;
@@ -881,28 +891,26 @@ void app_main(void) {
         // Feed IMU samples through the on-device stroke detector ONLY during LOGGING.
         // This prevents "ghost strokes" in the logs while the device is IDLE.
         stroke_event_t stroke_event = {0};
-        if (current_state == STATE_LOGGING) {
-            stroke_event = stroke_detector_feed(&sample);
+        if (bno055_available && current_state == STATE_LOGGING) {
+          stroke_event = stroke_detector_feed(&sample);
+          sample.haptic_fired = stroke_event.haptic_fired ? 1 : 0;
+          sample.deviation_score = stroke_event.deviation_score;
+          sample.haptic_reason = stroke_event.haptic_reason;
+          sample.pull_duration_ms = stroke_event.pull_duration_ms;
+          sample.stroke_count = stroke_event.stroke_count;
+          sample.turn_count = stroke_event.turn_count;
+          sample.entry_angle = stroke_event.entry_angle;
+          sample.breath_count = 0;
         }
-        
-        sample.haptic_fired = stroke_event.haptic_fired ? 1 : 0;
-        sample.deviation_score = stroke_event.deviation_score;
-        sample.haptic_reason = stroke_event.haptic_reason;
-        sample.pull_duration_ms = stroke_event.pull_duration_ms;
-        sample.stroke_count = stroke_event.stroke_count;
-        sample.turn_count = stroke_event.turn_count;
 
         // Populate device metadata (wrist side from NVS / user_config, not compile-time)
         sample.device_id = CONFIG_GOLDENFORM_DEVICE_ID;
         sample.device_role = goldenform_device_role_pb();
-        sample.entry_angle = stroke_event.entry_angle;
-        /* Protobuf field 32: reserved for legacy sessions; always zero in current firmware */
-        sample.breath_count = 0;
 
-        if (stroke_event.stroke_detected) {
+        if (bno055_available && stroke_event.stroke_detected) {
           ESP_LOGI(TAG, "Stroke #%u detected", (unsigned)stroke_event.stroke_count);
         }
-        if (stroke_event.turn_detected) {
+        if (bno055_available && stroke_event.turn_detected) {
           ESP_LOGI(TAG, "Turn #%u detected", (unsigned)stroke_event.turn_count);
         }
 
