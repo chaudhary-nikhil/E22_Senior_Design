@@ -17,7 +17,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <dirent.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -382,19 +381,17 @@ esp_err_t storage_get_current_sample_count(uint32_t *count) {
 
 esp_err_t storage_get_free_space(uint64_t *free_bytes) {
     if (!free_bytes) return ESP_ERR_INVALID_ARG;
-    
-    struct statvfs stat;
-    int ret = statvfs(mount_point, &stat);
-    if (ret != 0) {
-        // statvfs may not be implemented on all filesystems (errno 88 = ENOSYS)
-        // This is expected for some SD card filesystems, so use DEBUG level instead of ERROR
-        ESP_LOGD(TAG, "statvfs not available: errno=%d (%s) - space check disabled", errno, strerror(errno));
+
+    /* ESP-IDF newlib does not ship sys/statvfs.h; use FATFS-backed query instead */
+    uint64_t total_bytes = 0;
+    esp_err_t err = esp_vfs_fat_info(mount_point, &total_bytes, free_bytes);
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "esp_vfs_fat_info(%s) failed: %s", mount_point, esp_err_to_name(err));
         return ESP_FAIL;
     }
-    
-    *free_bytes = (uint64_t)stat.f_bsize * stat.f_bavail;
-    ESP_LOGD(TAG, "SD free space: %llu bytes (block size: %lu, available blocks: %lu)",
-             (unsigned long long)*free_bytes, (unsigned long)stat.f_bsize, (unsigned long)stat.f_bavail);
+
+    ESP_LOGD(TAG, "SD free space: %llu bytes (total %llu)",
+             (unsigned long long)*free_bytes, (unsigned long long)total_bytes);
     return ESP_OK;
 }
 
@@ -867,9 +864,7 @@ static bool check_sd_space(void) {
     uint64_t free_bytes = 0;
     esp_err_t ret = storage_get_free_space(&free_bytes);
     if (ret != ESP_OK) {
-        // statvfs may not be implemented on this filesystem (errno 88 = ENOSYS)
-        // This is expected and non-critical - assume space is available
-        // Only log at DEBUG level to reduce spam (already logged in storage_get_free_space)
+        // esp_vfs_fat_info failed — assume space is available so recording is not blocked
         return true;  // Assume space is available if check fails
     }
     
