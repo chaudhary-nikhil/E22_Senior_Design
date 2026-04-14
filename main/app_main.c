@@ -941,8 +941,14 @@ void app_main(void) {
             if (session_sample_count % 100 == 0) {
               ESP_LOGI(TAG, "Logging: %u samples", session_sample_count);
             }
+          } else {
+            ESP_LOGE(TAG, "SD card write error: %s", esp_err_to_name(err));
+            error_led_set(true);
           }
         }
+      } else if (current_state == STATE_LOGGING) {
+        ESP_LOGE(TAG, "IMU read error during logging: %s", esp_err_to_name(err));
+        error_led_set(true);
       }
     }
 
