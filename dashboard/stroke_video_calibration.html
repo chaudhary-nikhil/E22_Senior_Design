@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoldenForm · Video hand track (calibration)</title>
+    <meta name="theme-color" content="#0d0d1a">
+    <link rel="stylesheet" href="/app.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <nav class="app-nav">
+        <a href="/integrated_session_viewer.html" class="nav-brand" style="text-decoration:none;color:inherit;">GoldenForm</a>
+        <span class="nav-tabs" style="font-size:0.85rem;color:var(--text3);">Video → 2D hand path</span>
+    </nav>
+
+    <div class="page active" style="padding:24px;max-width:720px;margin:0 auto;">
+        <header class="page-heading">
+            <h1 class="page-heading__title">Stroke video → 2D track</h1>
+            <p class="page-heading__sub">Upload an above-water lab video. The server runs <strong>MediaPipe Hands</strong> and exports wrist position over time (normalized + pixels). Pair the JSON with your raw IMU session to compare shapes and tune integration.</p>
+        </header>
+
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-title">Requirements</div>
+            <p class="settings-field-hint" style="margin-top:8px;">On the computer running the dashboard, install:</p>
+            <pre style="background:#0a0a12;padding:12px;border-radius:8px;font-size:0.8rem;overflow:auto;">pip install -r requirements-calibration.txt</pre>
+            <p class="settings-field-hint">Then restart <code>wifi_session_processor.py</code>. Max upload size ~120 MB.</p>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Process video</div>
+            <form id="svt-form" style="margin-top:12px;">
+                <label>Video file (mp4, mov, …)</label>
+                <input type="file" id="svt-file" accept="video/*" required style="margin-bottom:12px;">
+
+                <label>Hand</label>
+                <select id="svt-hand" style="margin-bottom:12px;max-width:240px;">
+                    <option value="auto">Auto (most visible)</option>
+                    <option value="Left">Left</option>
+                    <option value="Right">Right</option>
+                </select>
+
+                <label>Frame stride (1 = every frame, 2 = half rate — faster)</label>
+                <input type="number" id="svt-stride" min="1" max="10" value="1" style="margin-bottom:12px;max-width:120px;">
+
+                <label>Smoothing window (0 = off, 5–9 = light smoothing on x/y)</label>
+                <input type="number" id="svt-smooth" min="0" max="21" value="0" style="margin-bottom:12px;max-width:120px;">
+
+                <button type="submit" class="btn btn-gold" id="svt-submit">Extract hand track</button>
+            </form>
+            <p id="svt-status" style="margin-top:16px;color:var(--text2);" aria-live="polite"></p>
+            <div id="svt-result" style="margin-top:12px;display:none;">
+                <p class="settings-field-hint">Download JSON. Use <code>t_sec</code> with your session timestamps; <code>x_norm</code>/<code>y_norm</code> are 0–1 in image space (origin top-left).</p>
+                <button type="button" class="btn btn-outline" id="svt-download">Download JSON</button>
+                <p class="settings-field-hint" style="margin-top:10px;"><a href="/hand_track_viewer.html">Visualize this JSON</a> (2D path + plots — open the saved file in the viewer).</p>
+            </div>
+        </div>
+
+        <p style="margin-top:24px;font-size:0.85rem;color:var(--text3);">
+            <a href="/integrated_session_viewer.html">← Back to app</a>
+        </p>
+    </div>
+
+    <script src="/js/gf_api.js"></script>
+    <script>
+        let lastPayload = null;
+        const form = document.getElementById('svt-form');
+        const statusEl = document.getElementById('svt-status');
+        const resultWrap = document.getElementById('svt-result');
+        const dlBtn = document.getElementById('svt-download');
+
+        form.addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const f = document.getElementById('svt-file').files[0];
+            if (!f) return;
+            statusEl.textContent = 'Uploading and processing… (may take a minute)';
+            resultWrap.style.display = 'none';
+            lastPayload = null;
+            dlBtn.disabled = true;
+
+            const fd = new FormData();
+            fd.append('video', f, f.name);
+            fd.append('hand', document.getElementById('svt-hand').value);
+            fd.append('stride', String(parseInt(document.getElementById('svt-stride').value, 10) || 1));
+            fd.append('smooth', String(parseInt(document.getElementById('svt-smooth').value, 10) || 0));
+
+            const headers = {};
+            try {
+                const t = localStorage.getItem('gf_session_token');
+                if (t) headers['Authorization'] = 'Bearer ' + t;
+            } catch (err) { /* ignore */ }
+
+            try {
+                const r = await fetch('/api/stroke_video_track', {
+                    method: 'POST',
+                    body: fd,
+                    headers: headers
+                });
+                const text = await r.text();
+                let data = {};
+                try { data = text ? JSON.parse(text) : {}; } catch (x) { data = { error: text }; }
+                if (!r.ok) {
+                    statusEl.textContent = data.error || ('HTTP ' + r.status);
+                    return;
+                }
+                if (!data.ok) {
+                    statusEl.textContent = data.error || 'Processing failed';
+                    return;
+                }
+                lastPayload = data;
+                const st = data.stats || {};
+                statusEl.textContent = 'Done. Frames: ' + (st.frames_with_chosen_hand || 0) + ' with chosen hand / ' + (st.frames_total || 0) + ' processed. Path length (norm): ' + (st.path_length_norm || 0);
+                resultWrap.style.display = 'block';
+                dlBtn.disabled = false;
+            } catch (err) {
+                statusEl.textContent = String(err);
+            }
+        });
+
+        dlBtn.addEventListener('click', function () {
+            if (!lastPayload) return;
+            const blob = new Blob([JSON.stringify(lastPayload, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'stroke_hand_track_' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.json';
+            a.click();
+            URL.revokeObjectURL(a.href);
+        });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,6 @@
+# Optional: video → 2D hand track for stroke visualization calibration (MediaPipe + OpenCV).
+# Install on the machine running wifi_session_processor.py when using /api/stroke_video_track:
+#   pip install -r requirements-calibration.txt
+
+opencv-python-headless>=4.8.0
+mediapipe>=0.10.14
