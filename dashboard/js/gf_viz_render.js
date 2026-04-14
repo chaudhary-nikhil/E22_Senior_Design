@@ -254,6 +254,7 @@ function renderFrame(idx) {
     }
     if (idx % 3 === 0) updateCharts(idx);
     drawSideViewViz(idx);
+    drawSideViewVizAlt(idx);
 }
 
 function refreshVizPlaybackUI() {

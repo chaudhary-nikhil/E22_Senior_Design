@@ -1107,6 +1107,15 @@ body > * {
   margin: 0 0 10px;
 }
 
+.viz-side-compare-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+.viz-side-half {
+  flex: 1 1 50%;
+  min-width: 0;
+}
 .viz-side-canvas-wrap {
   width: 100%;
   border-radius: var(--radius-sm);

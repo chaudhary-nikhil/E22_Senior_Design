@@ -1,8 +1,8 @@
 /**
  * GoldenForm  --  2D side canvas: LIA path per stroke, phase-colored segments, pitch / gyro overlay.
  */
-function resizeSideViewCanvas() {
-    const canvas = document.getElementById('canvas-side-view');
+function resizeSideViewCanvas(canvasId) {
+    const canvas = document.getElementById(canvasId || 'canvas-side-view');
     const wrap = canvas && canvas.closest('.viz-side-canvas-wrap');
     if (!canvas || !wrap) return;
     const w = Math.max(280, Math.min(960, wrap.clientWidth || 880));
@@ -13,20 +13,14 @@ function resizeSideViewCanvas() {
     }
 }
 
-function getLiaPositionSample(i) {
+function getLiaPositionSample(i, posSource) {
     const d = processedData[i];
     if (!d) return { px: 0, py: 0, pz: 0 };
-    /* Prefer StrokeProcessor positions after per-stroke smoothing (same as 3D trail).
-     * Raw JSON positions are noisier; IMU+ world frame also drifts in yaw  --  smoothing helps visuals. */
     const s = (typeof positionScale !== 'undefined' && positionScale > 0) ? positionScale : 3;
-    if (typeof positionStreamPositions !== 'undefined' && positionStreamPositions &&
-        positionStreamPositions.length === processedData.length && positionStreamPositions[i]) {
-        const v = positionStreamPositions[i];
-        return {
-            px: v.x / s,
-            py: v.y / s,
-            pz: v.z / s
-        };
+    const src = posSource || (typeof positionStreamPositions !== 'undefined' ? positionStreamPositions : null);
+    if (src && src.length === processedData.length && src[i]) {
+        const v = src[i];
+        return { px: v.x / s, py: v.y / s, pz: v.z / s };
     }
     const pos = d.position || {};
     return {
@@ -79,21 +73,60 @@ function gyroSagittalDeg(g) {
 }
 
 function clearSideViewCanvas() {
-    const canvas = document.getElementById('canvas-side-view');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#0b1422';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (const id of ['canvas-side-view', 'canvas-side-view-alt']) {
+        const canvas = document.getElementById(id);
+        if (!canvas) continue;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0b1422';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+let _sharedSideBounds = null;
+
+function _computeSideBounds(idx, posSource) {
+    if (!processedData.length) return null;
+    const b = strokeBoundsForIndex(idx);
+    if (b.strokeNum <= 0) return null;
+    const p0 = getLiaPositionSample(b.start, posSource);
+    let minX = 0, maxX = 0.01, minY = 0, maxY = 0.01;
+    for (let i = b.start; i <= b.end; i++) {
+        const p = getLiaPositionSample(i, posSource);
+        const x = p.pz - p0.pz, y = p.py - p0.py;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return { minX, maxX, minY, maxY };
+}
+
+function _mergedBounds(a, b) {
+    if (!a) return b; if (!b) return a;
+    return {
+        minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX),
+        minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY)
+    };
 }
 
 function drawSideViewViz(idx) {
-    const canvas = document.getElementById('canvas-side-view');
+    const altSrc = (typeof altPositionStreamPositions !== 'undefined') ? altPositionStreamPositions : null;
+    const bCur = _computeSideBounds(idx, null);
+    const bAlt = _computeSideBounds(idx, altSrc);
+    _sharedSideBounds = _mergedBounds(bCur, bAlt);
+    _drawSideViewCore(idx, 'canvas-side-view', null, 'Current (0401fbde)');
+}
+function drawSideViewVizAlt(idx) {
+    const src = (typeof altPositionStreamPositions !== 'undefined') ? altPositionStreamPositions : null;
+    _drawSideViewCore(idx, 'canvas-side-view-alt', src, 'Previous (4fff800)');
+}
+
+function _drawSideViewCore(idx, canvasId, posSource, label) {
+    const canvas = document.getElementById(canvasId);
     if (!canvas || !processedData.length) return;
     if (typeof integratePositions === 'function' &&
         (!positionStreamPositions || positionStreamPositions.length !== processedData.length)) {
         integratePositions();
     }
-    resizeSideViewCanvas();
+    resizeSideViewCanvas(canvasId);
     const ctx = canvas.getContext('2d');
     const W = canvas.width;
     const H = canvas.height;
@@ -104,11 +137,11 @@ function drawSideViewViz(idx) {
     if (b.strokeNum <= 0) {
         ctx.fillStyle = '#888';
         ctx.font = '13px system-ui, sans-serif';
-        ctx.fillText('Move to a stroke (stroke # ≥ 1) to see LIA path reset per stroke.', 16, H / 2);
+        ctx.fillText('Move to a stroke (stroke # ≥ 1) to see path.', 16, H / 2);
         return;
     }
 
-    const p0 = getLiaPositionSample(b.start);
+    const p0 = getLiaPositionSample(b.start, posSource);
     const multi = typeof hasMultipleDeviceStreams === 'function' && hasMultipleDeviceStreams();
     const skCur = getStreamKey(processedData[idx]);
     const t0 = processedData[b.start].timestamp;
@@ -116,12 +149,8 @@ function drawSideViewViz(idx) {
 
     const allPts = [];
     for (let i = b.start; i <= b.end; i++) {
-        const p = getLiaPositionSample(i);
-        allPts.push({
-            x: p.pz - p0.pz,
-            y: p.py - p0.py,
-            i
-        });
+        const p = getLiaPositionSample(i, posSource);
+        allPts.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
     }
 
     const otherPathPts = [];
@@ -130,33 +159,30 @@ function drawSideViewViz(idx) {
             if (getStreamKey(processedData[i]) === skCur) continue;
             const ts = processedData[i].timestamp;
             if (ts == null || ts < t0 || ts > t1) continue;
-            const p = getLiaPositionSample(i);
-            otherPathPts.push({
-                x: p.pz - p0.pz,
-                y: p.py - p0.py,
-                i
-            });
+            const p = getLiaPositionSample(i, posSource);
+            otherPathPts.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
         }
         otherPathPts.sort((a, b) =>
             (processedData[a.i].timestamp || 0) - (processedData[b.i].timestamp || 0));
-        for (const p of otherPathPts) {
-            allPts.push(p);
-        }
+        for (const p of otherPathPts) { allPts.push(p); }
     }
 
     const upto = Math.min(idx, b.end);
     const pathPts = [];
     for (let i = b.start; i <= upto; i++) {
-        const p = getLiaPositionSample(i);
+        const p = getLiaPositionSample(i, posSource);
         pathPts.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
     }
 
     let minX = 0, maxX = 0.01, minY = 0, maxY = 0.01;
-    for (const p of allPts) {
-        minX = Math.min(minX, p.x);
-        maxX = Math.max(maxX, p.x);
-        minY = Math.min(minY, p.y);
-        maxY = Math.max(maxY, p.y);
+    if (_sharedSideBounds) {
+        minX = _sharedSideBounds.minX; maxX = _sharedSideBounds.maxX;
+        minY = _sharedSideBounds.minY; maxY = _sharedSideBounds.maxY;
+    } else {
+        for (const p of allPts) {
+            minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+            minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+        }
     }
     const pad = 44;
     const rangeX = Math.max(maxX - minX, 0.04);
@@ -222,14 +248,12 @@ function drawSideViewViz(idx) {
     const phase = (d && (d.stroke_phase || d.phase)) || 'idle';
     ctx.fillStyle = '#e8e8f0';
     ctx.font = '12px system-ui, sans-serif';
-    const cap = multi
-        ? ('Stroke #' + b.strokeNum + ' · ' + streamLabelShort(d) + ' (solid) · other band (dashed) · colors = band + phase')
-        : ('Stroke #' + b.strokeNum + ' · phase: ' + phase + ' · path colors = phase (catch/pull/recovery/glide)');
+    const cap = (label || '') + ' · Stroke #' + b.strokeNum + ' · ' + phase;
     ctx.fillText(cap, 12, 18);
 
     ctx.fillStyle = '#9ca3af';
     ctx.font = '10px system-ui';
-    ctx.fillText('Forward Δpz →  ·  ↑py = vertical (m), origin = stroke start · path uses smoothed trail (matches 3D)', 12, 32);
+    ctx.fillText('Fwd Δpz → · ↑py = vertical (m)', 12, 32);
 
     if (pathPts.length === 0) return;
     const last = pathPts[pathPts.length - 1];
@@ -278,10 +302,9 @@ function drawSideViewViz(idx) {
     ctx.stroke();
 
     ctx.fillStyle = '#d1d5db';
-    ctx.font = '11px system-ui, sans-serif';
     ctx.font = '10px system-ui, sans-serif';
     ctx.fillText(
-        'AoA: pitch (quat) ' + pitch.toFixed(0) + '° · gyro sagittal ' + gdeg.toFixed(0) + '°  --  IMU+ has no mag; yaw drifts; path is indicative',
+        'pitch ' + pitch.toFixed(0) + '° · gyro ' + gdeg.toFixed(0) + '°',
         12,
         H - 12
     );

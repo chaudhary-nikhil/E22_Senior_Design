@@ -144,9 +144,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (gfResizeT) clearTimeout(gfResizeT);
         gfResizeT = setTimeout(() => {
             gfResizeT = null;
-            try { resizeSideViewCanvas(); } catch (e) { /* ignore */ }
+            try { resizeSideViewCanvas('canvas-side-view'); resizeSideViewCanvas('canvas-side-view-alt'); } catch (e) { /* ignore */ }
             try {
-                if (processedData.length) drawSideViewViz(currentIndex);
+                if (processedData.length) { drawSideViewViz(currentIndex); drawSideViewVizAlt(currentIndex); }
             } catch (e) { /* ignore */ }
             if (renderer && camera) {
                 const c = document.getElementById('canvas3d');

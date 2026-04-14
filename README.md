@@ -24,7 +24,7 @@ Serve the integrated app (handles `/process` sync from the wearable and static `
 ```bash
 cd dashboard
 python3 wifi_session_processor.py
-# Open the URL printed (default port from `PORT`, often 8004)
+# Open the URL printed (default port 8844, or set `PORT` / `--port`)
 ```
 
 Key files: `integrated_session_viewer.html`, `app.css`, `app.js`, `js/gf_*.js`, `wifi_session_processor.py` (uses `simple_imu_visualizer.StrokeProcessor` for session processing).

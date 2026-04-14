@@ -8,8 +8,15 @@ import json
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import io
 import os
 import sys
+
+# Max upload for /api/stroke_video_track (multipart video)
+STROKE_VIDEO_MAX_BYTES = 120 * 1024 * 1024
+
+# Default HTTP port (override with env PORT or --port). 8004 is often busy on dev machines.
+DEFAULT_HTTP_PORT = 8844
 import uuid
 import argparse
 import threading
@@ -239,6 +246,10 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._get_progress()
         elif self.path == '/api/bootstrap':
             self._get_bootstrap()
+        elif self.path == '/stroke_video_calibration.html':
+            self._serve_static('stroke_video_calibration.html', 'text/html')
+        elif self.path == '/hand_track_viewer.html':
+            self._serve_static('hand_track_viewer.html', 'text/html')
         else:
             self.send_response(404)
             self.end_headers()
@@ -279,6 +290,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._merge_sessions()
         elif path == '/api/coaching/insights':
             self._coaching_insights()
+        elif path == '/api/stroke_video_track':
+            self._stroke_video_track_api()
         else:
             self.send_response(404)
             self.end_headers()
@@ -988,6 +1001,89 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         return json.loads(self.rfile.read(length)) if length > 0 else {}
 
+    def _stroke_video_track_api(self):
+        """POST multipart: video file + optional hand, stride, smooth → JSON hand track (MediaPipe)."""
+        u = self._current_user()
+        if not u:
+            self._send_json({
+                'error': 'Sign in required. Open the main app, log in, then use this page.',
+                'auth_required': True,
+            }, 401)
+            return
+        ctype = (self.headers.get('Content-Type') or '').lower()
+        if 'multipart/form-data' not in ctype:
+            self._send_json({'error': 'Use multipart/form-data with field "video".'}, 400)
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0 or length > STROKE_VIDEO_MAX_BYTES:
+            self._send_json({
+                'error': f'Video size must be 1 … {STROKE_VIDEO_MAX_BYTES // (1024 * 1024)} MB.',
+            }, 400)
+            return
+        body = self.rfile.read(length)
+        try:
+            import cgi
+            fp = io.BytesIO(body)
+            environ = {
+                'REQUEST_METHOD': 'POST',
+                'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                'CONTENT_LENGTH': str(length),
+            }
+            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+        except Exception as e:
+            self._send_json({'error': f'Multipart parse failed: {e}'}, 400)
+            return
+
+        file_item = None
+        if 'video' in form:
+            file_item = form['video']
+        elif 'file' in form:
+            file_item = form['file']
+        if file_item is None or not getattr(file_item, 'file', None):
+            self._send_json({'error': 'Missing file field "video".'}, 400)
+            return
+        raw = file_item.file.read()
+        if not raw:
+            self._send_json({'error': 'Empty file.'}, 400)
+            return
+
+        hand = (form.getfirst('hand') or 'auto').strip()
+        try:
+            stride = max(1, int(form.getfirst('stride') or '1'))
+        except (TypeError, ValueError):
+            stride = 1
+        try:
+            smooth = max(0, int(form.getfirst('smooth') or '0'))
+        except (TypeError, ValueError):
+            smooth = 0
+
+        try:
+            import stroke_video_track as svt
+            out = svt.process_video_bytes(
+                raw,
+                hand_preference=hand,
+                frame_stride=stride,
+                smooth_window=smooth,
+                landmark_index=0,
+            )
+        except RuntimeError as e:
+            self._send_json({
+                'ok': False,
+                'error': str(e),
+                'hint': 'Install: pip install -r requirements-calibration.txt',
+            }, 503)
+            return
+        except Exception as e:
+            self._send_json({'ok': False, 'error': str(e)}, 500)
+            return
+
+        if isinstance(out, dict) and out.get('ok'):
+            out['requested_by_user_id'] = u['id']
+        self._send_json(out, 200 if (isinstance(out, dict) and out.get('ok')) else 422)
+
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode()
         try:
@@ -1333,7 +1429,9 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
-def start_server(port=8004, demo=False, fresh=False):
+def start_server(port=None, demo=False, fresh=False):
+    if port is None:
+        port = int(os.environ.get('PORT', DEFAULT_HTTP_PORT))
     _prepare_server_state(demo, fresh)
     server = _QuietThreadingHTTPServer(('0.0.0.0', port), WiFiSessionHandler)
     print(f'GoldenForm Session Processor running on http://localhost:{port}')
@@ -1354,6 +1452,6 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='GoldenForm dashboard + Wi‑Fi session processor')
     ap.add_argument('--demo', action='store_true', help='Use demo SQLite file (emptied each run) + clear session caches.')
     ap.add_argument('--fresh', action='store_true', help='Delete production goldenform.db before start (ignored with --demo).')
-    ap.add_argument('--port', type=int, default=int(os.environ.get('PORT', 8004)), help='HTTP port (default 8004)')
+    ap.add_argument('--port', type=int, default=int(os.environ.get('PORT', DEFAULT_HTTP_PORT)), help=f'HTTP port (default {DEFAULT_HTTP_PORT}, or PORT env)')
     args = ap.parse_args()
     start_server(port=args.port, demo=args.demo, fresh=args.fresh)

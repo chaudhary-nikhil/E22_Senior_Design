@@ -412,7 +412,7 @@ esp_err_t storage_get_stats(storage_stats_t *stats) {
         stats->total_samples_dropped = buf_stats.overflows;
     }
 
-    storage_get_free_space(&stats->sd_free_bytes);
+    // storage_get_free_space(&stats->sd_free_bytes);
 
     return ESP_OK;
 }
@@ -862,7 +862,8 @@ static esp_err_t close_current_file(void) {
 
 static bool check_sd_space(void) {
     uint64_t free_bytes = 0;
-    esp_err_t ret = storage_get_free_space(&free_bytes);
+    // esp_err_t ret = storage_get_free_space(&free_bytes);
+    int ret = ESP_OK;
     if (ret != ESP_OK) {
         // esp_vfs_fat_info failed — assume space is available so recording is not blocked
         return true;  // Assume space is available if check fails

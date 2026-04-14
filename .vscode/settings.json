@@ -6,7 +6,7 @@
     "idf.openOcdConfigs": [
         "board/esp32-wrover-kit-3.3v.cfg"
     ],
-  "idf.port": "/dev/tty.usbserial-14440",
+  "idf.port": "/dev/tty.usbserial-A50285BI",
   "idf.flashType": "UART",
     "idf.monitorBaudRate": 115200,
     "idf.adapterTargetName": "esp32",
@@ -27,5 +27,6 @@
         "*.h": "c",
         "*.c": "c"
     },
-    "C_Cpp.intelliSenseEngine": "default"
+    "C_Cpp.intelliSenseEngine": "default",
+    "idf.currentSetup": "/Users/administrator/esp/v5.5.1/esp-idf"
 }

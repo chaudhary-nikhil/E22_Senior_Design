@@ -1,15 +1,18 @@
 /**
  * GoldenForm  --  LIA / processor position integration and stroke-segmented trail prep.
  *
- * All integration uses 0401fbde StrokeProcessor math  --  the most accurate stroke visualization:
- *   Kalman-smoothed LIA (Q=0.3, R=0.1) → quaternion to world frame → per-axis deadzone (0.2 m/s²)
- *   → integrate velocity/position → fixed decay (0.98 active / 0.80 stationary).
- *   Motion gate: abs(gy) + accel_mag thresholds; position/velocity reset on segment start.
+ * Primary (0401fbde) pipeline:
+ *   Kalman LIA (Q=0.3, R=0.1) → quaternion to world frame → high-pass (α=0.95, removes
+ *   gravity residual from quat error) → per-axis deadzone (0.2 m/s²) → integrate v/p
+ *   → fixed decay (0.98 active / 0.80 stationary).
+ *   Motion gate uses raw LIA magnitude (matching Python StrokeProcessor), not smoothed world mag.
+ *   Trail smoothing: Gaussian-weighted kernel (σ = half/2) instead of box-car average.
  *
- * Authoritative path: use `position` from Python `StrokeProcessor` when present.
- * Fallback: same Kalman → world-frame → integrate pipeline in JS.
+ * Alternate (4fff800) pipeline for A/B comparison:
+ *   Same Kalman + world-frame, but phase-adaptive deadzone/decay, vector-magnitude deadzone,
+ *   calibration scaling, and soft position clamp (v *= 0.95 when |p| > 1m).
  *
- * Reference: https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
+ * Authoritative: use `position` from Python `StrokeProcessor` when present. JS fallback otherwise.
  */
 /**
  * Map processor world position (px,py,pz) to Three.js scene coordinates.
@@ -34,6 +37,19 @@ function gfKalman1D(Q, R, P0, x0) {
         x = x + k * (measurement - x);
         p = (1 - k) * p;
         return x;
+    };
+}
+
+function gfHighPass1D(alpha) {
+    let prevIn = 0;
+    let prevOut = 0;
+    let first = true;
+    return function (v) {
+        if (first) { first = false; prevIn = v; prevOut = 0; return 0; }
+        const out = alpha * (prevOut + v - prevIn);
+        prevIn = v;
+        prevOut = out;
+        return out;
     };
 }
 
@@ -95,6 +111,9 @@ function buildRawIntegratedPositions() {
     const kx = gfKalman1D(0.3, 0.1, 1.0, 0.0);
     const ky = gfKalman1D(0.3, 0.1, 1.0, 0.0);
     const kz = gfKalman1D(0.3, 0.1, 1.0, 0.0);
+    const hpx = gfHighPass1D(0.95);
+    const hpy = gfHighPass1D(0.95);
+    const hpz = gfHighPass1D(0.95);
     let vx = 0, vy = 0, vz = 0, px = 0, py = 0, pz = 0;
     let prevStroke = strokeNumAt(processedData[0]);
     for (let i = 0; i < processedData.length; i++) {
@@ -117,10 +136,14 @@ function buildRawIntegratedPositions() {
         let ax = 0, ay = 0, az = 0;
         if (d.lia) { ax = d.lia.x || 0; ay = d.lia.y || 0; az = d.lia.z || 0; }
         else if (d.acceleration) { ax = d.acceleration.ax || 0; ay = d.acceleration.ay || 0; az = d.acceleration.az || 0; }
+        const rawLiaMag = Math.hypot(ax, ay, az);
         const sx = kx(ax);
         const sy = ky(ay);
         const sz = kz(az);
         const wA = new THREE.Vector3(sx, sy, sz).applyQuaternion(nq(d.quaternion));
+        wA.x = hpx(wA.x);
+        wA.y = hpy(wA.y);
+        wA.z = hpz(wA.z);
 
         const aMag = Math.hypot(wA.x, wA.y, wA.z);
         const ts = (d.timestamp != null) ? Number(d.timestamp) : i * 20;
@@ -141,7 +164,7 @@ function buildRawIntegratedPositions() {
             }
         } else if (!hasTracking) {
             if (!gateOn) {
-                if (gyAbs > GF_0401_START_GY || aMag > GF_0401_START_A) {
+                if (gyAbs > GF_0401_START_GY || rawLiaMag > GF_0401_START_A) {
                     gateOn = true;
                     gateStartMs = ts;
                     vx = vy = vz = 0;
@@ -149,7 +172,7 @@ function buildRawIntegratedPositions() {
                 }
             } else {
                 const dur = ts - gateStartMs;
-                const quiet = (gyAbs < GF_0401_END_GY && aMag < GF_0401_END_A);
+                const quiet = (gyAbs < GF_0401_END_GY && rawLiaMag < GF_0401_END_A);
                 if (quiet && dur >= GF_0401_MIN_ON_MS) gateOn = false;
                 else if (dur > 20000) gateOn = false;
             }
@@ -186,6 +209,143 @@ function integratePositions() {
     filled = smoothRawPathPerStroke(filled);
     positionStreamPositions = filled;
     integratedPositions = filled;
+    buildAltIntegratedPositions();
+}
+
+/**
+ * Alternate integration: 4fff800 phase-adaptive algorithm for A/B comparison.
+ * Phase-adaptive deadzone/decay, vector deadzone with cal scaling, position soft-clamp.
+ */
+let altPositionStreamPositions = [];
+
+function altPhaseParams(d, seg, i, ts, ax, ay, az, gyro) {
+    const PARAMS = {
+        catch: { deadzone: 0.2, decay: 0.98 },
+        pull: { deadzone: 0.2, decay: 0.98 },
+        exit: { deadzone: 0.25, decay: 0.96 },
+        recovery: { deadzone: 0.5, decay: 0.92 },
+        glide: { deadzone: 0.4, decay: 0.90 },
+        idle: { deadzone: 0.3, decay: 0.95 }
+    };
+    const def = PARAMS.pull;
+    if (!seg || i < seg.start) return def;
+    const d0 = processedData[seg.start];
+    const t0 = (d0 && d0.timestamp != null) ? Number(d0.timestamp) : (seg.start * 20);
+    const dtStroke = Math.max(0, ts - t0);
+    const liaBodyMag = Math.hypot(ax, ay, az);
+    const gx = Number(gyro.gx || gyro.x || 0) || 0;
+    const gy = Number(gyro.gy || gyro.y || 0) || 0;
+    const gz = Number(gyro.gz || gyro.z || 0) || 0;
+    const gyroMag = Math.hypot(gx, gy, gz);
+    let fromField = '';
+    if (d) {
+        const raw = d.stroke_phase || d.phase || '';
+        const t = String(raw).toLowerCase().trim();
+        if (PARAMS[t]) fromField = t;
+    }
+    let name;
+    if (fromField) { name = fromField; }
+    else if (dtStroke < 150) { name = 'catch'; }
+    else if (dtStroke < 500) { name = 'pull'; }
+    else if (dtStroke < 700) { name = 'exit'; }
+    else if (dtStroke >= 700 && liaBodyMag < 1.5 && gyroMag < 0.55) { name = 'glide'; }
+    else if (gyroMag > 1.5) { name = 'recovery'; }
+    else { name = 'recovery'; }
+    return PARAMS[name] || def;
+}
+
+function buildAltIntegratedPositions() {
+    altPositionStreamPositions = [];
+    if (!processedData.length) return;
+
+    const hasTracking = processedData.some(d => d.tracking_active !== undefined);
+    const useStrokeSegments = !hasTracking && strokeBoundaries && strokeBoundaries.length > 0;
+    const strokeSegAt = (idx) => {
+        if (!strokeBoundaries || !strokeBoundaries.length) return null;
+        let b = -1;
+        for (let k = 0; k < strokeBoundaries.length; k++) {
+            if (strokeBoundaries[k].index <= idx) b = k; else break;
+        }
+        if (b < 0) return null;
+        const start = strokeBoundaries[b].index;
+        const end = (b + 1 < strokeBoundaries.length)
+            ? strokeBoundaries[b + 1].index - 1 : processedData.length - 1;
+        return { start, end };
+    };
+    let gateOn = false, gateStartMs = 0;
+    const kx = gfKalman1D(0.3, 0.1, 1.0, 0.0);
+    const ky = gfKalman1D(0.3, 0.1, 1.0, 0.0);
+    const kz = gfKalman1D(0.3, 0.1, 1.0, 0.0);
+    let vx = 0, vy = 0, vz = 0, px = 0, py = 0, pz = 0;
+    let prevStroke = strokeNumAt(processedData[0]);
+    const raw = [];
+
+    for (let i = 0; i < processedData.length; i++) {
+        const d = processedData[i];
+        const sc = strokeNumAt(d);
+        if (hasTracking && sc > prevStroke) {
+            vx = vy = vz = 0; px = py = pz = 0; prevStroke = sc;
+        }
+        let dt = 0.02;
+        if (i > 0 && d.timestamp != null && processedData[i - 1].timestamp != null) {
+            dt = Math.max(0.001, Math.min(0.1, (d.timestamp - processedData[i - 1].timestamp) / 1000));
+        }
+        if (hasTracking && d.tracking_active === false) {
+            raw.push(vizMapProcessorPosition(px, py, pz));
+            vx = vy = vz = 0; continue;
+        }
+        let ax = 0, ay = 0, az = 0;
+        if (d.lia) { ax = d.lia.x || 0; ay = d.lia.y || 0; az = d.lia.z || 0; }
+        else if (d.acceleration) { ax = d.acceleration.ax || 0; ay = d.acceleration.ay || 0; az = d.acceleration.az || 0; }
+        const sx = kx(ax), sy = ky(ay), sz = kz(az);
+        const wA = new THREE.Vector3(sx, sy, sz).applyQuaternion(nq(d.quaternion));
+        const aMag = Math.hypot(wA.x, wA.y, wA.z);
+        const ts = (d.timestamp != null) ? Number(d.timestamp) : i * 20;
+        const gyro = d.angular_velocity || {};
+        const gy = Number(gyro.gy || gyro.y || 0) || 0;
+        const gyAbs = Math.abs(gy);
+
+        if (!hasTracking && useStrokeSegments) {
+            const seg = strokeSegAt(i);
+            if (!seg || i < seg.start) { raw.push(vizMapProcessorPosition(px, py, pz)); vx = vy = vz = 0; continue; }
+            if (i === seg.start) { vx = vy = vz = 0; px = py = pz = 0; prevStroke = sc; }
+        } else if (!hasTracking) {
+            if (!gateOn) {
+                if (gyAbs > 0.52 || aMag > 0.16) { gateOn = true; gateStartMs = ts; vx = vy = vz = 0; px = py = pz = 0; }
+            } else {
+                const dur = ts - gateStartMs;
+                if ((gyAbs < 0.18 && aMag < 0.2) && dur >= 420) gateOn = false;
+                else if (dur > 25000) gateOn = false;
+            }
+            if (!gateOn) { raw.push(vizMapProcessorPosition(px, py, pz)); vx = vy = vz = 0; continue; }
+        }
+
+        let pp = { deadzone: 0.2, decay: 0.985 };
+        if (!hasTracking && useStrokeSegments) {
+            pp = altPhaseParams(d, strokeSegAt(i), i, ts, ax, ay, az, gyro);
+        }
+        const cal = d.cal || d.calibration || {};
+        const ca = Number(cal.accel) || 0;
+        const cg = Number(cal.gyro) || 0;
+        let DEADZONE = pp.deadzone;
+        if (ca >= 2 && cg >= 2) DEADZONE *= 0.85;
+
+        let axw = wA.x, ayw = wA.y, azw = wA.z;
+        if (aMag < DEADZONE) { axw = ayw = azw = 0; }
+        vx += axw * dt; vy += ayw * dt; vz += azw * dt;
+        let decay;
+        if (hasTracking) { decay = (aMag < DEADZONE) ? 0.82 : 0.985; }
+        else { decay = (aMag < DEADZONE) ? (pp.decay * 0.94) : pp.decay; }
+        vx *= decay; vy *= decay; vz *= decay;
+        px += vx * dt; py += vy * dt; pz += vz * dt;
+        const pm = Math.sqrt(px * px + py * py + pz * pz);
+        if (pm > 1.0) { vx *= 0.95; vy *= 0.95; vz *= 0.95; }
+        raw.push(vizMapProcessorPosition(px, py, pz));
+    }
+
+    let filled = fillMissingRawPositions(raw);
+    filled = smoothRawPathPerStroke(filled);
+    altPositionStreamPositions = filled;
 }
 
 function getSegStart(upToIndex) {
@@ -201,14 +361,22 @@ function getSegStart(upToIndex) {
 function smoothTrailPoints(points, windowSize) {
     if (!points.length || windowSize < 2) return points;
     const half = Math.floor(windowSize / 2);
+    const sigma = half / 2.0;
+    const weights = [];
+    for (let k = -half; k <= half; k++) {
+        weights.push(Math.exp(-0.5 * (k / sigma) * (k / sigma)));
+    }
     const out = [];
     for (let i = 0; i < points.length; i++) {
-        let x = 0, y = 0, z = 0, n = 0;
+        let x = 0, y = 0, z = 0, wSum = 0;
         for (let j = Math.max(0, i - half); j <= Math.min(points.length - 1, i + half); j++) {
-            x += points[j].x; y += points[j].y; z += points[j].z;
-            n++;
+            const w = weights[j - i + half];
+            x += points[j].x * w;
+            y += points[j].y * w;
+            z += points[j].z * w;
+            wSum += w;
         }
-        out.push(new THREE.Vector3(x / n, y / n, z / n));
+        out.push(new THREE.Vector3(x / wSum, y / wSum, z / wSum));
     }
     return out;
 }
