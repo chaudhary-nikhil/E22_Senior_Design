@@ -27,5 +27,6 @@
         "*.h": "c",
         "*.c": "c"
     },
-    "C_Cpp.intelliSenseEngine": "default"
+    "C_Cpp.intelliSenseEngine": "default",
+    "idf.currentSetup": "/Users/Abathini/esp/esp-idf"
 }
