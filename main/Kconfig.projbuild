@@ -95,6 +95,20 @@ menu "Hardware Configuration (ESP32-S3-WROOM-1)"
 
     comment "=== Other ==="
 
+    config GOLDENFORM_BUTTON_GPIO
+        int "Record / sync button GPIO (active LOW)"
+        range 0 48
+        default 0
+        help
+            Short press = start/stop recording; Wi‑Fi sync = hold ~1.5s.
+            On GPIO0 (DevKit BOOT): firmware arms sync on hold but starts the AP
+            after you release the button, so IO0 is not held low during the Wi‑Fi
+            current spike (reduces brownout resets and accidental download mode).
+
+            GPIO0 is still a strapping pin: if it is LOW when the chip resets,
+            the ROM enters UART download mode. Prefer a non-strapping GPIO for a
+            dedicated tact switch on custom boards.
+
     config GOLDENFORM_HAPTIC_GPIO
         int "Haptic motor GPIO"
         range 0 48

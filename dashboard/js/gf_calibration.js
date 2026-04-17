@@ -155,6 +155,7 @@ function updateSessionCalBanner() {
     }
     let n = 0;
     let mins = { sys: 3, gyro: 3, accel: 3, mag: 3 };
+    let lowSys = 0;
     for (const p of pd) {
         const c = p.calibration || p.cal;
         if (!c || typeof c !== 'object') continue;
@@ -166,6 +167,7 @@ function updateSessionCalBanner() {
         mins.gyro = Math.min(mins.gyro, g);
         mins.accel = Math.min(mins.accel, a);
         mins.mag = Math.min(mins.mag, m);
+        if (s < 3) lowSys++;
         n++;
     }
     el.hidden = false;
@@ -181,9 +183,14 @@ function updateSessionCalBanner() {
         : (mins.sys < 3 || mins.gyro < 2 || mins.accel < 2 || mins.mag < 2);
     page.classList.toggle('page-session--weak-cal', weak);
     const minTag = 'min S' + mins.sys + ' G' + mins.gyro + ' A' + mins.accel + ' M' + mins.mag;
+    const rareLowSys = n > 0 && mins.sys === 0 && lowSys <= Math.max(1, Math.floor(n * 0.03));
     if (weak) {
         el.className = 'session-cal-banner session-cal-banner--warn';
-        el.innerHTML = '<span class="session-cal-banner__icon">!</span><span><strong>Weak fusion in this file</strong> (' + minTag + ' = lowest per-sample quality in the recording). Use this for how trustworthy this swim’s orientation is. <strong>Nav Cal</strong> is separate: live bench or your last browser snapshot, often higher than the worst moment in the file.</span>';
+        let extra = '';
+        if (rareLowSys) {
+            extra = ' Only ' + lowSys + ' of ' + n + ' samples had S&lt;3 (often the first moments after power‑up). The minimum is from that tail, not the whole swim.';
+        }
+        el.innerHTML = '<span class="session-cal-banner__icon">!</span><span><strong>Weak fusion in this file</strong> (' + minTag + ' = lowest per-sample quality in the recording). Use this for how trustworthy this swim’s orientation is. <strong>Nav Cal</strong> is separate: live bench or your last browser snapshot, often higher than the worst moment in the file.' + extra + '</span>';
     } else {
         el.className = 'session-cal-banner session-cal-banner--ok';
         el.innerHTML = '<span class="session-cal-banner__icon">✓</span><span>Fusion OK in this recording (' + minTag + '). Nav <strong>Cal</strong> stays live/saved bench; this banner reflects samples in this file only.</span>';

@@ -18,7 +18,7 @@ import urllib.parse
 import time
 
 sys.path.insert(0, os.path.dirname(__file__))
-from simple_imu_visualizer import StrokeProcessor, align_sessions_by_hop
+from simple_imu_visualizer import StrokeProcessor, align_sessions_by_hop, land_demo_enabled
 import database as db
 
 ESP32_URL = 'http://192.168.4.1'
@@ -28,6 +28,41 @@ PROCESSED_CACHE = os.path.join(CACHE_DIR, 'last_processed.json')
 INSTANCE_ID_PATH = os.path.join(CACHE_DIR, 'gf_instance_id')
 IDEAL_CACHE_FILE = os.path.join(CACHE_DIR, 'ideal_stroke.json')
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def _env_flag_true(key):
+    return (os.environ.get(key) or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _replay_stroke_processor():
+    """Batch StrokeProcessor: GF_REPLAY_INTEGRATION, GF_LAND_DEMO, min-cal policy.
+
+    Min cal (0401fbde = accel+gyro ≥ 2): **on by default** for pool batch replay.
+    - ``GF_RELAX_IMU_CAL=true`` — MIN_CAL 0 (IMUPLUS / weak logs).
+    - ``GF_STRICT_IMU_CAL=true`` — force strict even on land demo.
+    Pool replay: ``GF_LAND_DEMO`` unset → off (0401fbde strict min-cal). Set ``GF_LAND_DEMO=true``
+    for dry-land thresholds + relaxed min-cal.
+    """
+    # uart_match = 0401fbde motion gate (gy+|LIA|), segment resets limit drift.
+    # stroke_pull = integrate only during underwater pull window (least drift vs recovery air).
+    mode = (os.environ.get('GF_REPLAY_INTEGRATION') or 'uart_match').strip().lower()
+    if mode not in ('stroke_pull', 'uart_match', 'motion_segment'):
+        mode = 'uart_match'
+    land = land_demo_enabled(default=False)
+    if _env_flag_true('GF_STRICT_IMU_CAL'):
+        strict = True
+    elif _env_flag_true('GF_RELAX_IMU_CAL'):
+        strict = False
+    elif land:
+        strict = False
+    else:
+        strict = True
+    return StrokeProcessor(
+        batch_mode=True,
+        replay_integration_mode=mode,
+        land_demo=land,
+        strict_min_cal=strict,
+    )
 
 
 def _load_local_env():
@@ -842,7 +877,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             # Now reprocess the aligned sessions together
             processed_aligned_sessions = []
             for sess in aligned_sessions:
-                processor = StrokeProcessor(batch_mode=True)
+                processor = _replay_stroke_processor()
                 p_data = []
                 for sample in sess.get('data', []):
                     lia_x = sample.get('lia_x', sample.get('ax', 0))
@@ -1030,7 +1065,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     continue
 
                 actual_total += len(data)
-                processor = StrokeProcessor(batch_mode=True)
+                processor = _replay_stroke_processor()
                 processed_data = []
 
                 for sample in data:

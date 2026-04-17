@@ -68,4 +68,7 @@ CONFIG_SD_ENABLE_SDIO_SUPPORT=n
 # PDP: sessions on SD, sync over Wi‑Fi (UART is debug/console only)
 CONFIG_GOLDENFORM_REQUIRE_SD=y
 
+# DevKit BOOT = GPIO0 (strapping pin — see Kconfig help)
+CONFIG_GOLDENFORM_BUTTON_GPIO=0
+
 # GoldenForm AP + HTTP at boot: registration and dashboard without long-press sync

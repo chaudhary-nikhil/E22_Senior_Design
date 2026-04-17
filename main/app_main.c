@@ -36,15 +36,18 @@ static const char *TAG = "GOLDENFORM";
 #define I2C_SCL_GPIO CONFIG_GOLDENFORM_I2C_SCL_GPIO         // GPIO 5
 #define BNO055_ADDR_GPIO CONFIG_GOLDENFORM_BNO055_ADDR_GPIO // GPIO 6
 
-/* Button: BOOT (GPIO0). PDP flow: record/stop → SD, hold → Wi‑Fi sync to dashboard (no UART session pipeline).
+/* User button (menuconfig: GOLDENFORM_BUTTON_GPIO). Default 0 = DevKit BOOT.
+ * Short press = record/stop → SD; hold ~BUTTON_HOLD_MS = Wi‑Fi sync.
  *
- * If the board "resets" or won't run the app when you use the button:
- *  - Do NOT press RESET/EN while BOOT is held. On ESP32-S3, IO0 low at reset enters UART download mode
- *    (bootloader), not GoldenForm — release BOOT before resetting, or power-cycle without holding BOOT.
- *  - Starting the Wi‑Fi AP draws a current spike; a weak USB cable/supply can brown out the chip (looks like reset).
- *    Use a short USB cable, powered hub, or battery that can deliver enough peak current.
- * Hold duration for sync: BUTTON_HOLD_MS (short press is record/stop only). */
-#define BUTTON_GPIO 0
+ * GPIO0 strapping: if IO0 is LOW when the chip resets, ESP32-S3 enters UART
+ * download mode (ROM), not this app — release the button before power-on / EN reset.
+ *
+ * Input is polled in the main loop (same timing with or without USB UART); GPIO
+ * ISRs are not used for the button.
+ *
+ * Wi‑Fi / sync current spikes + weak supplies can brown out the chip (looks like
+ * a reset). Use adequate decoupling and a supply that can handle peak Wi‑Fi load. */
+#define BUTTON_GPIO CONFIG_GOLDENFORM_BUTTON_GPIO
 
 // LED Configuration
 // Set LED_ENABLED to 0 to disable LED (required when no LED is wired or GPIO
@@ -66,15 +69,18 @@ typedef enum {
 } app_state_t;
 
 static volatile app_state_t current_state = STATE_IDLE;
-static volatile uint32_t last_press_time = 0;
-static volatile uint32_t last_release_time = 0;
 #define BUTTON_DEBOUNCE_MS 80
 
-// Button hold detection
+// Button hold detection (polled in main loop; volatiles not required but kept)
 static volatile uint32_t button_press_start_ms = 0;
 static volatile bool button_is_pressed = false;
 static volatile bool button_short_press = false;
 static volatile bool button_hold_triggered = false;
+
+/* Debounced button level: 1 = released (pull-up), 0 = pressed */
+static int btn_debounce_raw = 1;
+static uint32_t btn_debounce_since_ms = 0;
+static int btn_stable = 1;
 #define BUTTON_HOLD_MS 1500
 #define BUTTON_SHORT_MAX_MS 800
 
@@ -119,25 +125,37 @@ static volatile bool led_blink_stop = false;
 static led_strip_handle_t led_strip = NULL;
 #endif
 
-// ============== Button ISR (both edges for press/hold detection)
-// ==============
-static void IRAM_ATTR button_isr_handler(void *arg) {
-  uint32_t now = esp_timer_get_time() / 1000;
-  int level = gpio_get_level(BUTTON_GPIO);
+static void transition_to_syncing(void);
 
-  if (level == 0) {
-    // Pressed down - debounce against last press
-    if (now - last_press_time < BUTTON_DEBOUNCE_MS)
-      return;
-    last_press_time = now;
+// ============== Button polling (debounced; runs in main IMU loop) ==========
+/* GPIO0 = BOOT strap: holding it low during a brownout/reset forces UART download mode.
+ * If Wi‑Fi starts while BOOT is still held, supply spikes can reset the chip with IO0 low.
+ * For BUTTON_GPIO==0 we therefore arm sync on hold but call transition_to_syncing() only
+ * after release (see main loop). */
+static bool pending_sync_after_release = false;
+
+static void button_poll(void) {
+  uint32_t now = (uint32_t)(esp_timer_get_time() / 1000ULL);
+  int raw = gpio_get_level(BUTTON_GPIO);
+
+  if (raw != btn_debounce_raw) {
+    btn_debounce_raw = raw;
+    btn_debounce_since_ms = now;
+    return;
+  }
+  if ((now - btn_debounce_since_ms) < BUTTON_DEBOUNCE_MS) {
+    return;
+  }
+  if (raw == btn_stable) {
+    return;
+  }
+
+  btn_stable = raw;
+  if (btn_stable == 0) {
     button_is_pressed = true;
     button_press_start_ms = now;
     button_hold_triggered = false;
   } else {
-    // Released - debounce against last release only
-    if (now - last_release_time < BUTTON_DEBOUNCE_MS)
-      return;
-    last_release_time = now;
     if (button_is_pressed && !button_hold_triggered) {
       uint32_t held = now - button_press_start_ms;
       if (held > 50 && held < BUTTON_SHORT_MAX_MS) {
@@ -145,6 +163,11 @@ static void IRAM_ATTR button_isr_handler(void *arg) {
       }
     }
     button_is_pressed = false;
+    if (pending_sync_after_release) {
+      pending_sync_after_release = false;
+      ESP_LOGI(TAG, "Button released — starting Wi‑Fi sync");
+      transition_to_syncing();
+    }
   }
 }
 
@@ -477,15 +500,16 @@ static void handle_button_hold(void) {
 
 // ============== Initialization ==============
 static void init_gpio(void) {
-  // Configure button
+  // Configure button (active low; no ISR — polled every IMU tick)
   gpio_config_t btn_cfg = {.pin_bit_mask = (1ULL << BUTTON_GPIO),
                            .mode = GPIO_MODE_INPUT,
                            .pull_up_en = GPIO_PULLUP_ENABLE,
                            .pull_down_en = GPIO_PULLDOWN_DISABLE,
-                           .intr_type = GPIO_INTR_ANYEDGE};
+                           .intr_type = GPIO_INTR_DISABLE};
   gpio_config(&btn_cfg);
-  gpio_install_isr_service(0);
-  gpio_isr_handler_add(BUTTON_GPIO, button_isr_handler, NULL);
+  btn_debounce_raw = gpio_get_level(BUTTON_GPIO);
+  btn_stable = btn_debounce_raw;
+  btn_debounce_since_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
 
   // Configure status LEDs on GPIO 40, 41, 42
   gpio_config_t led_cfg = {.pin_bit_mask = (1ULL << POWER_LED_GPIO) |
@@ -533,12 +557,12 @@ static void init_gpio(void) {
     vTaskDelay(pdMS_TO_TICKS(10));
     ESP_LOGI(TAG, "NeoPixel LED strip initialized on GPIO%d", LED_GPIO);
   }
-  ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d (BOOT), LED=GPIO%d",
-           BUTTON_GPIO, LED_GPIO);
+  ESP_LOGI(TAG, "GPIO initialized: Button=GPIO%d, LED=GPIO%d", BUTTON_GPIO,
+           LED_GPIO);
 #else
   ESP_LOGI(TAG,
-           "GPIO initialized: Button=GPIO%d (BOOT), LED=disabled (GPIO%d "
-           "reserved for SD CS)",
+           "GPIO initialized: Button=GPIO%d, LED=disabled (GPIO%d reserved "
+           "for SD CS)",
            BUTTON_GPIO, LED_GPIO);
 #endif
 }
@@ -664,12 +688,14 @@ void app_main(void) {
     error_led_set(true);
   }
 
-  // Prepare WiFi only; AP starts when user holds BOOT for sync/registration (not at boot).
+  // Prepare WiFi only; AP starts when user holds the sync button (not at chip boot).
   err = wifi_server_init();
   if (err == ESP_OK) {
     wifi_available = true;
     wifi_server_set_registration_done_callback(goldenform_registration_done_callback);
-    ESP_LOGI(TAG, "WiFi ready — hold BOOT ~1.5s to open GoldenForm AP for registration/sync");
+    ESP_LOGI(TAG,
+             "WiFi ready — hold button (GPIO%d) ~1.5s to open GoldenForm AP",
+             BUTTON_GPIO);
   } else {
     ESP_LOGW(TAG, "WiFi init failed - continuing without WiFi");
     error_led_set(true);
@@ -750,8 +776,12 @@ void app_main(void) {
     ESP_LOGW(TAG, "  Error LED: ON (one or more subsystems failed)");
   }
   ESP_LOGI(TAG, "==========================================");
-  ESP_LOGI(TAG, "BOOT button: Press = Start/Stop recording");
-  ESP_LOGI(TAG, "             Hold  = Sync via WiFi");
+  ESP_LOGI(TAG, "Button GPIO%d: Press = Start/Stop recording", BUTTON_GPIO);
+  if (BUTTON_GPIO == 0) {
+    ESP_LOGI(TAG, "              Hold ~1.5s, then RELEASE = Sync (GPIO0 / BOOT)");
+  } else {
+    ESP_LOGI(TAG, "              Hold ~1.5s = Sync via WiFi");
+  }
   ESP_LOGI(TAG, "==========================================");
 
   // Ensure LED is OFF in IDLE state
@@ -764,14 +794,26 @@ void app_main(void) {
   const TickType_t period = pdMS_TO_TICKS(1000 / CONFIG_GOLDENFORM_SAMPLE_HZ);
 
   while (1) {
+    button_poll();
+
     // Detect button hold (while button is still down)
     if (button_is_pressed && !button_hold_triggered &&
         button_press_start_ms > 0) {
       uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
       if ((now_ms - button_press_start_ms) >= BUTTON_HOLD_MS) {
         button_hold_triggered = true;
-        ESP_LOGI(TAG, "Button HOLD detected");
-        handle_button_hold();
+        if (BUTTON_GPIO == 0) {
+          if (current_state == STATE_IDLE ||
+              current_state == STATE_LOGGING) {
+            pending_sync_after_release = true;
+            ESP_LOGI(TAG,
+                     "Sync armed — release BOOT to start Wi‑Fi (GPIO0: avoids "
+                     "brownout / UART download mode while held)");
+          }
+        } else {
+          ESP_LOGI(TAG, "Button HOLD detected");
+          handle_button_hold();
+        }
       }
     }
 

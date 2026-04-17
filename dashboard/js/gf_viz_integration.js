@@ -8,6 +8,11 @@
  *
  * Authoritative path: use `position` from Python `StrokeProcessor` when present.
  * Fallback: same Kalman → world-frame → integrate pipeline in JS.
+ * After integration, `applyPerStrokeOriginOffset` subtracts each stroke’s start so the graph
+ * resets to the origin every stroke (pool trail is stroke-local, not session drift).
+ * Python (0401fbde uart_match) resets position/velocity when each motion segment starts,
+ * including batch replay — limits double-integration drift; JS still subtracts per-stroke
+ * origin (catch/pull anchor) for comparable stroke-to-stroke views.
  *
  * Reference: https://github.com/chaudhary-nikhil/E22_Senior_Design/tree/0401fbde9e7a69887208db1df3e5feff27011ba6
  */
@@ -18,9 +23,12 @@
  */
 function vizMapProcessorPosition(px, py, pz) {
     const s = typeof positionScale !== 'undefined' ? positionScale : 1;
+    const ySign = (typeof window !== 'undefined' && Number.isFinite(window.VIZ_WORLD_Y_SIGN))
+        ? window.VIZ_WORLD_Y_SIGN
+        : -1;
     return new THREE.Vector3(
         (Number(px) || 0) * s,
-        (Number(py) || 0) * s,
+        ySign * (Number(py) || 0) * s,
         (Number(pz) || 0) * s
     );
 }
@@ -56,7 +64,13 @@ function buildRawIntegratedPositions() {
     refreshStrokeFieldMode();
 
     const hasProcessorPos = processedData.length > 0 && processedData.every(d =>
-        d.position && typeof d.position.px === 'number'
+        d.position
+        && typeof d.position.px === 'number'
+        && typeof d.position.py === 'number'
+        && typeof d.position.pz === 'number'
+        && Number.isFinite(d.position.px)
+        && Number.isFinite(d.position.py)
+        && Number.isFinite(d.position.pz)
     );
     if (hasProcessorPos) {
         let prevStroke = strokeNumAt(processedData[0]);
@@ -181,7 +195,8 @@ function integratePositions() {
     positionStreamPositions = [];
     if (!processedData.length) return;
     buildRawIntegratedPositions();
-    if (!playbackStrokeSegments.length) buildPlaybackStrokeSegments();
+    applyPerStrokeOriginOffset(rawIntegratedPositions);
+    buildPlaybackStrokeSegments();
     let filled = fillMissingRawPositions(rawIntegratedPositions);
     filled = smoothRawPathPerStroke(filled);
     positionStreamPositions = filled;
@@ -320,5 +335,92 @@ function buildPlaybackStrokeSegments() {
             strokeNum: prevSn,
             streamKey: prevSk
         });
+    }
+}
+
+/**
+ * Each stroke’s trail starts at graph origin (0,0,0) so sessions don’t look like random drift.
+ * For each sample, subtract integrated position at the first sample of (stream, stroke #) — works
+ * for interleaved multi-device timelines, not only contiguous stroke blocks in file order.
+ */
+function applyPerStrokeOriginOffset(points) {
+    if (!points.length || !processedData.length || points.length !== processedData.length) return;
+    refreshStrokeFieldMode();
+    const n = points.length;
+    const rawSessionStart = (points[0] && points[0].clone) ? points[0].clone() : null;
+    let anyStroke = false;
+    for (let i = 0; i < n; i++) {
+        if (strokeNumAt(processedData[i]) > 0) {
+            anyStroke = true;
+            break;
+        }
+    }
+    if (!anyStroke && n > 0 && rawSessionStart) {
+        for (let i = 0; i < n; i++) {
+            if (points[i] && points[i].sub) points[i].sub(rawSessionStart);
+        }
+        return;
+    }
+    // Pick a more meaningful stroke origin: first catch/pull (or in_water_pull) inside the stroke.
+    // This makes the stroke start with the downward/entry motion instead of recovery/glide.
+    const originIdx = new Int32Array(n);
+    const originByKey = new Map(); // key = `${sk}::${sc}` -> origin index
+    function strokeKey(sk, sc) { return String(sk) + '::' + String(sc); }
+    function phaseAt(i) {
+        const d = processedData[i] || {};
+        return String(d.stroke_phase || d.phase || '').toLowerCase();
+    }
+    function isStrokeEntryLike(i) {
+        const d = processedData[i] || {};
+        const ph = phaseAt(i);
+        if (ph === 'catch' || ph === 'pull') return true;
+        if (d.in_water_pull === true) return true;
+        return false;
+    }
+    for (let i = 0; i < n; i++) {
+        const d = processedData[i];
+        const sk = getStreamKey(d);
+        const sc = strokeNumAt(d);
+        if (sc <= 0) { originIdx[i] = -1; continue; }
+        const k = strokeKey(sk, sc);
+        let oi = originByKey.get(k);
+        if (oi == null) {
+            // Find the contiguous block start for this stream/stroke.
+            let start = i;
+            for (let j = i; j >= 0; j--) {
+                const dj = processedData[j];
+                if (getStreamKey(dj) !== sk) break;
+                if (strokeNumAt(dj) === sc) start = j;
+                else break;
+            }
+            // Search forward for entry-like phase within a short window.
+            oi = start;
+            const searchEnd = Math.min(n - 1, start + 180);
+            for (let t = start; t <= searchEnd; t++) {
+                const dt = processedData[t];
+                if (getStreamKey(dt) !== sk) break;
+                if (strokeNumAt(dt) !== sc) break;
+                if (isStrokeEntryLike(t)) { oi = t; break; }
+            }
+            originByKey.set(k, oi);
+        }
+        originIdx[i] = oi;
+    }
+    const clones = new Map();
+    for (let i = 0; i < n; i++) {
+        const oi = originIdx[i];
+        if (oi < 0 || clones.has(oi)) continue;
+        if (points[oi] && points[oi].clone) clones.set(oi, points[oi].clone());
+    }
+    for (let i = 0; i < n; i++) {
+        const oi = originIdx[i];
+        if (oi < 0) {
+            /* Before first stroke (stroke_count still 0): keep motion vs session start — do not zero. */
+            if (rawSessionStart && points[i] && points[i].sub) points[i].sub(rawSessionStart);
+            continue;
+        }
+        const o = clones.get(oi);
+        if (!o || !points[i] || !points[i].sub) continue;
+        points[i].sub(o);
     }
 }

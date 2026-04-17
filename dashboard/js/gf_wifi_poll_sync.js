@@ -136,7 +136,9 @@ function _apSampleToProcessed(sample) {
         gz: Number(sample.gz ?? 0) || 0,
     };
     const cal = sample.cal && typeof sample.cal === 'object' ? sample.cal : null;
-    return {
+    const pos = sample.position;
+    const hasPos = pos && typeof pos === 'object' && Number.isFinite(Number(pos.px));
+    const out = {
         timestamp: t,
         quaternion: q,
         lia,
@@ -156,6 +158,20 @@ function _apSampleToProcessed(sample) {
         device_id: Number(sample.dev_id ?? sample.device_id ?? 0) || 0,
         device_role: Number(sample.dev_role ?? sample.device_role ?? 0) || 0,
     };
+    if (sample.tracking_active !== undefined) out.tracking_active = !!sample.tracking_active;
+    if (hasPos) {
+        out.position = {
+            px: Number(pos.px) || 0,
+            py: Number(pos.py) || 0,
+            pz: Number(pos.pz) || 0,
+        };
+    }
+    if (sample.stroke_phase != null && sample.stroke_phase !== '') out.stroke_phase = sample.stroke_phase;
+    if (sample.phase != null && sample.phase !== '') out.phase = sample.phase;
+    if (sample.in_water_pull !== undefined) out.in_water_pull = !!sample.in_water_pull;
+    if (sample.phase_pcts && typeof sample.phase_pcts === 'object') out.phase_pcts = sample.phase_pcts;
+    if (sample.stroke_velocity_ms != null) out.stroke_velocity_ms = Number(sample.stroke_velocity_ms);
+    return out;
 }
 
 function _metricsFromProcessed(pd) {

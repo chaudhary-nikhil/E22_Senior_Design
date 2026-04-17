@@ -13,7 +13,9 @@ let sessionMetrics = null;
 let currentIndex = 0;
 let isPlaying = false;
 let playbackInterval = null;
-let positionScale = 3.0;
+let positionScale = 6.0;
+/** Maps processor world Y to Three.js (−1 = pull reads as −Y / into water). Shared with viz integration. */
+window.VIZ_WORLD_Y_SIGN = -1;
 let idealStrokeData = null;
 let activeWristDeviceRole = 'wrist_right';
 let cachedDeviceListLength = 0;
@@ -54,6 +56,8 @@ let integratedPositions = [];
 let playbackStrokeSegments = [];
 /** Euler offsets (rad) applied after quaternion when a gravity axis hint exists. */
 let vizCoordinateTransform = { rotationX: 0, rotationY: 0, rotationZ: 0 };
+/** Quaternion applied so the first sample renders as a neutral "flat" pose. */
+let vizBaseQuatInv = null;
 /** Filled when an ideal baseline is loaded: per-stroke deviation vs ideal + aggregates for Analysis. */
 let gfVsIdealMetrics = null;
 /** Analysis chart: which stroke is compared to the saved ideal (null = auto first stroke). */
@@ -88,6 +92,11 @@ const PHASE_COLOR_RGB = {
 
 /** Prefer firmware `strokes` when present so motion matches device logs. */
 let useFwStrokesForViz = false;
+/**
+ * BoxGeometry Y half-extent (m) for createImuCube body — top face at +this from mesh origin.
+ * Applied in viz so stroke origin (0,0,0) places the red top face on the water plane (y=0).
+ */
+const VIZ_IMU_BODY_HALF_H = 0.07;
 let rawIntegratedPositions = [];
 let velocityArrow = null;
 let followDeviceInView = false;

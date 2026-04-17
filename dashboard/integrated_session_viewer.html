@@ -233,7 +233,8 @@
                     <div class="live-data">
                         <div>Stroke: <strong id="live-strokes">0</strong></div>
                         <div>Phase: <strong id="live-phase" class="phase-label">idle</strong></div>
-                        <div>Entry angle: <strong id="live-angle">0°</strong></div>
+                        <div>Tracking: <strong id="live-tracking">-</strong></div>
+                        <div>Entry AoA (this stroke): <strong id="live-angle">0°</strong></div>
                         <div>‖ω‖ now: <strong id="live-gyro">0.00</strong> <span class="live-unit">rad/s</span></div>
                         <div>‖ω‖ at water entry: <strong id="live-entry-gyro">-</strong> <span class="live-unit">rad/s</span></div>
                         <div>Haptic / dev.: <strong id="live-deviation">0.000</strong></div>
@@ -242,16 +243,21 @@
                 <div class="card">
                     <div class="card-title">3D Controls</div>
                     <div style="margin-top:8px;">
-                        <label>Position scale: <span id="scale-val">3.0x</span></label>
-                        <input type="range" min="0.5" max="10" step="0.1" value="3" oninput="updateScale(this.value)"
+                        <label>Position scale: <span id="scale-val">6.0x</span></label>
+                        <input id="viz-scale" type="range" min="0.5" max="30" step="0.1" value="6" oninput="updateScale(this.value)"
                             style="width:100%;">
                     </div>
                     <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-size:0.9em;">
                         <input type="checkbox" id="show-cube" checked>
                         <span>Show 3D IMU cube</span>
                     </label>
+                    <label style="display:flex;align-items:center;gap:8px;margin-top:6px;cursor:pointer;font-size:0.9em;">
+                        <input type="checkbox" id="viz-lock-side" >
+                        <span>Lock 3D camera to side view</span>
+                    </label>
                     <div style="display:flex;gap:6px;margin-top:8px;">
                         <button type="button" class="btn btn-outline btn-sm" onclick="resetView()">Reset View</button>
+                        <button type="button" class="btn btn-outline btn-sm" onclick="autoScaleStroke()">Auto scale</button>
                         <button type="button" class="btn btn-outline btn-sm" onclick="clearViz()">Clear Trails</button>
                     </div>
                 </div>
