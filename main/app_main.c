@@ -58,8 +58,8 @@ static const char *TAG = "GOLDENFORM";
 
 // Status LEDs on GPIO 40, 41, 42
 #define POWER_LED_GPIO 40  // Always on when powered
-#define STATUS_LED_GPIO 41 // ON during logging, BLINKS during syncing
-#define ERROR_LED_GPIO 42  // ON when any error occurs (IMU, SD card, WiFi)
+#define STATUS_LED_GPIO 9 // ON during logging, BLINKS during syncing
+#define ERROR_LED_GPIO 1  // ON when any error occurs (IMU, SD card, WiFi)
 
 // ============== Application State Machine ==============
 typedef enum {
