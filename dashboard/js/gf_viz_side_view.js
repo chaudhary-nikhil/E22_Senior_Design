@@ -78,6 +78,110 @@ function gyroSagittalDeg(g) {
     return Math.atan2(gy, Math.sqrt(gx * gx + gz * gz)) * 180 / Math.PI;
 }
 
+/** PCA major-axis angle (rad) in 2D — rotate path so primary motion reads left→right (sagittal-ish). */
+function principalAxisAngleRad2D(pts) {
+    if (!pts || pts.length < 5) return 0;
+    let mx = 0;
+    let my = 0;
+    for (const p of pts) {
+        mx += p.x;
+        my += p.y;
+    }
+    const n = pts.length;
+    mx /= n;
+    my /= n;
+    let cxx = 0;
+    let cyy = 0;
+    let cxy = 0;
+    for (const p of pts) {
+        const dx = p.x - mx;
+        const dy = p.y - my;
+        cxx += dx * dx;
+        cyy += dy * dy;
+        cxy += dx * dy;
+    }
+    cxx /= n;
+    cyy /= n;
+    cxy /= n;
+    return 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+}
+
+function rotatePts2D(pts, ang) {
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    return pts.map((p) => ({
+        x: p.x * c - p.y * s,
+        y: p.x * s + p.y * c,
+        i: p.i
+    }));
+}
+
+/**
+ * PCA gives an axis but its sign is ambiguous (stroke can mirror left/right).
+ * Normalize so "forward" motion during catch/pull always goes +X in side view.
+ */
+function normalizeSagittalSign(rotPts, startIdx, endIdx) {
+    if (!rotPts || rotPts.length < 2) return rotPts;
+    const n = rotPts.length;
+    const iEnd = Math.min(n - 1, Math.max(1, Math.floor(n * 0.35)));
+    let i0 = 0;
+    let i1 = iEnd;
+    // Prefer catch/pull window for direction disambiguation.
+    for (let k = 0; k <= iEnd; k++) {
+        const d = processedData[rotPts[k].i];
+        const ph = (d && (d.stroke_phase || d.phase)) || '';
+        if (ph === 'catch' || ph === 'pull') { i0 = k; break; }
+    }
+    for (let k = iEnd; k >= i0 + 1; k--) {
+        const d = processedData[rotPts[k].i];
+        const ph = (d && (d.stroke_phase || d.phase)) || '';
+        if (ph === 'catch' || ph === 'pull') { i1 = k; break; }
+    }
+    const dx = (rotPts[i1].x - rotPts[i0].x);
+    if (dx >= 0) return rotPts;
+    return rotPts.map(p => ({ x: -p.x, y: p.y, i: p.i }));
+}
+
+function sagittalFlipNeeded(rotPts) {
+    if (!rotPts || rotPts.length < 2) return false;
+    const n = rotPts.length;
+    const iEnd = Math.min(n - 1, Math.max(1, Math.floor(n * 0.35)));
+    let i0 = 0;
+    let i1 = iEnd;
+    for (let k = 0; k <= iEnd; k++) {
+        const d = processedData[rotPts[k].i];
+        const ph = (d && (d.stroke_phase || d.phase)) || '';
+        if (ph === 'catch' || ph === 'pull') { i0 = k; break; }
+    }
+    for (let k = iEnd; k >= i0 + 1; k--) {
+        const d = processedData[rotPts[k].i];
+        const ph = (d && (d.stroke_phase || d.phase)) || '';
+        if (ph === 'catch' || ph === 'pull') { i1 = k; break; }
+    }
+    return (rotPts[i1].x - rotPts[i0].x) < 0;
+}
+
+/**
+ * Transform used by side view for the stroke at `idx`.
+ * - **rotX**: rotation around X applied to (z,y) so primary motion reads left→right in the plot
+ * - **flipZ**: sign flip applied after rotation to remove PCA 180° ambiguity
+ */
+function getSideViewTransformForIndex(idx) {
+    if (!processedData || !processedData.length) return { rotX: 0, flipZ: false };
+    const b = strokeBoundsForIndex(idx);
+    if (b.strokeNum <= 0) return { rotX: 0, flipZ: false };
+    const p0 = getLiaPositionSample(b.start);
+    const strokePtsRaw = [];
+    for (let i = b.start; i <= b.end; i++) {
+        const p = getLiaPositionSample(i);
+        strokePtsRaw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
+    }
+    const pcaAng = principalAxisAngleRad2D(strokePtsRaw);
+    const rot = rotatePts2D(strokePtsRaw, -pcaAng);
+    const flip = sagittalFlipNeeded(rot);
+    return { rotX: -pcaAng, flipZ: flip };
+}
+
 function clearSideViewCanvas() {
     const canvas = document.getElementById('canvas-side-view');
     if (!canvas) return;
@@ -114,10 +218,10 @@ function drawSideViewViz(idx) {
     const t0 = processedData[b.start].timestamp;
     const t1 = processedData[b.end].timestamp;
 
-    const allPts = [];
+    const strokePtsRaw = [];
     for (let i = b.start; i <= b.end; i++) {
         const p = getLiaPositionSample(i);
-        allPts.push({
+        strokePtsRaw.push({
             x: p.pz - p0.pz,
             y: p.py - p0.py,
             i
@@ -139,17 +243,20 @@ function drawSideViewViz(idx) {
         }
         otherPathPts.sort((a, b) =>
             (processedData[a.i].timestamp || 0) - (processedData[b.i].timestamp || 0));
-        for (const p of otherPathPts) {
-            allPts.push(p);
-        }
     }
 
+    const pcaAng = principalAxisAngleRad2D(strokePtsRaw);
+    const strokePtsRot = normalizeSagittalSign(rotatePts2D(strokePtsRaw, -pcaAng), b.start, b.end);
+    const otherPtsRot = normalizeSagittalSign(rotatePts2D(otherPathPts, -pcaAng), b.start, b.end);
+    const allPts = [...strokePtsRot, ...otherPtsRot];
+
     const upto = Math.min(idx, b.end);
-    const pathPts = [];
+    const pathPtsRaw = [];
     for (let i = b.start; i <= upto; i++) {
         const p = getLiaPositionSample(i);
-        pathPts.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
+        pathPtsRaw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
     }
+    const pathPts = normalizeSagittalSign(rotatePts2D(pathPtsRaw, -pcaAng), b.start, b.end);
 
     let minX = 0, maxX = 0.01, minY = 0, maxY = 0.01;
     for (const p of allPts) {
@@ -229,7 +336,11 @@ function drawSideViewViz(idx) {
 
     ctx.fillStyle = '#9ca3af';
     ctx.font = '10px system-ui';
-    ctx.fillText('Forward Δpz →  ·  ↑py = vertical (m), origin = stroke start · path uses smoothed trail (matches 3D)', 12, 32);
+    ctx.fillText(
+        'PCA-rotated sagittal slice (stroke-local) · vertical ≈ pull depth · smoothed trail matches 3D',
+        12,
+        32
+    );
 
     if (pathPts.length === 0) return;
     const last = pathPts[pathPts.length - 1];

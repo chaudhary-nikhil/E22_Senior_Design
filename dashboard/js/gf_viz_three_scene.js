@@ -31,6 +31,7 @@ function addVizAxisLabelSprites() {
 
 function addPoolWaterSurface() {
     if (!scene || !window.THREE) return;
+    /* y=0 = nominal water surface; IMU mesh offset so red top face meets this plane at stroke origin. */
     const waterGeo = new THREE.PlaneGeometry(16, 16, 1, 1);
     const waterMat = new THREE.MeshStandardMaterial({
         color: 0x1a6fb5, transparent: true, opacity: 0.18,
@@ -70,41 +71,55 @@ function createImuCube(baseHex, materialsOut) {
         color: 0xffffff, transparent: true, opacity: 0.30,
     })));
 
-    /* Wearable band: connect from both sides and wrap downward (more like a real wrist strap). */
-    const strapMat = new THREE.MeshStandardMaterial({
-        color: 0x444444, roughness: 0.92, metalness: 0.02,
-    });
-    const strap = new THREE.Group();
+    /* Wearable band: watch-style loop you can slide your hand through. */
+    try {
+        const strapColor = 0x151515; // black strap (watch-like)
+        const strapMat = new THREE.MeshStandardMaterial({
+            color: strapColor, roughness: 0.85, metalness: 0.02,
+        });
 
-    // Under-band plate (sits under the device like a real strap section)
-    const plateGeo = new THREE.BoxGeometry(0.62, 0.06, 0.52);
-    const plate = new THREE.Mesh(plateGeo, strapMat);
-    plate.position.set(0, -0.16, 0);
-    plate.castShadow = true;
-    plate.receiveShadow = true;
+        // A single oval loop around the wrist.
+        // Torus defaults to XY plane with hole axis Z; rotate so the "hand slides through" along +X.
+        const majorR = 0.34;   // wrist radius (overall loop size)
+        const tubeR = 0.030;  // strap thickness
+        const strapGeo = new THREE.TorusGeometry(majorR, tubeR, 12, 72);
+        const strapLoop = new THREE.Mesh(strapGeo, strapMat);
+        // Hole axis along +X (hand slides through left↔right); keep the loop fully below the device.
+        strapLoop.rotation.set(0, Math.PI / 2, 0);
+        // Slight oval: thinner vertically, longer along the wrist.
+        strapLoop.scale.set(1.0, 0.78, 1.28);
+        // Drop lower so nothing intersects the top face.
+        strapLoop.position.set(0, -0.33, 0);
+        strapLoop.castShadow = true;
+        strapLoop.receiveShadow = true;
 
-    // Side drops (left/right)
-    const sideGeo = new THREE.BoxGeometry(0.06, 0.24, 0.36);
-    const leftSide = new THREE.Mesh(sideGeo, strapMat);
-    leftSide.position.set(-0.21, -0.18, 0);
-    leftSide.castShadow = true;
-    const rightSide = new THREE.Mesh(sideGeo, strapMat);
-    rightSide.position.set(0.21, -0.18, 0);
-    rightSide.castShadow = true;
+        // Lugs / connectors so the body is "mounted" to the band.
+        const lugGeo = new THREE.BoxGeometry(0.12, 0.06, 0.10);
+        const lugL = new THREE.Mesh(lugGeo, strapMat);
+        const lugR = new THREE.Mesh(lugGeo, strapMat);
+        // Attach to the device sides near the underside; visually "connect" to the loop.
+        lugL.position.set(-0.205, -0.11, 0);
+        lugR.position.set(0.205, -0.11, 0);
+        lugL.castShadow = lugR.castShadow = true;
 
-    // Bottom wrap (half-torus): vertical arc like a wrist strap, not flat on the box face
-    const wrapGeo = new THREE.TorusGeometry(0.24, 0.032, 10, 36, Math.PI);
-    const wrap = new THREE.Mesh(wrapGeo, strapMat);
-    wrap.rotation.set(0, Math.PI / 2, Math.PI);
-    wrap.position.set(0, -0.30, 0);
-    wrap.castShadow = true;
+        // Down-stems from lugs to the loop (so it looks connected, not floating).
+        const stemGeo = new THREE.CylinderGeometry(0.018, 0.018, 0.22, 10);
+        const stemL = new THREE.Mesh(stemGeo, strapMat);
+        const stemR = new THREE.Mesh(stemGeo, strapMat);
+        stemL.position.set(-0.205, -0.23, 0);
+        stemR.position.set(0.205, -0.23, 0);
+        stemL.castShadow = stemR.castShadow = true;
 
-    strap.add(plate);
-    strap.add(leftSide);
-    strap.add(rightSide);
-    strap.add(wrap);
-    strap.position.set(0, 0.02, 0);
-    mesh.add(strap);
+        const strap = new THREE.Group();
+        strap.add(strapLoop);
+        strap.add(lugL);
+        strap.add(lugR);
+        strap.add(stemL);
+        strap.add(stemR);
+        mesh.add(strap);
+    } catch (e) {
+        /* ignore strap build failures */
+    }
 
     return mesh;
 }

@@ -4,7 +4,11 @@
  */
 
 function refreshStrokeFieldMode() {
-    useFwStrokesForViz = processedData.some(d => (d.strokes || 0) > 0);
+    /* Prefer Python stroke_count when present — it aligns with impact detection + integration.
+       Firmware `strokes` alone can disagree and breaks per-stroke origin / playback bounds. */
+    const hasProc = processedData.some(d => (d.stroke_count || 0) > 0);
+    const hasFw = processedData.some(d => (d.strokes || 0) > 0);
+    useFwStrokesForViz = hasFw && !hasProc;
 }
 
 function strokeNumAt(d) {
@@ -30,6 +34,13 @@ function streamLabelShort(d) {
 
 function formatStreamStrokeLabel(d, strokeNum) {
     return streamLabelShort(d) + ' #' + strokeNum;
+}
+
+function pitchDegFromThreeQuat(q) {
+    if (!q) return 0;
+    // pitch = asin(2*(w*y - z*x)) in standard quaternion->Euler (YXZ-ish).
+    const sinp = 2 * (q.w * q.y - q.z * q.x);
+    return Math.asin(Math.max(-1, Math.min(1, sinp))) * 180 / Math.PI;
 }
 
 /** Two+ distinct bands in this session (merged or multi-sync). */
@@ -61,4 +72,58 @@ function streamColorRgbForKey(sk) {
 function streamBaseHexForKey(sk) {
     const [r, g, b] = streamColorRgbForKey(sk);
     return (Math.round(r * 255) << 16) | (Math.round(g * 255) << 8) | Math.round(b * 255);
+}
+
+/** First sample index for this stream’s current stroke # at global index `idx`. */
+function strokeStartIndexForSample(idx) {
+    if (!processedData || idx < 0 || idx >= processedData.length) return 0;
+    const d = processedData[idx];
+    const sk = getStreamKey(d);
+    const sc = strokeNumAt(d);
+    if (sc <= 0) return 0;
+    let s = idx;
+    for (let i = idx; i >= 0; i--) {
+        const di = processedData[i];
+        if (getStreamKey(di) !== sk) break;
+        if (strokeNumAt(di) === sc) s = i;
+        else break;
+    }
+    return s;
+}
+
+/**
+ * Best entry angle (°) for the stroke containing `idx` — from processor at water impact,
+ * relative to fusion frame; resets conceptually each stroke.
+ */
+function getEntryAngleForStrokeAtIndex(idx) {
+    if (!processedData || idx < 0 || idx >= processedData.length) return 0;
+    if (strokeNumAt(processedData[idx]) <= 0) return 0;
+    const start = strokeStartIndexForSample(idx);
+    const end = Math.min(processedData.length - 1, start + 120);
+    // Prefer computing AoA relative to the stroke's start pose (matches "start at waterline" mental model).
+    try {
+        const d0 = processedData[start];
+        const q0 = d0 && d0.quaternion ? nq(d0.quaternion) : null;
+        if (q0) {
+            const inv0 = q0.clone().invert();
+            let best = 0;
+            for (let i = start; i <= end && i <= idx; i++) {
+                const di = processedData[i];
+                if (!di || !di.quaternion) continue;
+                const qi = nq(di.quaternion);
+                const qRel = qi.clone().premultiply(inv0);
+                const pitch = Math.abs(pitchDegFromThreeQuat(qRel));
+                if (pitch > best) best = pitch;
+            }
+            if (best > 0.01) return best;
+        }
+    } catch (e) { /* fallback below */ }
+
+    // Fallback: processor-provided entry_angle (absolute fusion frame).
+    let best = 0;
+    for (let i = start; i <= end && i <= idx; i++) {
+        const a = Number(processedData[i].entry_angle || 0);
+        if (a > 0.05 && a > best) best = a;
+    }
+    return best;
 }

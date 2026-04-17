@@ -44,11 +44,57 @@ function renderFrame(idx) {
 
     if (integratedPositions.length !== processedData.length) integratePositions();
     const anim = currentAnimationPositions();
-    const pos = anim[idx] || new THREE.Vector3();
+    const rawPos = anim[idx] || new THREE.Vector3();
 
     const ct = vizCoordinateTransform;
     const multiDevice = typeof hasMultipleDeviceStreams === 'function' && hasMultipleDeviceStreams();
     const skCur = getStreamKey(d);
+
+    // Optional: lock camera so 3D view matches the per-stroke "side view" (sagittal-ish).
+    const lockEl = document.getElementById('viz-lock-side');
+    const lockSide = !!(lockEl && lockEl.checked);
+    const sv = (lockSide && typeof getSideViewTransformForIndex === 'function')
+        ? getSideViewTransformForIndex(idx)
+        : { rotX: 0, flipZ: false };
+    function sideViewXform(v) {
+        if (!lockSide || !v) return v;
+        const y = v.y, z = v.z;
+        const c = Math.cos(sv.rotX || 0);
+        const s = Math.sin(sv.rotX || 0);
+        const z2 = z * c - y * s;
+        const y2 = z * s + y * c;
+        const out = v.clone();
+        out.y = y2;
+        out.z = (sv.flipZ ? -z2 : z2);
+        return out;
+    }
+    const pos = sideViewXform(rawPos);
+    if (lockSide && camera && controls) {
+        // Use stroke-start → current direction (stable "front of stroke"), then place camera on the side.
+        const seg0 = typeof getSegStart === 'function' ? getSegStart(idx) : Math.max(0, idx - 6);
+        const pStartRaw = anim[seg0] || null;
+        const pStart = pStartRaw ? sideViewXform(pStartRaw) : null;
+        let fwd = (pStart && pos) ? new THREE.Vector3().subVectors(pos, pStart) : new THREE.Vector3(0, 0, 1);
+        if (fwd.length() < 1e-6) {
+            // Fallback to short-term direction if we haven't moved yet.
+            let prevSame = idx - 1;
+            while (prevSame >= 0 && getStreamKey(processedData[prevSame]) !== skCur) prevSame--;
+            const p0raw = prevSame >= 0 ? anim[prevSame] : null;
+            const p0 = p0raw ? sideViewXform(p0raw) : null;
+            fwd = (p0 && pos) ? new THREE.Vector3().subVectors(pos, p0) : new THREE.Vector3(0, 0, 1);
+        }
+        fwd.y = 0;
+        if (fwd.length() < 1e-6) fwd.set(0, 0, 1);
+        fwd.normalize();
+        const side = new THREE.Vector3(-fwd.z, 0, fwd.x).normalize();
+        const camPos = pos.clone()
+            .add(side.multiplyScalar(1.35))
+            .add(new THREE.Vector3(0, 0.55, 0))
+            .add(fwd.multiplyScalar(0.15));
+        camera.position.lerp(camPos, 0.25);
+        controls.target.lerp(pos, 0.35);
+        controls.update();
+    }
 
     if (imuCube) {
         const showCube = document.getElementById('show-cube');
@@ -59,11 +105,17 @@ function renderFrame(idx) {
             cubeMaterials.forEach(m => { m.userData.baseHex = hx; });
         }
         const qBase = nq(d.quaternion);
-        imuCube.setRotationFromQuaternion(qBase);
+        if (!vizBaseQuatInv) {
+            vizBaseQuatInv = qBase.clone().invert();
+        }
+        const qViz = vizBaseQuatInv ? qBase.clone().premultiply(vizBaseQuatInv) : qBase;
+        imuCube.setRotationFromQuaternion(qViz);
         imuCube.rotation.x += ct.rotationX;
         imuCube.rotation.y += ct.rotationY;
         imuCube.rotation.z += ct.rotationZ;
-        imuCube.position.copy(pos);
+        /* Stroke-local origin at waterline: integrated (0,0,0) places top (+Y) face on y=0; strap/ring below. */
+        const halfH = typeof VIZ_IMU_BODY_HALF_H === 'number' ? VIZ_IMU_BODY_HALF_H : 0.07;
+        imuCube.position.set(pos.x, pos.y - halfH, pos.z);
         const phase = d.stroke_phase || d.phase || 'idle';
         const phaseHex = PHASE_COLOR_HEX[phase] || PHASE_COLOR_HEX.idle;
         if (hapticFlashUntil <= Date.now()) {
@@ -91,7 +143,8 @@ function renderFrame(idx) {
             imuCubeB.rotation.x += ct.rotationX;
             imuCubeB.rotation.y += ct.rotationY;
             imuCubeB.rotation.z += ct.rotationZ;
-            imuCubeB.position.copy(pos2);
+            const halfHB = typeof VIZ_IMU_BODY_HALF_H === 'number' ? VIZ_IMU_BODY_HALF_H : 0.07;
+            imuCubeB.position.set(pos2.x, pos2.y - halfHB, pos2.z);
             const phase2 = d2.stroke_phase || d2.phase || 'idle';
             const phaseHex2 = PHASE_COLOR_HEX[phase2] || PHASE_COLOR_HEX.idle;
             if (hapticFlashUntil <= Date.now()) {
@@ -167,7 +220,7 @@ function renderFrame(idx) {
             const colors = [];
             for (let i = trailStart; i <= idx; i++) {
                 const p = anim[i];
-                rawPts.push(p ? p.clone() : new THREE.Vector3());
+                rawPts.push(p ? sideViewXform(p) : new THREE.Vector3());
                 const ph = processedData[i]?.stroke_phase || processedData[i]?.phase || 'idle';
                 const c = PHASE_COLOR_RGB[ph] || PHASE_COLOR_RGB.idle;
                 const age = (idx - i) / Math.max(1, idx - trailStart);
@@ -184,8 +237,8 @@ function renderFrame(idx) {
                 const a1 = buildOneTrailForStream(streamKeys[1], idx, anim);
                 const r0 = resampleTrailFreestyle(a0.rawPts, a0.colors);
                 const r1 = resampleTrailFreestyle(a1.rawPts, a1.colors);
-                applyTrailGeometry(trailLine, r0.points, r0.colors);
-                applyTrailGeometry(trailLineB, r1.points, r1.colors);
+                applyTrailGeometry(trailLine, lockSide ? r0.points.map(sideViewXform) : r0.points, r0.colors);
+                applyTrailGeometry(trailLineB, lockSide ? r1.points.map(sideViewXform) : r1.points, r1.colors);
             } else {
                 applyTrailGeometry(trailLine, [], []);
                 applyTrailGeometry(trailLineB, [], []);
@@ -225,20 +278,27 @@ function renderFrame(idx) {
     setText('play-frame', 'Sample ' + (idx + 1) + ' / ' + processedData.length + ' · in range ' + inSel);
 
     setText('live-strokes', strokeNumAt(d));
+    if (d.tracking_active !== undefined) {
+        const on = !!d.tracking_active;
+        setText('live-tracking', on ? 'ON' : 'OFF');
+    } else {
+        setText('live-tracking', '-');
+    }
     const phase = d.stroke_phase || d.phase || 'idle';
     const phaseEl = document.getElementById('live-phase');
     if (phaseEl) {
         phaseEl.textContent = phase;
         phaseEl.className = 'phase-label phase-label-' + phase;
     }
-    let liveAngle = 0, liveDeviation = 0;
+    let liveDeviation = 0;
     for (let i = idx; i >= Math.max(0, idx - 200); i--) {
         const p = processedData[i];
-        if (liveAngle === 0 && (p.entry_angle || 0) > 0) liveAngle = p.entry_angle;
         if (liveDeviation === 0 && (p.deviation_score || 0) > 0) liveDeviation = p.deviation_score;
-        if (liveAngle > 0 && liveDeviation > 0) break;
+        if (liveDeviation > 0) break;
     }
-    setText('live-angle', liveAngle.toFixed(1) + '°');
+    const strokeAoA = typeof getEntryAngleForStrokeAtIndex === 'function'
+        ? getEntryAngleForStrokeAtIndex(idx) : 0;
+    setText('live-angle', strokeAoA.toFixed(1) + '°');
     const gx = d.angular_velocity?.gx || 0, gy = d.angular_velocity?.gy || 0, gz = d.angular_velocity?.gz || 0;
     const gyroNorm = Math.sqrt(gx * gx + gy * gy + gz * gz);
     setText('live-gyro', gyroNorm.toFixed(2));
