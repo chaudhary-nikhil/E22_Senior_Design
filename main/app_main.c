@@ -44,7 +44,7 @@ static const char *TAG = "GOLDENFORM";
  *  - Starting the Wi‑Fi AP draws a current spike; a weak USB cable/supply can brown out the chip (looks like reset).
  *    Use a short USB cable, powered hub, or battery that can deliver enough peak current.
  * Hold duration for sync: BUTTON_HOLD_MS (short press is record/stop only). */
-#define BUTTON_GPIO 0
+#define BUTTON_GPIO 12
 
 // LED Configuration
 // Set LED_ENABLED to 0 to disable LED (required when no LED is wired or GPIO

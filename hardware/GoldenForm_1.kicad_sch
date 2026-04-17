@@ -6725,7 +6725,7 @@
 	)
 	(text "I2c Addr: Low: 0x28\n"
 		(exclude_from_sim no)
-		(at 225.044 153.162 0)
+		(at 224.79 153.924 0)
 		(effects
 			(font
 				(size 1.27 1.27)
