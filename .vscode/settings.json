@@ -27,5 +27,7 @@
         "*.h": "c",
         "*.c": "c"
     },
-    "C_Cpp.intelliSenseEngine": "default"
+    "C_Cpp.intelliSenseEngine": "default",
+    "idf.portWin": "COM13",
+    "idf.monitorPort": "COM13"
 }

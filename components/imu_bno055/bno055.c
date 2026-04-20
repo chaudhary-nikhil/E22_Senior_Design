@@ -103,18 +103,37 @@ static esp_err_t bno055_read16(int port, uint8_t addr, uint8_t reg,
 
   return err;
 }
+esp_err_t bno055_reset(int port, uint8_t addr) {
+  // Write reset command to SYS_TRIGGER register.
+  // NOTE: This write may NACK because the chip resets mid-transaction.
+  // We ignore the return — the reset happens regardless.
+  (void)bno055_write8(port, addr, BNO055_SYS_TRIGGER_ADDR, 0x20);
+  return ESP_OK;
+}
+
+esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
+                                    bno055_opmode_t mode) {
+  esp_err_t err = bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
+  if (err == ESP_OK) {
+    s_last_opmode = (uint8_t)mode;
+    // Datasheet table 3-6: any→CONFIG needs 7ms, CONFIG→fusion needs 19ms.
+    // Use 30ms to cover both cases with margin.
+    vTaskDelay(pdMS_TO_TICKS(30));
+  }
+  return err;
+}
 
 esp_err_t bno055_init(int port, uint8_t addr) {
   ESP_LOGI(TAG, "Initializing BNO055 at address 0x%02X", addr);
 
-  // Wait for BNO055 to boot up
+  // Wait for BNO055 to boot up after power-on
   vTaskDelay(pdMS_TO_TICKS(650));
 
   // Try both I2C addresses
   uint8_t addresses[] = {addr, (addr == BNO055_ADDR_A) ? BNO055_ADDR_B
                                                        : BNO055_ADDR_A};
   uint8_t working_addr = 0;
-  uint8_t chip_id;
+  uint8_t chip_id = 0;
   esp_err_t err = ESP_FAIL;
 
   for (int addr_idx = 0; addr_idx < 2; addr_idx++) {
@@ -130,7 +149,6 @@ esp_err_t bno055_init(int port, uint8_t addr) {
         ESP_LOGI(TAG, "BNO055 found at address 0x%02X", test_addr);
         break;
       }
-
       retry_count++;
       if (retry_count < max_retries) {
         vTaskDelay(pdMS_TO_TICKS(200));
@@ -149,7 +167,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
 
   addr = working_addr;
 
-  // Reset and configure
+  // Reset
   ESP_LOGI(TAG, "Resetting BNO055...");
   err = bno055_reset(port, addr);
   if (err != ESP_OK) {
@@ -157,8 +175,32 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     return err;
   }
 
-  ESP_LOGI(TAG, "Waiting for BNO055 to stabilize after reset...");
-  vTaskDelay(pdMS_TO_TICKS(2000)); // Much longer delay after reset
+  // After soft reset, chip reboots and drops off the I2C bus for ~650ms.
+  // Boot time varies chip-to-chip; poll CHIP_ID until it responds rather
+  // than waiting a fixed time.
+  ESP_LOGI(TAG, "Waiting for BNO055 to come back after reset...");
+  const int reset_timeout_ms = 1500;
+  const int poll_interval_ms = 20;
+  int elapsed_ms = 650;
+  bool chip_back = false;
+  // Initial grace period — chip is guaranteed unresponsive for the first ~650ms
+  vTaskDelay(pdMS_TO_TICKS(650));
+  while (elapsed_ms < reset_timeout_ms) {
+    uint8_t id = 0;
+    esp_err_t poll_err = bno055_read8(port, addr, BNO055_CHIP_ID_ADDR, &id);
+    if (poll_err == ESP_OK && id == BNO055_ID) {
+      chip_back = true;
+      ESP_LOGI(TAG, "BNO055 responsive after reset (~%d ms)", elapsed_ms);
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
+    elapsed_ms += poll_interval_ms;
+  }
+  if (!chip_back) {
+    ESP_LOGE(TAG, "BNO055 did not come back after reset within %d ms",
+             reset_timeout_ms);
+    return ESP_ERR_TIMEOUT;
+  }
 
   // Set to config mode
   ESP_LOGI(TAG, "Setting BNO055 to config mode...");
@@ -168,12 +210,9 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     return err;
   }
 
-  vTaskDelay(pdMS_TO_TICKS(100)); // Wait for mode change
-
   // Configure device
   ESP_LOGI(TAG, "Configuring BNO055 power mode...");
-  err =
-      bno055_write8(port, addr, BNO055_PWR_MODE_ADDR, BNO055_POWER_MODE_NORMAL);
+  err = bno055_write8(port, addr, BNO055_PWR_MODE_ADDR, BNO055_POWER_MODE_NORMAL);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "BNO055 set power mode failed: %s", esp_err_to_name(err));
     return err;
@@ -193,7 +232,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     return err;
   }
 
-  // Set fusion operation mode (NDOF for full 9-DOF orientation when calibrated).
+  // Set fusion operation mode (NDOF for full 9-DOF orientation when calibrated)
   ESP_LOGI(TAG, "Setting BNO055 to fusion mode 0x%02X...", (unsigned)GF_TARGET_OPMODE);
   err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
   if (err != ESP_OK) {
@@ -201,30 +240,136 @@ esp_err_t bno055_init(int port, uint8_t addr) {
     return err;
   }
 
+  // Wait for fusion algorithm to produce valid output
   ESP_LOGI(TAG, "Waiting for BNO055 fusion to start...");
-  vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for fusion to start
-
-  vTaskDelay(pdMS_TO_TICKS(100));
+  vTaskDelay(pdMS_TO_TICKS(2000));
 
   ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X", (unsigned)GF_TARGET_OPMODE);
   return ESP_OK;
 }
 
-esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
-                                    bno055_opmode_t mode) {
-  esp_err_t err = bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
-  if (err == ESP_OK) {
-    s_last_opmode = (uint8_t)mode;
-    // Datasheet: allow mode switch to settle (min 7ms).
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-  return err;
-}
 
-esp_err_t bno055_reset(int port, uint8_t addr) {
-  // Write reset command to SYS_TRIGGER register
-  return bno055_write8(port, addr, BNO055_SYS_TRIGGER_ADDR, 0x20);
-}
+// esp_err_t bno055_init(int port, uint8_t addr) {
+//   ESP_LOGI(TAG, "Initializing BNO055 at address 0x%02X", addr);
+
+//   // Wait for BNO055 to boot up
+//   vTaskDelay(pdMS_TO_TICKS(650));
+
+//   // Try both I2C addresses
+//   uint8_t addresses[] = {addr, (addr == BNO055_ADDR_A) ? BNO055_ADDR_B
+//                                                        : BNO055_ADDR_A};
+//   uint8_t working_addr = 0;
+//   uint8_t chip_id;
+//   esp_err_t err = ESP_FAIL;
+
+//   for (int addr_idx = 0; addr_idx < 2; addr_idx++) {
+//     uint8_t test_addr = addresses[addr_idx];
+
+//     int retry_count = 0;
+//     const int max_retries = 3;
+
+//     do {
+//       err = bno055_read8(port, test_addr, BNO055_CHIP_ID_ADDR, &chip_id);
+//       if (err == ESP_OK && chip_id == BNO055_ID) {
+//         working_addr = test_addr;
+//         ESP_LOGI(TAG, "BNO055 found at address 0x%02X", test_addr);
+//         break;
+//       }
+
+//       retry_count++;
+//       if (retry_count < max_retries) {
+//         vTaskDelay(pdMS_TO_TICKS(200));
+//       }
+//     } while (retry_count < max_retries);
+
+//     if (err == ESP_OK && chip_id == BNO055_ID) {
+//       break;
+//     }
+//   }
+
+//   if (err != ESP_OK || chip_id != BNO055_ID) {
+//     ESP_LOGE(TAG, "Failed to find BNO055");
+//     return ESP_ERR_NOT_FOUND;
+//   }
+
+//   addr = working_addr;
+
+//   // Reset and configure
+//   ESP_LOGI(TAG, "Resetting BNO055...");
+//   err = bno055_reset(port, addr);
+//   if (err != ESP_OK) {
+//     ESP_LOGE(TAG, "BNO055 reset failed: %s", esp_err_to_name(err));
+//     return err;
+//   }
+
+//   ESP_LOGI(TAG, "Waiting for BNO055 to stabilize after reset...");
+//   vTaskDelay(pdMS_TO_TICKS(2000)); // Much longer delay after reset
+
+//   // Set to config mode
+//   ESP_LOGI(TAG, "Setting BNO055 to config mode...");
+//   err = bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
+//   if (err != ESP_OK) {
+//     ESP_LOGE(TAG, "BNO055 set config mode failed: %s", esp_err_to_name(err));
+//     return err;
+//   }
+
+//   vTaskDelay(pdMS_TO_TICKS(100)); // Wait for mode change
+
+//   // Configure device
+//   ESP_LOGI(TAG, "Configuring BNO055 power mode...");
+//   err =
+//       bno055_write8(port, addr, BNO055_PWR_MODE_ADDR, BNO055_POWER_MODE_NORMAL);
+//   if (err != ESP_OK) {
+//     ESP_LOGE(TAG, "BNO055 set power mode failed: %s", esp_err_to_name(err));
+//     return err;
+//   }
+
+//   ESP_LOGI(TAG, "Setting BNO055 page ID...");
+//   err = bno055_write8(port, addr, BNO055_PAGE_ID_ADDR, 0);
+//   if (err != ESP_OK) {
+//     ESP_LOGE(TAG, "BNO055 set page ID failed: %s", esp_err_to_name(err));
+//     return err;
+//   }
+
+//   ESP_LOGI(TAG, "Setting BNO055 unit selection...");
+//   err = bno055_write8(port, addr, BNO055_UNIT_SEL_ADDR, 0x00);
+//   if (err != ESP_OK) {
+//     ESP_LOGE(TAG, "BNO055 set unit selection failed: %s", esp_err_to_name(err));
+//     return err;
+//   }
+
+//   // Set fusion operation mode (NDOF for full 9-DOF orientation when calibrated).
+//   ESP_LOGI(TAG, "Setting BNO055 to fusion mode 0x%02X...", (unsigned)GF_TARGET_OPMODE);
+//   err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
+//   if (err != ESP_OK) {
+//     ESP_LOGE(TAG, "BNO055 set fusion mode failed: %s", esp_err_to_name(err));
+//     return err;
+//   }
+
+//   ESP_LOGI(TAG, "Waiting for BNO055 fusion to start...");
+//   vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for fusion to start
+
+//   vTaskDelay(pdMS_TO_TICKS(100));
+
+//   ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X", (unsigned)GF_TARGET_OPMODE);
+//   return ESP_OK;
+// }
+
+// esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
+//                                     bno055_opmode_t mode) {
+//   esp_err_t err = bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
+//   if (err == ESP_OK) {
+//     s_last_opmode = (uint8_t)mode;
+//     // Datasheet: allow mode switch to settle (min 7ms).
+//     vTaskDelay(pdMS_TO_TICKS(10));
+//   }
+//   return err;
+// }
+
+// esp_err_t bno055_reset(int port, uint8_t addr) {
+//   // Write reset command to SYS_TRIGGER register
+//   return bno055_write8(port, addr, BNO055_SYS_TRIGGER_ADDR, 0x20);
+// }
 
 esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys,
                                         uint8_t *gyro, uint8_t *accel,
