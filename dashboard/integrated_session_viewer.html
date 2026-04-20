@@ -111,6 +111,9 @@
                 <div class="card viz-card viz-side-card">
                     <div class="card-title">Side view: LIA position and device tilt</div>
                     <p class="viz-side-lead">Forward and vertical motion for each stroke. With two bands merged, paths use <strong>solid = this stroke’s band</strong> and <strong>dashed = other band</strong> (same time window). Use <strong>Speed</strong> to slow playback.</p>
+                    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:0 0 8px;">
+                        <button type="button" class="btn btn-outline btn-sm" id="download-side-view-btn" onclick="exportSideViewCoordinates()" title="Download all side-view 2D coordinates for strokes in the selected session as JSON.">Download 2D coordinates (JSON)</button>
+                    </div>
                     <div class="viz-side-canvas-wrap">
                         <canvas id="canvas-side-view" width="880" height="340"></canvas>
                     </div>
@@ -389,6 +392,12 @@
             <h1 class="page-heading__title">Settings</h1>
             <p class="page-heading__sub">Profile, wearables, IMU calibration, baseline</p>
         </header>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-title">Research · video ground truth</div>
+            <p class="settings-field-hint" style="margin-top:8px;">Upload a lab swim-stroke video and export 2D wrist positions (MediaPipe) as JSON for comparison with IMU-integrated paths.</p>
+            <a class="btn btn-outline btn-sm" href="/stroke_video_calibration.html" style="margin-top:10px;display:inline-block;">Open video hand-track tool</a>
+            <a class="btn btn-outline btn-sm" href="/hand_track_viewer.html" style="margin-top:10px;display:inline-block;margin-left:8px;">Visualize hand-track JSON</a>
+        </div>
         <div class="grid-2">
             <div class="card">
                 <div class="card-title">Profile</div>

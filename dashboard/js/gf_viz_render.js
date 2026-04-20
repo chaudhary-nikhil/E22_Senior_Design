@@ -25,7 +25,9 @@ function buildOneTrailForStream(streamKey, maxIdx, anim) {
         if (getStreamKey(processedData[i]) !== streamKey) continue;
         const p = anim[i];
         rawPts.push(p ? p.clone() : new THREE.Vector3());
-        const ph = processedData[i]?.stroke_phase || processedData[i]?.phase || 'idle';
+        const ph = (typeof phaseAtSample === 'function')
+            ? phaseAtSample(i)
+            : (processedData[i]?.stroke_phase || processedData[i]?.phase || 'idle');
         const c = PHASE_COLOR_RGB[ph] || PHASE_COLOR_RGB.idle;
         const rgb = streamColorRgbForKey(streamKey);
         const fade = 0.42 + 0.58 * (1 - (maxIdx - i) / Math.max(1, maxIdx));
@@ -116,7 +118,9 @@ function renderFrame(idx) {
         /* Stroke-local origin at waterline: integrated (0,0,0) places top (+Y) face on y=0; strap/ring below. */
         const halfH = typeof VIZ_IMU_BODY_HALF_H === 'number' ? VIZ_IMU_BODY_HALF_H : 0.07;
         imuCube.position.set(pos.x, pos.y - halfH, pos.z);
-        const phase = d.stroke_phase || d.phase || 'idle';
+        const phase = (typeof phaseAtSample === 'function')
+            ? phaseAtSample(idx)
+            : (d.stroke_phase || d.phase || 'idle');
         const phaseHex = PHASE_COLOR_HEX[phase] || PHASE_COLOR_HEX.idle;
         if (hapticFlashUntil <= Date.now()) {
             cubeMaterials.forEach(m => {
@@ -145,7 +149,9 @@ function renderFrame(idx) {
             imuCubeB.rotation.z += ct.rotationZ;
             const halfHB = typeof VIZ_IMU_BODY_HALF_H === 'number' ? VIZ_IMU_BODY_HALF_H : 0.07;
             imuCubeB.position.set(pos2.x, pos2.y - halfHB, pos2.z);
-            const phase2 = d2.stroke_phase || d2.phase || 'idle';
+            const phase2 = (typeof phaseAtSample === 'function')
+                ? phaseAtSample(oi)
+                : (d2.stroke_phase || d2.phase || 'idle');
             const phaseHex2 = PHASE_COLOR_HEX[phase2] || PHASE_COLOR_HEX.idle;
             if (hapticFlashUntil <= Date.now()) {
                 cubeMaterialsB.forEach(m => {
@@ -221,7 +227,9 @@ function renderFrame(idx) {
             for (let i = trailStart; i <= idx; i++) {
                 const p = anim[i];
                 rawPts.push(p ? sideViewXform(p) : new THREE.Vector3());
-                const ph = processedData[i]?.stroke_phase || processedData[i]?.phase || 'idle';
+                const ph = (typeof phaseAtSample === 'function')
+                    ? phaseAtSample(i)
+                    : (processedData[i]?.stroke_phase || processedData[i]?.phase || 'idle');
                 const c = PHASE_COLOR_RGB[ph] || PHASE_COLOR_RGB.idle;
                 const age = (idx - i) / Math.max(1, idx - trailStart);
                 const fade = 0.42 + 0.58 * (1 - age);
@@ -284,7 +292,9 @@ function renderFrame(idx) {
     } else {
         setText('live-tracking', '-');
     }
-    const phase = d.stroke_phase || d.phase || 'idle';
+    const phase = (typeof phaseAtSample === 'function')
+        ? phaseAtSample(idx)
+        : (d.stroke_phase || d.phase || 'idle');
     const phaseEl = document.getElementById('live-phase');
     if (phaseEl) {
         phaseEl.textContent = phase;
@@ -319,7 +329,11 @@ function renderFrame(idx) {
 function refreshVizPlaybackUI() {
     const sel = document.getElementById('viz-stroke-playback');
     if (!sel) return;
-    const n = sessionMetrics ? (sessionMetrics.stroke_count || 0) : 0;
+    /* Dropdown option count must match the timeline notches and the checkpoint warp's
+     * segment count. All three come from the same canonical boundary list now. */
+    const n = (typeof canonicalStrokeCount === 'function')
+        ? canonicalStrokeCount()
+        : (sessionMetrics ? (sessionMetrics.stroke_count || 0) : 0);
     const prev = sel.value;
     let html = '<option value="0">All strokes</option>';
     for (let i = 1; i <= n; i++) html += '<option value="' + i + '">Stroke ' + i + ' only</option>';

@@ -67,7 +67,9 @@ let idealCompareStreamKey = null;
 let idealCompareMode = 'session';
 
 const TRAIL_MAX_POINTS = 2000;
-const TRAIL_SMOOTH_WINDOW = 7;
+/* Gaussian window used by `resampleTrailFreestyle` before Catmull-Rom.
+ * Small window preserves stroke S-curve; larger values convert strokes into ellipses. */
+const TRAIL_SMOOTH_WINDOW = 5;
 /** Base interval for playback (ms); combined with speed slider. */
 const PLAYBACK_BASE_MS = 18;
 /** 0 = full session; else play only this stroke #. */

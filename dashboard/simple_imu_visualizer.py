@@ -130,7 +130,7 @@ class StrokeProcessor:
         self.last_timestamp_ms = None
         self.in_stroke = False
         self.just_reset = False
-        
+
         # Kalman Filters for Acceleration (X, Y, Z)
         # TUNING for HUMAN MOTION:
         # Q (Process Noise): 0.3 -> High because human motion changes accel rapidly.
@@ -138,6 +138,18 @@ class StrokeProcessor:
         self.kalman_ax = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_ay = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_az = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
+
+        # --- DRIFT-KILL: slow baseline (EMA) for world-frame accel -----------
+        # Double-integrating even a 0.05 m/s² residual (gravity bleed from
+        # quaternion yaw drift in IMU+ mode) generates ~0.1 m of bogus curve
+        # per stroke, which shows up as the "smooth elliptical loop" instead
+        # of the real S-shaped pull path. Subtracting a slow EMA (τ≈2 s)
+        # behaves like a 1st-order high-pass with fc ≈ 0.08 Hz -- well below
+        # stroke frequency (0.4-1 Hz) so real motion passes untouched.
+        self._ema_int_ax = 0.0
+        self._ema_int_ay = 0.0
+        self._ema_int_az = 0.0
+        self.WORLD_ACCEL_HPF_TAU_S = 2.0
         
         
         # =====================================================================
@@ -591,12 +603,14 @@ class StrokeProcessor:
                 self.wall_high_count = 0
                 self.recent_world_az.clear()
                 self.glide_sample_count = 0
-                # Live: position reset is owned by the 0401fbde-style legacy motion gate (below).
-                # Batch + stroke_pull only: zero trail at impact (stroke-anchored viz). uart_match /
-                # motion_segment match 0401fbde — motion gate alone resets position, not impact.
-                if self.batch_mode and self.replay_integration_mode == 'stroke_pull':
-                    self.position = [0.0, 0.0, 0.0]
-                    self.velocity = [0.0, 0.0, 0.0]
+                # Per-stroke reset (all modes): 0401fbde's live UART behaviour relies on the
+                # motion gate opening and closing between bursts. In continuous swimming the
+                # gate stays open for the entire lap, so drift accumulates for many seconds.
+                # Zeroing position+velocity at each impact anchors every stroke to a clean
+                # origin, which matches the JS `applyPerStrokeOriginOffset` behaviour and
+                # keeps each stroke's integrated shape independent of cumulative bias.
+                self.position = [0.0, 0.0, 0.0]
+                self.velocity = [0.0, 0.0, 0.0]
                 self.in_stroke = True
                 self.stroke_start_time = t_ms
                 self.stroke_integrating = True
@@ -750,6 +764,22 @@ class StrokeProcessor:
             int_ax = (ww + xx - yy - zz) * smooth_x + 2 * (xy - wz) * smooth_y + 2 * (xz + wy) * smooth_z
             int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
             int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
+
+            # HPF on world-frame accel: subtract slow EMA baseline. This removes
+            # any residual gravity / quaternion-drift bias before double-integration,
+            # which is what produces the "smooth loop" drift artifact instead of the
+            # real back-and-forth S-curve of a pull. Adaptive to dt so variable rate
+            # is handled. Continuously updated (even when not integrating) so the
+            # baseline stays accurate when a segment opens.
+            tau = self.WORLD_ACCEL_HPF_TAU_S
+            if tau > 0.0 and dt > 0.0:
+                alpha = min(1.0, dt / tau)
+                self._ema_int_ax += alpha * (int_ax - self._ema_int_ax)
+                self._ema_int_ay += alpha * (int_ay - self._ema_int_ay)
+                self._ema_int_az += alpha * (int_az - self._ema_int_az)
+                int_ax -= self._ema_int_ax
+                int_ay -= self._ema_int_ay
+                int_az -= self._ema_int_az
 
             if not self.batch_mode:
                 integrate_now = self.legacy_pos_track

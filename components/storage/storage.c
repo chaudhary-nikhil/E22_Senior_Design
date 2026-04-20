@@ -17,6 +17,12 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#if __has_include(<sys/statvfs.h>)
+#include <sys/statvfs.h>
+#define HAS_SYS_STATVFS 1
+#else
+#define HAS_SYS_STATVFS 0
+#endif
 #include <dirent.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -382,17 +388,29 @@ esp_err_t storage_get_current_sample_count(uint32_t *count) {
 esp_err_t storage_get_free_space(uint64_t *free_bytes) {
     if (!free_bytes) return ESP_ERR_INVALID_ARG;
 
-    /* ESP-IDF newlib does not ship sys/statvfs.h; use FATFS-backed query instead */
+#if HAS_SYS_STATVFS
+    struct statvfs stat = {0};
+    if (statvfs(mount_point, &stat) == 0) {
+        *free_bytes = (uint64_t)stat.f_bsize * (uint64_t)stat.f_bavail;
+        ESP_LOGD(TAG, "SD free space (statvfs): %llu bytes (block size: %lu, available blocks: %lu)",
+                 (unsigned long long)*free_bytes, (unsigned long)stat.f_bsize, (unsigned long)stat.f_bavail);
+        return ESP_OK;
+    }
+    /* Some SD/VFS setups return ENOSYS for statvfs; fall back to FATFS query. */
+    ESP_LOGD(TAG, "statvfs(%s) failed: errno=%d (%s), falling back to esp_vfs_fat_info",
+             mount_point, errno, strerror(errno));
+#endif
+
     uint64_t total_bytes = 0;
     esp_err_t err = esp_vfs_fat_info(mount_point, &total_bytes, free_bytes);
-    if (err != ESP_OK) {
-        ESP_LOGD(TAG, "esp_vfs_fat_info(%s) failed: %s", mount_point, esp_err_to_name(err));
-        return ESP_FAIL;
+    if (err == ESP_OK) {
+        ESP_LOGD(TAG, "SD free space (fat_info): %llu bytes (total %llu)",
+                 (unsigned long long)*free_bytes, (unsigned long long)total_bytes);
+        return ESP_OK;
     }
 
-    ESP_LOGD(TAG, "SD free space: %llu bytes (total %llu)",
-             (unsigned long long)*free_bytes, (unsigned long long)total_bytes);
-    return ESP_OK;
+    ESP_LOGD(TAG, "esp_vfs_fat_info(%s) failed: %s", mount_point, esp_err_to_name(err));
+    return ESP_FAIL;
 }
 
 esp_err_t storage_get_stats(storage_stats_t *stats) {

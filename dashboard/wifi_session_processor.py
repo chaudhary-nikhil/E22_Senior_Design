@@ -16,6 +16,10 @@ import threading
 import queue
 import urllib.parse
 import time
+import io
+
+# Max upload for /api/stroke_video_track (multipart video)
+STROKE_VIDEO_MAX_BYTES = 120 * 1024 * 1024
 
 sys.path.insert(0, os.path.dirname(__file__))
 from simple_imu_visualizer import StrokeProcessor, align_sessions_by_hop, land_demo_enabled
@@ -226,15 +230,20 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         return u
 
     def do_GET(self):
-        if self.path == '/' or self.path == '/integrated_session_viewer.html':
+        # Request line can include ?query; browsers may add trailing slash — normalize for routing.
+        path = self.path.split('?', 1)[0]
+        if len(path) > 1 and path.endswith('/'):
+            path = path[:-1]
+
+        if path == '/' or path == '/integrated_session_viewer.html':
             self._serve_html()
-        elif self.path == '/app.css':
+        elif path == '/app.css':
             self._serve_static('app.css', 'text/css')
-        elif self.path == '/app.js':
+        elif path == '/app.js':
             self._serve_static('app.js', 'application/javascript')
-        elif self.path.startswith('/js/') and self.path.endswith('.js'):
+        elif path.startswith('/js/') and path.endswith('.js'):
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            rel = self.path.lstrip('/')
+            rel = path.lstrip('/')
             full = os.path.normpath(os.path.join(base_dir, rel))
             try:
                 if os.path.commonpath([base_dir, full]) != base_dir:
@@ -248,32 +257,36 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
-        elif self.path == '/process':
+        elif path == '/process':
             self._process_wifi_session()
-        elif self.path == '/api/user':
+        elif path == '/api/user':
             self._get_user_profile()
-        elif self.path == '/api/ideal_stroke':
+        elif path == '/api/ideal_stroke':
             self._get_ideal_stroke()
-        elif self.path == '/api/ideal_stroke/set_from_stroke':
+        elif path == '/api/ideal_stroke/set_from_stroke':
             self._set_from_stroke_api()
-        elif self.path == '/api/device_info':
+        elif path == '/api/device_info':
             self._get_device_info()
-        elif self.path.startswith('/api/events'):
+        elif path.startswith('/api/events'):
             self._sse_events()
-        elif self.path == '/api/devices':
+        elif path == '/api/devices':
             self._get_devices()
-        elif self.path == '/api/sessions':
+        elif path == '/api/sessions':
             self._get_sessions()
-        elif self.path.startswith('/api/sessions/'):
-            parts = self.path.split('/')
+        elif path.startswith('/api/sessions/'):
+            parts = path.split('/')
             if len(parts) >= 4 and parts[3].isdigit():
                 self._get_session_detail(int(parts[3]))
             else:
                 self._get_sessions()
-        elif self.path.startswith('/api/progress'):
+        elif path.startswith('/api/progress'):
             self._get_progress()
-        elif self.path == '/api/bootstrap':
+        elif path == '/api/bootstrap':
             self._get_bootstrap()
+        elif path == '/stroke_video_calibration.html':
+            self._serve_static('stroke_video_calibration.html', 'text/html')
+        elif path == '/hand_track_viewer.html':
+            self._serve_static('hand_track_viewer.html', 'text/html')
         else:
             self.send_response(404)
             self.end_headers()
@@ -314,6 +327,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._merge_sessions()
         elif path == '/api/coaching/insights':
             self._coaching_insights()
+        elif path == '/api/stroke_video_track':
+            self._stroke_video_track_api()
         else:
             self.send_response(404)
             self.end_headers()
@@ -1022,6 +1037,89 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def _read_body(self):
         length = int(self.headers.get('Content-Length', 0))
         return json.loads(self.rfile.read(length)) if length > 0 else {}
+
+    def _stroke_video_track_api(self):
+        """POST multipart: video file + optional hand, stride, smooth → JSON hand track (MediaPipe)."""
+        u = self._current_user()
+        if not u:
+            self._send_json({
+                'error': 'Sign in required. Open the main app, log in, then use this page.',
+                'auth_required': True,
+            }, 401)
+            return
+        ctype = (self.headers.get('Content-Type') or '').lower()
+        if 'multipart/form-data' not in ctype:
+            self._send_json({'error': 'Use multipart/form-data with field "video".'}, 400)
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0 or length > STROKE_VIDEO_MAX_BYTES:
+            self._send_json({
+                'error': f'Video size must be 1 … {STROKE_VIDEO_MAX_BYTES // (1024 * 1024)} MB.',
+            }, 400)
+            return
+        body = self.rfile.read(length)
+        try:
+            import cgi
+            fp = io.BytesIO(body)
+            environ = {
+                'REQUEST_METHOD': 'POST',
+                'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                'CONTENT_LENGTH': str(length),
+            }
+            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+        except Exception as e:
+            self._send_json({'error': f'Multipart parse failed: {e}'}, 400)
+            return
+
+        file_item = None
+        if 'video' in form:
+            file_item = form['video']
+        elif 'file' in form:
+            file_item = form['file']
+        if file_item is None or not getattr(file_item, 'file', None):
+            self._send_json({'error': 'Missing file field "video".'}, 400)
+            return
+        raw = file_item.file.read()
+        if not raw:
+            self._send_json({'error': 'Empty file.'}, 400)
+            return
+
+        hand = (form.getfirst('hand') or 'auto').strip()
+        try:
+            stride = max(1, int(form.getfirst('stride') or '1'))
+        except (TypeError, ValueError):
+            stride = 1
+        try:
+            smooth = max(0, int(form.getfirst('smooth') or '0'))
+        except (TypeError, ValueError):
+            smooth = 0
+
+        try:
+            import stroke_video_track as svt
+            out = svt.process_video_bytes(
+                raw,
+                hand_preference=hand,
+                frame_stride=stride,
+                smooth_window=smooth,
+                landmark_index=0,
+            )
+        except RuntimeError as e:
+            self._send_json({
+                'ok': False,
+                'error': str(e),
+                'hint': 'Install: pip install -r requirements-calibration.txt',
+            }, 503)
+            return
+        except Exception as e:
+            self._send_json({'ok': False, 'error': str(e)}, 500)
+            return
+
+        if isinstance(out, dict) and out.get('ok'):
+            out['requested_by_user_id'] = u['id']
+        self._send_json(out, 200 if (isinstance(out, dict) and out.get('ok')) else 422)
 
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode()

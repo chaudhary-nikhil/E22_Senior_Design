@@ -120,45 +120,112 @@ function rotatePts2D(pts, ang) {
  * PCA gives an axis but its sign is ambiguous (stroke can mirror left/right).
  * Normalize so "forward" motion during catch/pull always goes +X in side view.
  */
-function normalizeSagittalSign(rotPts, startIdx, endIdx) {
-    if (!rotPts || rotPts.length < 2) return rotPts;
+function _phaseForSideView(i) {
+    if (typeof phaseAtSample === 'function') return phaseAtSample(i);
+    const d = processedData[i];
+    return (d && (d.stroke_phase || d.phase)) || '';
+}
+
+/**
+ * Per-stroke sagittal-transform cache. Decisions (PCA angle + mirror sign) must be
+ * stable across playback frames -- otherwise the growing partial polyline re-computes
+ * its own sign each frame and the whole canvas mirrors mid-stroke (the "sudden jump"
+ * between stroke-start and stroke-end screenshots). Cache invalidation is wired into
+ * integratePositions() so a fresh session starts with fresh decisions.
+ */
+let _sagittalCache = new Map();          // "streamKey#strokeNum" -> { pcaAng, sign }
+let _sagittalFirstPerStream = new Map(); // streamKey -> first confident sign seen (session-wide lock)
+
+function invalidateSideViewSagittalCache() {
+    _sagittalCache.clear();
+    _sagittalFirstPerStream.clear();
+}
+
+/**
+ * Return {sign, ambiguous} for a rotated full-stroke polyline. Sign is +1 if the
+ * catch/pull window advances along +X already, -1 if the polyline needs to be
+ * mirrored on X. `ambiguous` is true when |Δx| in the catch/pull window is tiny
+ * relative to the stroke's x-range (glide-heavy stroke, missing phases); callers
+ * should inherit the session-wide polarity in that case.
+ */
+function _decideSagittalPolarity(rotPts) {
+    if (!rotPts || rotPts.length < 2) return { sign: 1, ambiguous: true };
     const n = rotPts.length;
     const iEnd = Math.min(n - 1, Math.max(1, Math.floor(n * 0.35)));
     let i0 = 0;
     let i1 = iEnd;
-    // Prefer catch/pull window for direction disambiguation.
     for (let k = 0; k <= iEnd; k++) {
-        const d = processedData[rotPts[k].i];
-        const ph = (d && (d.stroke_phase || d.phase)) || '';
+        const ph = _phaseForSideView(rotPts[k].i);
         if (ph === 'catch' || ph === 'pull') { i0 = k; break; }
     }
     for (let k = iEnd; k >= i0 + 1; k--) {
-        const d = processedData[rotPts[k].i];
-        const ph = (d && (d.stroke_phase || d.phase)) || '';
+        const ph = _phaseForSideView(rotPts[k].i);
         if (ph === 'catch' || ph === 'pull') { i1 = k; break; }
     }
-    const dx = (rotPts[i1].x - rotPts[i0].x);
-    if (dx >= 0) return rotPts;
+    const dx = rotPts[i1].x - rotPts[i0].x;
+    let minX = Infinity, maxX = -Infinity;
+    for (const p of rotPts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+    }
+    const range = Math.max(maxX - minX, 1e-9);
+    const ambiguous = Math.abs(dx) < range * 0.01;
+    const sign = dx >= 0 ? 1 : -1;
+    return { sign, ambiguous };
+}
+
+function _applySagittalSign(rotPts, sign) {
+    if (sign >= 0) return rotPts;
     return rotPts.map(p => ({ x: -p.x, y: p.y, i: p.i }));
+}
+
+/**
+ * Build (or fetch cached) {pcaAng, sign} for the stroke described by `b`. The decision
+ * is computed ONCE from the full-stroke window and reused for every subsequent render
+ * of that stroke -- partial playback polylines reuse the full-stroke polarity and can
+ * therefore never mirror on X mid-stroke.
+ */
+function _getStrokeSagittalTransform(b) {
+    if (!b || b.strokeNum <= 0) return { pcaAng: 0, sign: 1 };
+    const key = (b.streamKey || '0') + '#' + b.strokeNum;
+    const hit = _sagittalCache.get(key);
+    if (hit) return hit;
+    const p0 = getLiaPositionSample(b.start);
+    const raw = [];
+    for (let i = b.start; i <= b.end; i++) {
+        const p = getLiaPositionSample(i);
+        raw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
+    }
+    const pcaAng = principalAxisAngleRad2D(raw);
+    const rotFull = rotatePts2D(raw, -pcaAng);
+    const decision = _decideSagittalPolarity(rotFull);
+    let finalSign = decision.sign;
+    const streamKey = b.streamKey || '0';
+    if (decision.ambiguous && _sagittalFirstPerStream.has(streamKey)) {
+        // Stroke has no confident catch/pull sweep -- inherit the first confident
+        // polarity seen on this band so the session as a whole reads in one direction.
+        finalSign = _sagittalFirstPerStream.get(streamKey);
+    } else if (!decision.ambiguous && !_sagittalFirstPerStream.has(streamKey)) {
+        _sagittalFirstPerStream.set(streamKey, finalSign);
+    }
+    const out = { pcaAng, sign: finalSign };
+    _sagittalCache.set(key, out);
+    return out;
+}
+
+/** Legacy wrappers -- kept so any outside caller still works. Internally they delegate
+ *  to _decideSagittalPolarity so the behaviour is identical to the old inline logic,
+ *  but the side view itself now uses the cached per-stroke transform. */
+function normalizeSagittalSign(rotPts, startIdx, endIdx) {
+    if (!rotPts || rotPts.length < 2) return rotPts;
+    const { sign } = _decideSagittalPolarity(rotPts);
+    return _applySagittalSign(rotPts, sign);
 }
 
 function sagittalFlipNeeded(rotPts) {
     if (!rotPts || rotPts.length < 2) return false;
-    const n = rotPts.length;
-    const iEnd = Math.min(n - 1, Math.max(1, Math.floor(n * 0.35)));
-    let i0 = 0;
-    let i1 = iEnd;
-    for (let k = 0; k <= iEnd; k++) {
-        const d = processedData[rotPts[k].i];
-        const ph = (d && (d.stroke_phase || d.phase)) || '';
-        if (ph === 'catch' || ph === 'pull') { i0 = k; break; }
-    }
-    for (let k = iEnd; k >= i0 + 1; k--) {
-        const d = processedData[rotPts[k].i];
-        const ph = (d && (d.stroke_phase || d.phase)) || '';
-        if (ph === 'catch' || ph === 'pull') { i1 = k; break; }
-    }
-    return (rotPts[i1].x - rotPts[i0].x) < 0;
+    const { sign } = _decideSagittalPolarity(rotPts);
+    return sign < 0;
 }
 
 /**
@@ -170,16 +237,8 @@ function getSideViewTransformForIndex(idx) {
     if (!processedData || !processedData.length) return { rotX: 0, flipZ: false };
     const b = strokeBoundsForIndex(idx);
     if (b.strokeNum <= 0) return { rotX: 0, flipZ: false };
-    const p0 = getLiaPositionSample(b.start);
-    const strokePtsRaw = [];
-    for (let i = b.start; i <= b.end; i++) {
-        const p = getLiaPositionSample(i);
-        strokePtsRaw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
-    }
-    const pcaAng = principalAxisAngleRad2D(strokePtsRaw);
-    const rot = rotatePts2D(strokePtsRaw, -pcaAng);
-    const flip = sagittalFlipNeeded(rot);
-    return { rotX: -pcaAng, flipZ: flip };
+    const { pcaAng, sign } = _getStrokeSagittalTransform(b);
+    return { rotX: -pcaAng, flipZ: sign < 0 };
 }
 
 function clearSideViewCanvas() {
@@ -188,6 +247,118 @@ function clearSideViewCanvas() {
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#0b1422';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function _buildSideViewStrokeSegmentsForExport() {
+    if (!processedData || !processedData.length) return [];
+    const n = processedData.length;
+    const canon = (typeof computeCanonicalStrokeBoundaries === 'function')
+        ? computeCanonicalStrokeBoundaries()
+        : [];
+    const out = [];
+    for (let k = 0; k < canon.length; k++) {
+        const b = canon[k];
+        let end = n - 1;
+        for (let j = k + 1; j < canon.length; j++) {
+            if (canon[j].streamKey === b.streamKey) {
+                end = canon[j].index - 1;
+                break;
+            }
+        }
+        for (let i = b.index + 1; i <= end; i++) {
+            if (getStreamKey(processedData[i]) !== b.streamKey) {
+                end = i - 1;
+                break;
+            }
+        }
+        if (end > b.index) {
+            out.push({
+                start: b.index,
+                end: end,
+                strokeNum: b.strokeNum,
+                streamKey: b.streamKey
+            });
+        }
+    }
+    return out;
+}
+
+function exportSideViewCoordinates() {
+    if (!processedData || !processedData.length) {
+        alert('Load a session first, then export 2D stroke coordinates.');
+        return;
+    }
+    if (typeof integratePositions === 'function' &&
+        (!positionStreamPositions || positionStreamPositions.length !== processedData.length)) {
+        integratePositions();
+    }
+    const segments = _buildSideViewStrokeSegmentsForExport();
+    if (!segments.length) {
+        alert('No stroke segments found for this session.');
+        return;
+    }
+    const strokes = segments.map((seg) => {
+        const p0 = getLiaPositionSample(seg.start);
+        const rawPts = [];
+        for (let i = seg.start; i <= seg.end; i++) {
+            const p = getLiaPositionSample(i);
+            rawPts.push({
+                x: p.pz - p0.pz,
+                y: p.py - p0.py,
+                i: i
+            });
+        }
+        const tf = _getStrokeSagittalTransform(seg);
+        const pts = _applySagittalSign(rotatePts2D(rawPts, -tf.pcaAng), tf.sign);
+        return {
+            stroke_num: seg.strokeNum,
+            stream_key: seg.streamKey,
+            start_index: seg.start,
+            end_index: seg.end,
+            pca_angle_rad: tf.pcaAng,
+            sagittal_sign: tf.sign,
+            points: pts.map((p, localIdx) => {
+                const d = processedData[p.i] || {};
+                return {
+                    point_index: localIdx,
+                    sample_index: p.i,
+                    timestamp: d.timestamp != null ? d.timestamp : null,
+                    phase: (typeof phaseAtSample === 'function')
+                        ? phaseAtSample(p.i)
+                        : ((d.stroke_phase || d.phase) || 'idle'),
+                    x: p.x,
+                    y: p.y
+                };
+            })
+        };
+    });
+    let sessionLabel = 'session';
+    if (typeof activeSessionIdx === 'number' && activeSessionIdx >= 0 &&
+        typeof savedSessions !== 'undefined' && savedSessions && savedSessions[activeSessionIdx]) {
+        const s = savedSessions[activeSessionIdx];
+        sessionLabel = s.filename || s.name || s.id || ('session-' + activeSessionIdx);
+    }
+    const safeLabel = String(sessionLabel).replace(/[^a-zA-Z0-9_.-]+/g, '_');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const payload = {
+        format: 'goldenform_side_view_2d_v1',
+        exported_at: new Date().toISOString(),
+        session: {
+            label: sessionLabel,
+            sample_count: processedData.length,
+            stroke_count: strokes.length
+        },
+        strokes: strokes
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'side-view-2d-coordinates-' + safeLabel + '-' + ts + '.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function drawSideViewViz(idx) {
@@ -245,9 +416,13 @@ function drawSideViewViz(idx) {
             (processedData[a.i].timestamp || 0) - (processedData[b.i].timestamp || 0));
     }
 
-    const pcaAng = principalAxisAngleRad2D(strokePtsRaw);
-    const strokePtsRot = normalizeSagittalSign(rotatePts2D(strokePtsRaw, -pcaAng), b.start, b.end);
-    const otherPtsRot = normalizeSagittalSign(rotatePts2D(otherPathPts, -pcaAng), b.start, b.end);
+    /* Single cached decision per stroke -- partial playback polylines reuse the same
+     * pcaAng + sign, so the canvas cannot mirror on X mid-stroke even though the
+     * polyline is growing sample-by-sample. Also keeps the "other band" dashed path in
+     * the same sagittal frame as the solid path. */
+    const { pcaAng, sign } = _getStrokeSagittalTransform(b);
+    const strokePtsRot = _applySagittalSign(rotatePts2D(strokePtsRaw, -pcaAng), sign);
+    const otherPtsRot = _applySagittalSign(rotatePts2D(otherPathPts, -pcaAng), sign);
     const allPts = [...strokePtsRot, ...otherPtsRot];
 
     const upto = Math.min(idx, b.end);
@@ -256,7 +431,7 @@ function drawSideViewViz(idx) {
         const p = getLiaPositionSample(i);
         pathPtsRaw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
     }
-    const pathPts = normalizeSagittalSign(rotatePts2D(pathPtsRaw, -pcaAng), b.start, b.end);
+    const pathPts = _applySagittalSign(rotatePts2D(pathPtsRaw, -pcaAng), sign);
 
     let minX = 0, maxX = 0.01, minY = 0, maxY = 0.01;
     for (const p of allPts) {
@@ -305,8 +480,11 @@ function drawSideViewViz(idx) {
     }
 
     for (let k = 1; k < pathPts.length; k++) {
-        const d0 = processedData[pathPts[k - 1].i];
-        const ph = (d0 && (d0.stroke_phase || d0.phase)) || 'idle';
+        const globalI = pathPts[k - 1].i;
+        const d0 = processedData[globalI];
+        const ph = (typeof phaseAtSample === 'function')
+            ? phaseAtSample(globalI)
+            : ((d0 && (d0.stroke_phase || d0.phase)) || 'idle');
         if (multi) {
             const rgb = streamColorRgbForKey(getStreamKey(d0));
             const cPhase = PHASE_COLOR_RGB[ph] || PHASE_COLOR_RGB.idle;
@@ -326,7 +504,9 @@ function drawSideViewViz(idx) {
     }
 
     const d = processedData[idx];
-    const phase = (d && (d.stroke_phase || d.phase)) || 'idle';
+    const phase = (typeof phaseAtSample === 'function')
+        ? phaseAtSample(idx)
+        : ((d && (d.stroke_phase || d.phase)) || 'idle');
     ctx.fillStyle = '#e8e8f0';
     ctx.font = '12px system-ui, sans-serif';
     const cap = multi

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoldenForm · Hand track visualization</title>
+    <meta name="theme-color" content="#0d0d1a">
+    <link rel="stylesheet" href="/app.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        .htv-wrap { max-width: 960px; margin: 0 auto; padding: 24px; }
+        .htv-canvas-wrap {
+            background: #0a0a12;
+            border-radius: var(--radius-sm, 8px);
+            overflow: hidden;
+            margin-top: 12px;
+        }
+        .htv-canvas-wrap canvas { display: block; width: 100%; height: auto; min-height: 280px; }
+        .htv-meta { font-size: 0.85rem; color: var(--text3); margin-top: 8px; line-height: 1.5; }
+        .htv-row { display: grid; gap: 12px; margin-top: 16px; }
+        @media (min-width: 720px) {
+            .htv-row--split { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="app-nav">
+        <a href="/integrated_session_viewer.html" class="nav-brand" style="text-decoration:none;color:inherit;">GoldenForm</a>
+        <span class="nav-tabs" style="font-size:0.85rem;color:var(--text3);">Hand track JSON → visualization</span>
+    </nav>
+
+    <div class="htv-wrap">
+        <header class="page-heading">
+            <h1 class="page-heading__title">Hand track visualization</h1>
+            <p class="page-heading__sub">Open the JSON from <code>stroke_video_track</code> (CLI or video tool). Plots wrist path in image space and x/y vs time. Everything runs in your browser — no upload.</p>
+        </header>
+
+        <div class="card">
+            <div class="card-title">Load JSON</div>
+            <input type="file" id="htv-file" accept=".json,application/json" style="margin-top:10px;">
+            <p id="htv-err" class="htv-meta" style="color:#f87171;" aria-live="polite"></p>
+        </div>
+
+        <div class="card" id="htv-panel" style="display:none;">
+            <div class="card-title">2D path (normalized image space)</div>
+            <p class="htv-meta" id="htv-summary"></p>
+            <div class="htv-canvas-wrap">
+                <canvas id="htv-path" width="880" height="420"></canvas>
+            </div>
+            <p class="htv-meta">Axes: x = left→right (0–1), y = top→bottom (0–1), same as MediaPipe. Green = start, red = end. Gaps = no detection.</p>
+
+            <div class="htv-row htv-row--split">
+                <div>
+                    <div class="card-title card-title--sub" style="margin-top:8px;">x vs time</div>
+                    <div class="htv-canvas-wrap">
+                        <canvas id="htv-xt" width="880" height="200"></canvas>
+                    </div>
+                </div>
+                <div>
+                    <div class="card-title card-title--sub" style="margin-top:8px;">y vs time</div>
+                    <div class="htv-canvas-wrap">
+                        <canvas id="htv-yt" width="880" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" class="btn btn-outline btn-sm" id="htv-png" style="margin-top:12px;">Download path as PNG</button>
+        </div>
+
+        <p style="margin-top:24px;font-size:0.85rem;color:var(--text3);">
+            <a href="/stroke_video_calibration.html">← Video hand-track tool</a>
+            &nbsp;·&nbsp;
+            <a href="/integrated_session_viewer.html">Main app</a>
+        </p>
+    </div>
+
+    <script>
+(function () {
+    const $ = function (id) { return document.getElementById(id); };
+
+    function parseJson(text) {
+        const data = JSON.parse(text);
+        if (!data.samples || !Array.isArray(data.samples)) {
+            throw new Error('Invalid JSON: expected top-level "samples" array (hand track export).');
+        }
+        return data;
+    }
+
+    function drawPath(canvas, data) {
+        const samples = data.samples;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
+        ctx.fillStyle = '#0b1422';
+        ctx.fillRect(0, 0, W, H);
+
+        const pad = 44;
+        let minX = 1, maxX = 0, minY = 1, maxY = 0;
+        let any = false;
+        for (const s of samples) {
+            if (!s.detected || s.x_norm == null || s.y_norm == null) continue;
+            any = true;
+            const x = Number(s.x_norm), y = Number(s.y_norm);
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        }
+        if (!any) {
+            ctx.fillStyle = '#888';
+            ctx.font = '14px system-ui,sans-serif';
+            ctx.fillText('No detected samples to plot.', pad, H / 2);
+            return;
+        }
+        const rangeX = Math.max(maxX - minX, 0.02);
+        const rangeY = Math.max(maxY - minY, 0.02);
+        const mapX = function (x) { return pad + (x - minX) / rangeX * (W - 2 * pad); };
+        const mapY = function (y) { return pad + (y - minY) / rangeY * (H - 2 * pad); };
+
+        ctx.strokeStyle = 'rgba(120, 170, 255, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad, pad);
+        ctx.lineTo(W - pad, pad);
+        ctx.lineTo(W - pad, H - pad);
+        ctx.lineTo(pad, H - pad);
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '11px system-ui,sans-serif';
+        ctx.fillText('0 = top', pad, pad - 8);
+        ctx.fillText('x →', W - pad - 36, H - pad + 22);
+
+        const t0 = samples[0].t_sec != null ? samples[0].t_sec : 0;
+        const t1 = samples[samples.length - 1].t_sec != null ? samples[samples.length - 1].t_sec : 0;
+        const tSpan = Math.max(t1 - t0, 1e-6);
+
+        function strokeStyleForT(t) {
+            const u = (t - t0) / tSpan;
+            const hue = 200 + u * 120;
+            return 'hsla(' + hue + ', 85%, 62%, 0.92)';
+        }
+
+        for (let k = 1; k < samples.length; k++) {
+            const a = samples[k - 1], b = samples[k];
+            if (!a.detected || !b.detected || a.x_norm == null || b.x_norm == null) continue;
+            const ta = a.t_sec != null ? a.t_sec : t0;
+            ctx.strokeStyle = strokeStyleForT((ta + (b.t_sec != null ? b.t_sec : ta)) / 2);
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(mapX(Number(a.x_norm)), mapY(Number(a.y_norm)));
+            ctx.lineTo(mapX(Number(b.x_norm)), mapY(Number(b.y_norm)));
+            ctx.stroke();
+        }
+
+        let first = null, last = null;
+        for (const s of samples) {
+            if (!s.detected || s.x_norm == null) continue;
+            if (!first) first = s;
+            last = s;
+        }
+        if (first) {
+            ctx.fillStyle = '#4ade80';
+            ctx.beginPath();
+            ctx.arc(mapX(Number(first.x_norm)), mapY(Number(first.y_norm)), 7, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        if (last && last !== first) {
+            ctx.fillStyle = '#f87171';
+            ctx.beginPath();
+            ctx.arc(mapX(Number(last.x_norm)), mapY(Number(last.y_norm)), 7, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        const v = data.video || {};
+        const tr = data.tracking || {};
+        const st = data.stats || {};
+        ctx.fillStyle = '#e8e8f0';
+        ctx.font = '13px system-ui,sans-serif';
+        ctx.fillText(
+            (tr.hand_chosen || '?') + ' hand · ' + (st.frames_with_chosen_hand || 0) + '/' + (st.frames_total || samples.length) + ' frames · path len (norm) ' + (st.path_length_norm != null ? st.path_length_norm : '—'),
+            pad,
+            H - 16
+        );
+    }
+
+    function drawSeries(canvas, data, key, label) {
+        const samples = data.samples;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
+        ctx.fillStyle = '#0b1422';
+        ctx.fillRect(0, 0, W, H);
+        const pad = 40;
+        const pts = [];
+        let tMin = Infinity, tMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+        for (const s of samples) {
+            if (!s.detected || s[key] == null || s.t_sec == null) continue;
+            const t = Number(s.t_sec);
+            const v = Number(s[key]);
+            pts.push({ t: t, v: v });
+            tMin = Math.min(tMin, t); tMax = Math.max(tMax, t);
+            vMin = Math.min(vMin, v); vMax = Math.max(vMax, v);
+        }
+        if (!pts.length) {
+            ctx.fillStyle = '#888';
+            ctx.font = '13px system-ui,sans-serif';
+            ctx.fillText('No data.', pad, H / 2);
+            return;
+        }
+        const dt = Math.max(tMax - tMin, 1e-6);
+        const dv = Math.max(vMax - vMin, 1e-4);
+        const mapT = function (t) { return pad + (t - tMin) / dt * (W - 2 * pad); };
+        const mapV = function (v) { return H - pad - (v - vMin) / dv * (H - 2 * pad); };
+
+        ctx.strokeStyle = 'rgba(120, 170, 255, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad, H - pad);
+        ctx.lineTo(W - pad, H - pad);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(mapT(pts[0].t), mapV(pts[0].v));
+        for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(mapT(pts[i].t), mapV(pts[i].v));
+        }
+        ctx.stroke();
+
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '11px system-ui,sans-serif';
+        ctx.fillText(label + ' · t: ' + tMin.toFixed(2) + '–' + tMax.toFixed(2) + ' s', pad, 16);
+    }
+
+    function resizeCanvases() {
+        const path = $('htv-path');
+        const wrap = path && path.closest('.htv-canvas-wrap');
+        if (!wrap) return;
+        const w = Math.max(320, Math.min(960, wrap.clientWidth || 880));
+        const hPath = Math.round(Math.max(260, w * 0.48));
+        const hSmall = Math.round(Math.max(140, w * 0.22));
+        path.width = w;
+        path.height = hPath;
+        $('htv-xt').width = w;
+        $('htv-xt').height = hSmall;
+        $('htv-yt').width = w;
+        $('htv-yt').height = hSmall;
+    }
+
+    let lastData = null;
+
+    function render(data) {
+        lastData = data;
+        resizeCanvases();
+        drawPath($('htv-path'), data);
+        drawSeries($('htv-xt'), data, 'x_norm', 'x_norm (L→R)');
+        drawSeries($('htv-yt'), data, 'y_norm', 'y_norm (top→bottom)');
+        const v = data.video || {};
+        const tr = data.tracking || {};
+        const st = data.stats || {};
+        $('htv-summary').textContent =
+            (v.width || '?') + '×' + (v.height || '?') + ' px · ' + (v.fps != null ? v.fps + ' fps' : '') +
+            ' · ' + (tr.hand_chosen || '') + ' · ' + (st.frames_with_chosen_hand || 0) + ' detected frames';
+        $('htv-panel').style.display = 'block';
+    }
+
+    $('htv-file').addEventListener('change', function (ev) {
+        $('htv-err').textContent = '';
+        const f = ev.target.files && ev.target.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = function () {
+            try {
+                const data = parseJson(reader.result);
+                render(data);
+            } catch (e) {
+                $('htv-err').textContent = String(e.message || e);
+                $('htv-panel').style.display = 'none';
+            }
+        };
+        reader.onerror = function () {
+            $('htv-err').textContent = 'Could not read file.';
+        };
+        reader.readAsText(f, 'UTF-8');
+    });
+
+    $('htv-png').addEventListener('click', function () {
+        const c = $('htv-path');
+        if (!c || !lastData) return;
+        try {
+            const a = document.createElement('a');
+            a.href = c.toDataURL('image/png');
+            a.download = 'hand_track_path.png';
+            a.click();
+        } catch (e) {
+            $('htv-err').textContent = 'PNG export failed: ' + e;
+        }
+    });
+
+    window.addEventListener('resize', function () {
+        if (lastData) render(lastData);
+    });
+})();
+    </script>
+</body>
+
+</html>
