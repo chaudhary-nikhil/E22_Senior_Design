@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include "esp_rom_sys.h"
 
 static const char *TAG = "BNO055";
 
@@ -103,6 +104,32 @@ static esp_err_t bno055_read16(int port, uint8_t addr, uint8_t reg,
 
   return err;
 }
+
+#define BNO055_NRESET_GPIO  17   // whatever pin you flywired to
+
+static void bno055_hw_reset(void) {
+    gpio_config_t rst_cfg = {
+        .pin_bit_mask = (1ULL << BNO055_NRESET_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&rst_cfg);
+
+    gpio_set_level(BNO055_NRESET_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(5));
+
+    // Drive reset low for 10ms (datasheet: min 20ns, use 10ms for margin)
+    gpio_set_level(BNO055_NRESET_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Release reset — R8 and our GPIO will both drive high
+    gpio_set_level(BNO055_NRESET_GPIO, 1);
+
+    ESP_LOGI(TAG, "BNO055 hardware reset toggled on GPIO%d", BNO055_NRESET_GPIO);
+}
+
 esp_err_t bno055_reset(int port, uint8_t addr) {
   // Write reset command to SYS_TRIGGER register.
   // NOTE: This write may NACK because the chip resets mid-transaction.
@@ -127,7 +154,11 @@ esp_err_t bno055_init(int port, uint8_t addr) {
   ESP_LOGI(TAG, "Initializing BNO055 at address 0x%02X", addr);
 
   // Wait for BNO055 to boot up after power-on
-  vTaskDelay(pdMS_TO_TICKS(650));
+  // vTaskDelay(pdMS_TO_TICKS(650));
+
+  // Hardware reset via flywired GPIO → nRESET
+  // bno055_hw_reset();
+  // vTaskDelay(pdMS_TO_TICKS(2000));
 
   // Try both I2C addresses
   uint8_t addresses[] = {addr, (addr == BNO055_ADDR_A) ? BNO055_ADDR_B
@@ -179,7 +210,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
   // Boot time varies chip-to-chip; poll CHIP_ID until it responds rather
   // than waiting a fixed time.
   ESP_LOGI(TAG, "Waiting for BNO055 to come back after reset...");
-  const int reset_timeout_ms = 1500;
+  const int reset_timeout_ms = 3000;
   const int poll_interval_ms = 20;
   int elapsed_ms = 650;
   bool chip_back = false;

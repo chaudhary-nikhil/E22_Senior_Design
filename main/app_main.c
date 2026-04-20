@@ -571,6 +571,22 @@ void app_main(void) {
   // Initialize BNO055 address selection
   init_bno055_address_pin();
 
+
+    // Pure diagnostic: what's the bus look like at boot?
+  gpio_config_t diag_cfg = {
+    .pin_bit_mask = (1ULL << I2C_SDA_GPIO) | (1ULL << I2C_SCL_GPIO),
+    .mode = GPIO_MODE_INPUT,
+    .pull_up_en = GPIO_PULLUP_DISABLE,    // rely on external 4.7k pullups
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE
+  };
+  gpio_config(&diag_cfg);
+  vTaskDelay(pdMS_TO_TICKS(10));
+  int sda_level = gpio_get_level(I2C_SDA_GPIO);
+  int scl_level = gpio_get_level(I2C_SCL_GPIO);
+  ESP_LOGI(TAG, "=== I2C bus state at boot: SDA=%d SCL=%d ===", sda_level, scl_level);
+
+
   // Initialize I2C
   esp_err_t err = bus_i2c_init(I2C_NUM_0, I2C_SDA_GPIO, I2C_SCL_GPIO, 100000);
   if (err != ESP_OK) {
@@ -580,9 +596,12 @@ void app_main(void) {
              I2C_SCL_GPIO);
   }
 
+  bno055_hw_reset();
+  vTaskDelay(pdMS_TO_TICKS(2000));
+
   // Initialize BNO055 - retry up to 5 times per TIDR 1-3-1
   {
-    const int IMU_MAX_RETRIES = 5;
+    const int IMU_MAX_RETRIES = 7;
     for (int attempt = 1; attempt <= IMU_MAX_RETRIES; attempt++) {
       ESP_LOGI(TAG, "IMU init attempt %d/%d", attempt, IMU_MAX_RETRIES);
       err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
@@ -595,7 +614,11 @@ void app_main(void) {
       ESP_LOGW(TAG, "IMU init attempt %d failed: %s", attempt,
                esp_err_to_name(err));
       if (attempt < IMU_MAX_RETRIES) {
-        vTaskDelay(pdMS_TO_TICKS(500));
+        // Progressive backoff: longer delays on later attempts give chip
+        // more time to recover from whatever weird state it's in
+        int backoff_ms = 500 * attempt;  // 500, 1000, 1500, 2000, ...
+        ESP_LOGI(TAG, "Waiting %d ms before next attempt", backoff_ms);
+        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
       }
     }
     if (!bno055_available) {
@@ -840,6 +863,7 @@ void app_main(void) {
       if (err == ESP_OK) {
         // Calibration monitoring - log status changes and announce full
         // calibration
+        
         if (bno055_available) {
           static int8_t prev_sys = -1, prev_gyro = -1, prev_accel = -1,
                         prev_mag = -1;
