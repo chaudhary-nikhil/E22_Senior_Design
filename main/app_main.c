@@ -484,7 +484,8 @@ static void handle_button_press(void) {
     transition_to_idle(false);
     break;
   case STATE_SYNCING:
-    transition_to_idle(true);
+    /* End Wi‑Fi session without erasing SD (same rationale as auto transfer complete). */
+    transition_to_idle(false);
     break;
   }
 }
@@ -829,12 +830,18 @@ void app_main(void) {
       handle_button_press();
     }
 
-    // Auto-return to IDLE when sync transfer completes (AP stays alive)
+    /* When JSON/protobuf export finishes, end SYNC state but do NOT erase the SD.
+     * Erasing here raced the host: transfer_complete fires as soon as one download
+     * finishes, while Python /process may still be parsing, or the user may retry /
+     * open data.json again — files were deleted ~1s later and sync appeared to
+     * "disconnect" with data lost. Session .pb files remain until the next swim
+     * (new files) or manual cleanup; frees space on card can be added later via UI. */
     if (current_state == STATE_SYNCING && wifi_available &&
         wifi_server_is_transfer_complete()) {
-      ESP_LOGI(TAG, "Transfer complete — returning to IDLE (AP stays alive)");
+      ESP_LOGI(TAG,
+               "Transfer complete — IDLE (AP stays up; SD session files kept for replay)");
       vTaskDelay(pdMS_TO_TICKS(1000));
-      transition_to_idle(true);
+      transition_to_idle(false);
     }
 
     // Sync timeout: auto-return to IDLE after 5 minutes with no transfer
@@ -937,7 +944,6 @@ void app_main(void) {
         sample.haptic_reason = stroke_event.haptic_reason;
         sample.pull_duration_ms = stroke_event.pull_duration_ms;
         sample.stroke_count = stroke_event.stroke_count;
-        sample.turn_count = stroke_event.turn_count;
 
         // Populate device metadata (wrist side from NVS / user_config, not compile-time)
         sample.device_id = CONFIG_GOLDENFORM_DEVICE_ID;
@@ -948,9 +954,6 @@ void app_main(void) {
 
         if (stroke_event.stroke_detected) {
           ESP_LOGI(TAG, "Stroke #%u detected", (unsigned)stroke_event.stroke_count);
-        }
-        if (stroke_event.turn_detected) {
-          ESP_LOGI(TAG, "Turn #%u detected", (unsigned)stroke_event.turn_count);
         }
 
         // When logging, also store to SD card

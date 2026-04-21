@@ -21,10 +21,11 @@ function normalizeDeviceInfoCal(res) {
 }
 
 /** When the laptop is on the band AP, the browser can read the ESP32 directly (CORS * on device). */
-async function fetchDeviceInfoDirectFromBand() {
+async function fetchDeviceInfoDirectFromBand(timeoutMs) {
+    const ms = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : 2500;
     try {
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 1000);
+        const to = setTimeout(() => ctrl.abort(), ms);
         const r = await fetch('http://192.168.4.1/api/device_info', {
             method: 'GET',
             cache: 'no-store',
@@ -174,7 +175,6 @@ function _apSampleToProcessed(sample) {
         pull_duration_ms: Number(sample.pull_duration_ms ?? 0) || 0,
         strokes: Number(sample.strokes ?? sample.stroke_count ?? 0) || 0,
         stroke_count: Number(sample.stroke_count ?? sample.strokes ?? 0) || 0,
-        turns: Number(sample.turns ?? 0) || 0,
         entry_angle: Number(sample.entry_angle ?? 0) || 0,
         device_id: Number(sample.dev_id ?? sample.device_id ?? 0) || 0,
         device_role: Number(sample.dev_role ?? sample.device_role ?? 0) || 0,
@@ -228,7 +228,6 @@ function _avgEntryAnglePerStroke(pd) {
 function _metricsFromProcessed(pd) {
     const m = {
         stroke_count: 0,
-        turn_count: 0,
         haptic_count: 0,
         avg_deviation: 0,
         avg_entry_angle: 0,
@@ -237,13 +236,10 @@ function _metricsFromProcessed(pd) {
     if (!pd.length) return m;
     let devSum = 0, devN = 0, angleSum = 0, angleN = 0, hN = 0;
     let lastStroke = 0;
-    let maxTurns = 0;
     for (let i = 0; i < pd.length; i++) {
         const p = pd[i];
         const s = Number(p.strokes || 0) || 0;
         if (s > lastStroke) lastStroke = s;
-        const tn = Number(p.turns || 0) || 0;
-        if (tn > maxTurns) maxTurns = tn;
         const d = Number(p.deviation_score || 0);
         if (Number.isFinite(d) && d > 0) { devSum += d; devN++; }
         const a = Number(p.entry_angle || 0);
@@ -252,7 +248,6 @@ function _metricsFromProcessed(pd) {
     }
     const segCount = _countStrokeSegmentsFromProcessed(pd);
     m.stroke_count = Math.max(lastStroke, segCount);
-    m.turn_count = maxTurns;
     m.haptic_count = hN;
     m.avg_deviation = devN ? devSum / devN : 0;
     const perStroke = _avgEntryAnglePerStroke(pd);
@@ -282,11 +277,19 @@ function buildSessionFromApJsonRoot(raw) {
     const duration = processed.length > 1
         ? ((processed[processed.length - 1].timestamp - processed[0].timestamp) / 1000)
         : 0;
+    const metrics = _metricsFromProcessed(processed);
+    if (typeof gfPhasePctsFromPd === 'function') {
+        const pp = gfPhasePctsFromPd(processed);
+        const ppt = (pp.glide || 0) + (pp.catch || 0) + (pp.pull || 0) + (pp.recovery || 0);
+        if (ppt >= 0.5) {
+            metrics.phase_pcts = pp;
+        }
+    }
     return {
         name: s0.name ? (s0.name + ' · AP') : 'AP data.json',
         processed_data: processed,
         raw_data: raw,
-        metrics: _metricsFromProcessed(processed),
+        metrics,
         duration,
         syncedAt: new Date().toISOString()
     };
@@ -377,7 +380,7 @@ async function replayApJsonToSession() {
         const obj = Object.assign({ id: 'apjson:' + String(Date.now()) }, built);
         addSession(obj);
         if (statusEl) {
-            statusEl.textContent = `Loaded ${processed.length} samples from AP JSON`;
+            statusEl.textContent = `Loaded ${built.processed_data.length} samples from AP JSON`;
             statusEl.className = 'badge badge-green';
         }
         showToast('Loaded AP data.json into Session', 'success');
@@ -398,23 +401,73 @@ async function replayApJsonToSession() {
  * on the GoldenForm AP (different machine, VPN, firewall), so /api/device_info would stay disconnected
  * even though the laptop sees the wearable.
  *
- * When the dashboard proxy already returns a connected device with calibration, skip the direct
- * 192.168.4.1 fetch so polling stays fast (avoids ~1s dead wait every 2s while offline from the band).
+ * Try a fast direct read first (typical when the browser is on the band AP). That path carries
+ * live `cal` from the ESP without going through the Python proxy — the proxy can look "connected"
+ * but serve a stale first snapshot right after NVS/config activity. If direct times out, fall back
+ * to the proxy so laptops not on the AP are not penalized with two full round-trips every poll.
  */
 async function fetchDeviceInfoMerged() {
-    const res = await apiGet('/api/device_info');
-    let cal = normalizeDeviceInfoCal(res);
-    const proxyOk = !!(res && !res.error && res.status !== 'disconnected' && !res._httpError);
-    const hasDevice = res && res.device_id !== undefined;
-    if (proxyOk && hasDevice && cal) {
-        return { res: { ...res, cal }, cal };
-    }
-    const direct = await fetchDeviceInfoDirectFromBand();
+    const direct = await fetchDeviceInfoDirectFromBand(480);
     const dcal = direct ? normalizeDeviceInfoCal(direct) : null;
-    if (dcal && direct && typeof direct === 'object') {
+    if (direct && typeof direct === 'object' && direct.device_id !== undefined && dcal) {
         return { res: { ...direct, cal: dcal }, cal: dcal };
     }
-    return { res, cal };
+    const res = await apiGet('/api/device_info');
+    const pcal = normalizeDeviceInfoCal(res);
+    const proxyOk = !!(res && !res.error && res.status !== 'disconnected' && !res._httpError);
+    if (proxyOk && res && res.device_id !== undefined && pcal) {
+        return { res: { ...res, cal: pcal }, cal: pcal };
+    }
+    if (direct && typeof direct === 'object' && dcal) {
+        return { res: { ...direct, cal: dcal }, cal: dcal };
+    }
+    return { res, cal: dcal || pcal };
+}
+
+/** POST /api/registration_done at most once per page load — stops band setup blink without tearing down AP. */
+let gfRegistrationQuietPosted = false;
+async function gfNotifyBandRegistrationQuiet() {
+    if (gfRegistrationQuietPosted) return true;
+    try {
+        const r = await apiPost('/api/registration_done', {});
+        const ok = !!(r && r.status === 'ok');
+        if (ok) gfRegistrationQuietPosted = true;
+        return ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * When the band comes online, mirror NVS-backed user config from firmware into the Settings
+ * form so the UI matches what stroke_detector is using. Skipped if the user queued a push
+ * while offline (pendingConfigSync) so local edits win.
+ */
+function applyFirmwareUserConfigToSettings(devInfo) {
+    if (!devInfo || devInfo.device_id === undefined) return;
+    const units = (typeof window.gfGetUnits === 'function') ? window.gfGetUnits('settings-') : 'in';
+    const fmt = typeof window.gfFormatCmForUI === 'function' ? window.gfFormatCmForUI : null;
+    if (fmt) {
+        if (devInfo.wingspan_cm != null && Number.isFinite(Number(devInfo.wingspan_cm))) {
+            const el = document.getElementById('settings-wingspan');
+            if (el) el.value = fmt(Number(devInfo.wingspan_cm), units, 'wingspan');
+        }
+        if (devInfo.height_cm != null && Number.isFinite(Number(devInfo.height_cm))) {
+            const el = document.getElementById('settings-height');
+            if (el) el.value = fmt(Number(devInfo.height_cm), units, 'height');
+        }
+    }
+    if (devInfo.skill_level && typeof devInfo.skill_level === 'string') {
+        const el = document.getElementById('settings-skill');
+        if (el) {
+            const v = devInfo.skill_level.toLowerCase();
+            if (['beginner', 'intermediate', 'advanced', 'competitive'].indexOf(v) >= 0) el.value = v;
+        }
+    }
+    if (devInfo.device_role && typeof normalizeDeviceRole === 'function') {
+        const roleEl = document.getElementById('dev-role');
+        if (roleEl) roleEl.value = normalizeDeviceRole(devInfo.device_role);
+    }
 }
 
 function setConnStatus(state) {
@@ -491,6 +544,8 @@ async function pollDevice() {
             if (pendingConfigSync) {
                 await pushUserConfigToDevice(true);
                 pendingConfigSync = false;
+            } else if (rawOnline && res && res.device_id !== undefined) {
+                applyFirmwareUserConfigToSettings(res);
             }
             if (pendingIdealSync) {
                 await pushIdealToDevice(true);
@@ -541,6 +596,7 @@ async function syncFromDevice() {
     let pickedRole = null;
     if (devInfo && devInfo.device_id !== undefined) {
         lastSyncedDeviceInfo = devInfo;
+        applyFirmwareUserConfigToSettings(devInfo);
         const roleEl = document.getElementById('dev-role');
         pickedRole = roleEl ? normalizeDeviceRole(roleEl.value) : normalizeDeviceRole(devInfo.device_role);
         if (statusEl) statusEl.textContent = `Connected to ${devInfo.ssid || 'GoldenForm'} (${pickedRole || 'wrist'})...`;
@@ -601,8 +657,7 @@ async function syncFromDevice() {
 
         await Promise.all([pushUserConfigToDevice(true), pushIdealToDevice(true)]).catch(() => {});
 
-        /* Tell firmware registration is complete so it stops the status LED blink and closes the AP. */
-        try { await apiPost('/api/registration_done', {}); } catch (_) { /* device may already be offline */ }
+        try { await gfNotifyBandRegistrationQuiet(); } catch (_) { /* device may already be offline */ }
 
         if (syncDeviceCount > 1) {
             showToast(`${syncDeviceCount} devices synced. Use "Merge Devices" to combine.`, 'info');

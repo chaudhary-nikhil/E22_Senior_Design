@@ -59,7 +59,7 @@ message ImuSample {
 
   // Session running counts
   uint32 stroke_count = 30;     // Running stroke count for this session
-  uint32 turn_count = 31;       // Running turn count for this session
+  reserved 31;                  // was turn_count (removed — not reliable enough to ship)
 
   // Legacy wire field; always 0 in current builds (kept for old SD/session compatibility)
   uint32 breath_count = 32;

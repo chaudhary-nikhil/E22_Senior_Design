@@ -20,6 +20,93 @@ function strokeNumAt(d) {
     return useFwStrokesForViz ? (d.strokes || 0) : (d.stroke_count || 0);
 }
 
+function gfStrokeNumAtPd(d, useFw) {
+    return useFw ? (Number(d.strokes) || 0) : (Number(d.stroke_count) || 0);
+}
+
+/**
+ * Phase for sample i in array pd (same rules as phaseAtSample; useFw matches firmware vs Python stroke index).
+ */
+function gfPhaseAtSampleIndex(pd, i, useFw) {
+    if (!pd || i < 0 || i >= pd.length) return 'idle';
+    const d = pd[i];
+    if (!d) return 'idle';
+    const reported = String(d.stroke_phase || d.phase || '').toLowerCase();
+    if (reported && reported !== 'idle') return reported;
+
+    const sc = gfStrokeNumAtPd(d, useFw);
+    if (sc <= 0) return reported || 'idle';
+    const sk = getStreamKey(d);
+
+    let start = i;
+    for (let k = i - 1; k >= 0; k--) {
+        const dk = pd[k];
+        if (!dk || getStreamKey(dk) !== sk) break;
+        if (gfStrokeNumAtPd(dk, useFw) === sc) start = k;
+        else break;
+    }
+    let end = i;
+    for (let k = i + 1; k < pd.length; k++) {
+        const dk = pd[k];
+        if (!dk || getStreamKey(dk) !== sk) break;
+        if (gfStrokeNumAtPd(dk, useFw) === sc) end = k;
+        else break;
+    }
+    const segLen = end - start;
+    if (segLen <= 0) return reported || 'idle';
+
+    let t0 = pd[start] && pd[start].timestamp;
+    let t1 = pd[end] && pd[end].timestamp;
+    let ts = d.timestamp;
+    let r;
+    if (Number.isFinite(t0) && Number.isFinite(t1) && Number.isFinite(ts) && t1 > t0) {
+        r = (ts - t0) / (t1 - t0);
+    } else {
+        r = (i - start) / segLen;
+    }
+    if (!Number.isFinite(r)) r = 0;
+    if (r < 0) r = 0;
+    else if (r > 1) r = 1;
+
+    if (r < 0.15) return 'catch';
+    if (r < 0.50) return 'pull';
+    if (r < 0.80) return 'recovery';
+    return 'glide';
+}
+
+/**
+ * Stroke-phase mix (0–100 each) for a session array — used when metrics.phase_pcts is missing (e.g. AP JSON).
+ */
+function gfPhasePctsFromPd(pd) {
+    if (!pd || pd.length < 2) return { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    const hasFw = pd.some(d => (Number(d.strokes) || 0) > 0);
+    const hasProc = pd.some(d => (Number(d.stroke_count) || 0) > 0);
+    let useFw = hasFw;
+    if (!hasFw && hasProc) useFw = false;
+
+    const c = { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    let n = 0;
+    for (let i = 0; i < pd.length; i++) {
+        const ph = gfPhaseAtSampleIndex(pd, i, useFw);
+        if (!ph || ph === 'idle') continue;
+        if (Object.prototype.hasOwnProperty.call(c, ph)) {
+            c[ph]++;
+            n++;
+        }
+    }
+    if (!n) return { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    const out = { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    for (const k of Object.keys(c)) {
+        out[k] = Math.round((c[k] / n) * 1000) / 10;
+    }
+    return out;
+}
+
+/** Uses global processedData; for Analysis tab fallback. */
+function gfComputePhasePctsFromProcessed() {
+    return gfPhasePctsFromPd(typeof processedData !== 'undefined' ? processedData : []);
+}
+
 /**
  * Single source of truth for stroke-detection edges across the dashboard.
  *
@@ -73,52 +160,8 @@ function canonicalStrokeCount() {
  */
 function phaseAtSample(i) {
     if (!processedData || i < 0 || i >= processedData.length) return 'idle';
-    const d = processedData[i];
-    if (!d) return 'idle';
-    const reported = (d.stroke_phase || d.phase || '').toLowerCase();
-    if (reported && reported !== 'idle') return reported;
-
-    const sc = strokeNumAt(d);
-    if (sc <= 0) return reported || 'idle';
-    const sk = getStreamKey(d);
-
-    /* Locate the sample range for this (stream, stroke) without relying on phase. */
-    let start = i;
-    for (let k = i - 1; k >= 0; k--) {
-        const dk = processedData[k];
-        if (!dk || getStreamKey(dk) !== sk) break;
-        if (strokeNumAt(dk) === sc) start = k;
-        else break;
-    }
-    let end = i;
-    for (let k = i + 1; k < processedData.length; k++) {
-        const dk = processedData[k];
-        if (!dk || getStreamKey(dk) !== sk) break;
-        if (strokeNumAt(dk) === sc) end = k;
-        else break;
-    }
-    const n = end - start;
-    if (n <= 0) return reported || 'idle';
-
-    /* Prefer a timestamp-based ratio so variable sample rates (merged sessions, dropped
-     * frames) don't skew the split. Fall back to index ratio if timestamps are missing. */
-    let t0 = (processedData[start] && processedData[start].timestamp);
-    let t1 = (processedData[end] && processedData[end].timestamp);
-    let ts = (d.timestamp);
-    let r;
-    if (Number.isFinite(t0) && Number.isFinite(t1) && Number.isFinite(ts) && t1 > t0) {
-        r = (ts - t0) / (t1 - t0);
-    } else {
-        r = (i - start) / n;
-    }
-    if (!Number.isFinite(r)) r = 0;
-    if (r < 0) r = 0;
-    else if (r > 1) r = 1;
-
-    if (r < 0.15) return 'catch';
-    if (r < 0.50) return 'pull';
-    if (r < 0.80) return 'recovery';
-    return 'glide';
+    refreshStrokeFieldMode();
+    return gfPhaseAtSampleIndex(processedData, i, useFwStrokesForViz);
 }
 
 /** Stable id for the physical band or merged session slice (for dual-wrist timelines). */

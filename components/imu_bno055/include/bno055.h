@@ -205,7 +205,6 @@ typedef struct {
 
   // Session running counts (populated from stroke detector)
   uint32_t stroke_count;
-  uint32_t turn_count;
 
   uint32_t breath_count; /* protobuf field; always 0 in current firmware */
 

@@ -409,7 +409,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     height_cm=float(body.get('height_cm', 0) or 0),
                     wingspan_cm=float(body.get('wingspan_cm', 0) or 0),
                     skill_level=str(body.get('skill_level', 'beginner') or 'beginner'),
-                    pool_length=float(body.get('pool_length', 25) or 25),
                 )
             except ValueError as e:
                 self._send_json({'error': str(e)}, 400)
@@ -459,8 +458,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 kw['wingspan_cm'] = float(body.get('wingspan_cm') or 0)
             if 'skill_level' in body:
                 kw['skill_level'] = body.get('skill_level')
-            if 'pool_length' in body:
-                kw['pool_length'] = float(body.get('pool_length') or 25)
             db.update_user_profile(u['id'], **kw)
             user = db.get_user_by_id(u['id'])
             _sse_publish('profile', {'user_id': u['id']})
@@ -496,7 +493,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._send_json({'error': str(e)}, 500)
 
     def _notify_registration_done(self):
-        """Forward to ESP32 so it clears registration linger + stops status LED + closes AP."""
+        """Forward to ESP32: stop setup/status LED blink. AP stays up (replay + live device_info)."""
         try:
             req = urllib.request.Request(
                 f'{ESP32_URL}/api/registration_done',
@@ -907,8 +904,12 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'mx': mx, 'my': my, 'mz': mz,
                         'gx': sample.get('gx', 0), 'gy': sample.get('gy', 0), 'gz': sample.get('gz', 0),
                         'qw': sample.get('qw', 1), 'qx': sample.get('qx', 0), 'qy': sample.get('qy', 0), 'qz': sample.get('qz', 0),
+                        'haptic_fired': sample.get('haptic', sample.get('haptic_fired', False)),
                         'haptic': sample.get('haptic', sample.get('haptic_fired', False)),
+                        'haptic_reason': int(sample.get('haptic_reason', 0) or 0),
+                        'pull_duration_ms': float(sample.get('pull_duration_ms', 0) or 0),
                         'deviation': sample.get('deviation', sample.get('deviation_score', 0.0)),
+                        'deviation_score': sample.get('deviation', sample.get('deviation_score', 0.0)),
                         'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
                         'entry_angle': float(sample.get('entry_angle', 0) or 0),
                         'dev_id': sample.get('dev_id', sample.get('device_id', 0)),
@@ -1141,7 +1142,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             req = urllib.request.Request(url)
             req.add_header('Accept', 'application/json')
 
-            with urllib.request.urlopen(req, timeout=8) as response:
+            with urllib.request.urlopen(req, timeout=120) as response:
                 result = json.loads(response.read().decode('utf-8'))
 
             sessions_raw = result.get('sessions', [])
@@ -1188,6 +1189,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'qy': sample.get('qy', 0),
                         'qz': sample.get('qz', 0),
                         'haptic_fired': sample.get('haptic', sample.get('haptic_fired', False)),
+                        'haptic_reason': int(sample.get('haptic_reason', 0) or 0),
+                        'pull_duration_ms': float(sample.get('pull_duration_ms', 0) or 0),
                         'deviation_score': sample.get('deviation', sample.get('deviation_score', 0.0)),
                         'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
                         'entry_angle': float(sample.get('entry_angle', 0) or 0),
@@ -1290,7 +1293,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def _calculate_stroke_metrics(self, processed_data, processor):
         if len(processed_data) == 0:
             return {
-                'stroke_count': 0, 'turn_count': 0, 'duration': 0, 'stroke_rate': 0,
+                'stroke_count': 0, 'duration': 0, 'stroke_rate': 0,
                 'avg_stroke_time': 0, 'consistency': 0, 'peak_accel_avg': 0,
                 'avg_entry_angle': 0, 'ideal_entry_angle': 30.0,
                 'phase_pcts': {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0},
@@ -1333,6 +1336,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             angle = float(p.get('entry_angle', 0) or 0)
             dev = float(p.get('deviation_score', 0) or 0)
             haptic = bool(p.get('haptic_fired', False))
+            haptic_reason = int(p.get('haptic_reason', 0) or 0)
             scan_limit = min(idx + 120, len(processed_data))
             for j in range(idx + 1, scan_limit):
                 q = processed_data[j]
@@ -1347,6 +1351,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     dev = qdev
                 if q.get('haptic_fired', False):
                     haptic = True
+                haptic_reason |= int(q.get('haptic_reason', 0) or 0)
                 qa = float(q.get('entry_angle', 0) or 0)
                 if qa > 0.05 and angle == 0:
                     angle = qa
@@ -1355,6 +1360,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 'timestamp_s': t_ms / 1000.0,
                 'entry_angle': angle,
                 'haptic_fired': haptic,
+                'haptic_reason': haptic_reason,
                 'deviation': dev
             })
 
@@ -1403,7 +1409,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
         metrics = {
             'stroke_count': eff_strokes,
-            'turn_count': processor.turn_count,
             'duration': duration,
             'stroke_rate': (eff_strokes / duration * 60) if duration > 0 else 0,
             'avg_stroke_time': 0,

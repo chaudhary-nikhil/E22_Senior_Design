@@ -31,12 +31,10 @@ extern "C" {
 
 typedef struct {
   bool stroke_detected;      // True on the sample where a new stroke was detected
-  bool turn_detected;        // True when a wall/turn impact is detected
   bool haptic_fired;         // True if haptic was triggered this sample
   float deviation_score;     // Same DTW scale as protobuf / logs (~1.0 typical vs ideal)
   float entry_angle;         // Water entry angle (degrees) from quaternion pitch
   uint32_t stroke_count;     // Running total of strokes detected
-  uint32_t turn_count;       // Running total of turns detected
   uint8_t haptic_reason;     // Bitfield: HAPTIC_REASON_DTW_HIGH | REASON_ENTRY_BAD | ...
   float pull_duration_ms;    // Duration of pull/integration phase for this stroke (ms)
 } stroke_event_t;
@@ -72,7 +70,7 @@ void stroke_detector_get_haptic_profile(stroke_detector_haptic_profile_t *out);
 /**
  * @brief Reset session-specific state
  * 
- * Clears stroke and turn counts, history buffers, and current integration.
+ * Clears stroke count, history buffers, and current integration.
  * Preserves ideal stroke reference and user configuration.
  */
 void stroke_detector_reset_session(void);
@@ -113,11 +111,6 @@ bool stroke_detector_has_ideal(void);
 uint32_t stroke_detector_get_count(void);
 
 /**
- * @brief Get the current turn count
- */
-uint32_t stroke_detector_get_turn_count(void);
-
-/**
  * @brief Get the last computed deviation score
  * @return 0.0 if no comparison done yet, otherwise the deviation score
  */
@@ -127,7 +120,7 @@ float stroke_detector_get_deviation(void);
  * @brief Set the deviation threshold for haptic trigger
  *
  * When the deviation score exceeds this threshold, haptic fires (unless overridden by skill preset).
- * Skill presets use ~1.00–1.14 on the on-device DTW scale.
+ * Skill presets use ~0.99–1.30 on the on-device DTW scale (competitive…beginner).
  *
  * @param threshold Deviation threshold on same scale as process_dtw_buffer()
  */
