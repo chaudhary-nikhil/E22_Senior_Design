@@ -914,9 +914,11 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'dev_id': sample.get('dev_id', sample.get('device_id', 0)),
                         'dev_role': sample.get('dev_role', sample.get('device_role', 0)),
                         'cal': sample.get('cal', {
-                            'sys': sample.get('cal_sys', 0), 'accel': sample.get('cal_accel', 0),
-                            'gyro': sample.get('cal_gyro', 0), 'mag': sample.get('cal_mag', 0)
-                        })
+                            'sys': sample.get('cal_sys', sample.get('sys_cal', 0)),
+                            'accel': sample.get('cal_accel', sample.get('accel_cal', 0)),
+                            'gyro': sample.get('cal_gyro', sample.get('gyro_cal', 0)),
+                            'mag': sample.get('cal_mag', sample.get('mag_cal', 0)),
+                        }),
                     }
                     result = processor.process_data(data_dict)
                     if result:
@@ -1192,11 +1194,11 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'dev_id': sample.get('dev_id', 0),
                         'dev_role': dev_role,
                         'cal': sample.get('cal', {
-                            'sys': sample.get('cal_sys', 0),
-                            'accel': sample.get('cal_accel', 0),
-                            'gyro': sample.get('cal_gyro', 0),
-                            'mag': sample.get('cal_mag', 0),
-                        })
+                            'sys': sample.get('cal_sys', sample.get('sys_cal', 0)),
+                            'accel': sample.get('cal_accel', sample.get('accel_cal', 0)),
+                            'gyro': sample.get('cal_gyro', sample.get('gyro_cal', 0)),
+                            'mag': sample.get('cal_mag', sample.get('mag_cal', 0)),
+                        }),
                     }
 
                     processed_json = processor.process_data(data_dict)
@@ -1368,14 +1370,15 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         if (p.get('calibration', {}).get('gyro', 0) >= 2))
         n = len(processed_data)
 
-        # Get entry angles from processor or from stroke breakdown
+        # Angle of Attack should match the per-stroke table (firmware boundaries + impact angle).
+        # processor.entry_angles uses Python-only stroke instants and often disagrees with fw counts.
         avg_entry_angle = 0
-        if hasattr(processor, 'entry_angles') and processor.entry_angles:
-            avg_entry_angle = sum(processor.entry_angles) / len(processor.entry_angles)
-        elif stroke_breakdown:
+        if stroke_breakdown:
             angles = [s['entry_angle'] for s in stroke_breakdown if s['entry_angle'] > 0]
             if angles:
                 avg_entry_angle = sum(angles) / len(angles)
+        if avg_entry_angle <= 0 and hasattr(processor, 'entry_angles') and processor.entry_angles:
+            avg_entry_angle = sum(processor.entry_angles) / len(processor.entry_angles)
 
         phase_pcts = {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0}
         if hasattr(processor, 'last_phase_pcts'):
@@ -1439,13 +1442,15 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         score = 5.0  # baseline
         # Consistency bonus (0-100% → 0-3 points)
         score += min(metrics.get('consistency', 0) / 100 * 3, 3)
-        # Low deviation bonus (0 = +2, 1 = 0, >1 = -1)
+        # DTW deviation (~1.0 good vs ideal on device; higher = worse)
         dev = metrics.get('avg_deviation', 0)
-        if dev < 0.3:
+        if dev > 0 and dev < 1.03:
             score += 2
-        elif dev < 0.7:
+        elif dev < 1.08:
             score += 1
-        elif dev > 1.0:
+        elif dev < 1.15:
+            score += 0.5
+        elif dev > 1.22:
             score -= 1
         # Entry angle quality (within 15-40 ideal range)
         angle = metrics.get('avg_entry_angle', 0)

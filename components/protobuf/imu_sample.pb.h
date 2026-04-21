@@ -47,7 +47,7 @@ typedef struct _goldenform_ImuSample {
     uint32_t mag_cal;
     /* Haptic feedback events (stretch goal) */
     bool haptic_fired; /* True if haptic was triggered at this sample */
-    float deviation_score; /* Deviation from ideal stroke (0.0 = perfect) */
+    float deviation_score; /* On-device DTW vs ideal (~1.0 typical; higher = worse) */
     /* Multi-device metadata */
     uint32_t device_id; /* Unique device identifier (from Kconfig) */
     uint32_t device_role; /* 0=right wrist, 4=left wrist */

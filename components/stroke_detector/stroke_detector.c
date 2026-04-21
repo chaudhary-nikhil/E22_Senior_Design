@@ -208,6 +208,7 @@ void stroke_detector_get_haptic_profile(stroke_detector_haptic_profile_t *out) {
   out->tier_moderate_delta = s_state.haptic_tier_moderate_delta;
   out->entry_tol_deg = s_state.entry_angle_tol_deg;
   out->skill_level = s_state.skill_level;
+  out->wingspan_cm = s_state.wingspan_cm;
 }
 
 void stroke_detector_reset_session(void) {

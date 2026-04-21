@@ -1506,6 +1506,19 @@ static esp_err_t test_buzz_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static const char *gf_skill_json_str(haptic_skill_level_t s) {
+  switch (s) {
+    case HAPTIC_SKILL_BEGINNER:
+      return "beginner";
+    case HAPTIC_SKILL_ADVANCED:
+      return "advanced";
+    case HAPTIC_SKILL_COMPETITIVE:
+      return "competitive";
+    default:
+      return "intermediate";
+  }
+}
+
 // GET /api/device_info - extended device status with stretch goal info
 static esp_err_t device_status_handler(httpd_req_t *req) {
   extern bool haptic_is_available(void);
@@ -1520,14 +1533,23 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
   }
   uint8_t opmode = bno055_get_last_opmode();
 
+  stroke_detector_haptic_profile_t hp;
+  stroke_detector_get_haptic_profile(&hp);
+  const char *skill_js = gf_skill_json_str(hp.skill_level);
+
   const char *role_str = s_wrist_left ? "wrist_left" : "wrist_right";
-  char json[1024];
+  char json[2048];
   snprintf(json, sizeof(json),
            "{\"device_id\":%d,\"device_role\":\"%s\","
            "\"haptic_available\":%s,\"ideal_loaded\":%s,"
            "\"storage_ok\":%s,"
            "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d},"
            "\"bno_opmode\":%d,"
+           "\"wingspan_cm\":%.1f,"
+           "\"skill_level\":\"%s\",\"skill_level_int\":%d,"
+           "\"haptic_profile\":{"
+           "\"threshold\":%.3f,\"tier_strong_delta\":%.3f,\"tier_moderate_delta\":%.3f,"
+           "\"entry_tol_deg\":%.1f,\"skill_level_int\":%d},"
            "\"firmware\":\"GoldenForm v1.0\",\"mcu\":\"ESP32-S3-WROOM-1\","
            "\"ssid\":\"%s\","
            "\"sample_hz\":%d,\"multi_device\":%s}",
@@ -1538,6 +1560,14 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
            storage_is_available() ? "true" : "false",
            sys, gyro, accel, mag,
            opmode,
+           hp.wingspan_cm,
+           skill_js,
+           (int)hp.skill_level,
+           hp.haptic_threshold,
+           hp.tier_strong_delta,
+           hp.tier_moderate_delta,
+           hp.entry_tol_deg,
+           (int)hp.skill_level,
            s_ap_ssid,
            CONFIG_GOLDENFORM_SAMPLE_HZ,
 #if defined(CONFIG_GOLDENFORM_MULTI_DEVICE_ENABLE)

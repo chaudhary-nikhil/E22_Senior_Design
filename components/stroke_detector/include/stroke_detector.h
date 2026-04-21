@@ -33,7 +33,7 @@ typedef struct {
   bool stroke_detected;      // True on the sample where a new stroke was detected
   bool turn_detected;        // True when a wall/turn impact is detected
   bool haptic_fired;         // True if haptic was triggered this sample
-  float deviation_score;     // DTW scale: ~1.0 typical vs ideal, higher = worse
+  float deviation_score;     // Same DTW scale as protobuf / logs (~1.0 typical vs ideal)
   float entry_angle;         // Water entry angle (degrees) from quaternion pitch
   uint32_t stroke_count;     // Running total of strokes detected
   uint32_t turn_count;       // Running total of turns detected
@@ -52,13 +52,14 @@ typedef enum {
   HAPTIC_SKILL_COMPETITIVE = 3
 } haptic_skill_level_t;
 
-/** Snapshot of haptic tuning for the current skill (for logging / tests). */
+/** Snapshot of haptic tuning for the current skill (for logging / tests / device_info). */
 typedef struct {
   float haptic_threshold;
   float tier_strong_delta;
   float tier_moderate_delta;
   float entry_tol_deg;
   haptic_skill_level_t skill_level;
+  float wingspan_cm;
 } stroke_detector_haptic_profile_t;
 
 void stroke_detector_init(void);

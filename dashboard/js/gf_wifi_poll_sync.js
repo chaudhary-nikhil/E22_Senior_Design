@@ -135,7 +135,28 @@ function _apSampleToProcessed(sample) {
         gy: Number(sample.gy ?? 0) || 0,
         gz: Number(sample.gz ?? 0) || 0,
     };
-    const cal = sample.cal && typeof sample.cal === 'object' ? sample.cal : null;
+    let cal = sample.cal && typeof sample.cal === 'object' ? sample.cal : null;
+    if (!cal) {
+        const sys = Number(sample.cal_sys ?? sample.sys_cal ?? 0) || 0;
+        const gyro = Number(sample.cal_gyro ?? sample.gyro_cal ?? 0) || 0;
+        const accel = Number(sample.cal_accel ?? sample.accel_cal ?? 0) || 0;
+        const mag = Number(sample.cal_mag ?? sample.mag_cal ?? 0) || 0;
+        if (sys || gyro || accel || mag) {
+            cal = {
+                sys: Math.min(3, Math.max(0, sys)),
+                gyro: Math.min(3, Math.max(0, gyro)),
+                accel: Math.min(3, Math.max(0, accel)),
+                mag: Math.min(3, Math.max(0, mag)),
+            };
+        }
+    } else {
+        cal = {
+            sys: Math.min(3, Math.max(0, Number(cal.sys) || 0)),
+            gyro: Math.min(3, Math.max(0, Number(cal.gyro) || 0)),
+            accel: Math.min(3, Math.max(0, Number(cal.accel) || 0)),
+            mag: Math.min(3, Math.max(0, Number(cal.mag) || 0)),
+        };
+    }
     const pos = sample.position;
     const hasPos = pos && typeof pos === 'object' && Number.isFinite(Number(pos.px));
     const out = {
@@ -174,6 +195,36 @@ function _apSampleToProcessed(sample) {
     return out;
 }
 
+/** Mean entry angle at stroke boundaries only (matches Analysis table), not all samples. */
+function _avgEntryAnglePerStroke(pd) {
+    if (!pd || !pd.length) return { mean: 0, angles: [] };
+    const useFw = pd.some((x) => (Number(x.strokes) || 0) > 0);
+    let prevSn = 0;
+    const angles = [];
+    for (let i = 0; i < pd.length; i++) {
+        const p = pd[i];
+        const sn = useFw ? (Number(p.strokes) || 0) : (Number(p.stroke_count) || 0);
+        if (sn <= prevSn) continue;
+        let angle = Number(p.entry_angle) || 0;
+        const scanLimit = Math.min(i + 120, pd.length);
+        for (let j = i + 1; j < scanLimit; j++) {
+            const q = pd[j];
+            if (useFw) {
+                if ((Number(q.strokes) || 0) > sn) break;
+            } else {
+                if ((Number(q.stroke_count) || 0) > sn) break;
+            }
+            const qa = Number(q.entry_angle) || 0;
+            if (qa > 0.05 && angle === 0) angle = qa;
+        }
+        if (angle > 0.05) angles.push(angle);
+        prevSn = sn;
+    }
+    if (!angles.length) return { mean: 0, angles: [] };
+    const mean = angles.reduce((a, b) => a + b, 0) / angles.length;
+    return { mean, angles };
+}
+
 function _metricsFromProcessed(pd) {
     const m = {
         stroke_count: 0,
@@ -187,7 +238,8 @@ function _metricsFromProcessed(pd) {
     let devSum = 0, devN = 0, angleSum = 0, angleN = 0, hN = 0;
     let lastStroke = 0;
     let maxTurns = 0;
-    for (const p of pd) {
+    for (let i = 0; i < pd.length; i++) {
+        const p = pd[i];
         const s = Number(p.strokes || 0) || 0;
         if (s > lastStroke) lastStroke = s;
         const tn = Number(p.turns || 0) || 0;
@@ -203,7 +255,8 @@ function _metricsFromProcessed(pd) {
     m.turn_count = maxTurns;
     m.haptic_count = hN;
     m.avg_deviation = devN ? devSum / devN : 0;
-    m.avg_entry_angle = angleN ? angleSum / angleN : 0;
+    const perStroke = _avgEntryAnglePerStroke(pd);
+    m.avg_entry_angle = perStroke.mean > 0 ? perStroke.mean : (angleN ? angleSum / angleN : 0);
     return m;
 }
 

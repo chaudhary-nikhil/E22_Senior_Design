@@ -37,6 +37,8 @@ static volatile uint8_t s_last_cal_sys = 0;
 static volatile uint8_t s_last_cal_gyro = 0;
 static volatile uint8_t s_last_cal_accel = 0;
 static volatile uint8_t s_last_cal_mag = 0;
+/** Successful CALIB_STAT reads that were all-zero; require several before accepting (I2C/Wi‑Fi glitches). */
+static uint8_t s_cal_allzero_streak = 0;
 /* Use NDOF for best orientation + gravity separation when available. */
 static const bno055_opmode_t GF_TARGET_OPMODE = BNO055_OPERATION_MODE_NDOF;
 static volatile uint8_t s_last_opmode = (uint8_t)BNO055_OPERATION_MODE_NDOF;
@@ -418,10 +420,36 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     out->temp = 0.0f;
   }
 
-  /* Calibration status: same mutex depth (recursive) as this function. */
+  /* Calibration status: same mutex depth (recursive) as this function.
+   * Wi‑Fi / long I2C transactions can cause transient read failures or a single
+   * frame of bogus 0x00 CALIB_STAT. Never push that into s_last_cal_* (would
+   * poison /api/device_info and trigger false "lost calibration" logs). */
   if (bno055_get_calibration_status(port, addr, &out->sys_cal, &out->gyro_cal,
                                     &out->accel_cal, &out->mag_cal) != ESP_OK) {
-    out->sys_cal = out->gyro_cal = out->accel_cal = out->mag_cal = 0;
+    out->sys_cal = s_last_cal_sys;
+    out->gyro_cal = s_last_cal_gyro;
+    out->accel_cal = s_last_cal_accel;
+    out->mag_cal = s_last_cal_mag;
+  } else {
+    const uint8_t any_cal = (uint8_t)(out->sys_cal | out->gyro_cal |
+                                      out->accel_cal | out->mag_cal);
+    const uint8_t had_cal = (uint8_t)(s_last_cal_sys | s_last_cal_gyro |
+                                      s_last_cal_accel | s_last_cal_mag);
+    if (any_cal != 0) {
+      s_cal_allzero_streak = 0;
+    } else if (had_cal != 0) {
+      /* Good I2C read but all nibbles zero — often a glitch; don't drop live cal
+       * until this repeats for several consecutive samples. */
+      s_cal_allzero_streak++;
+      if (s_cal_allzero_streak < 5) {
+        out->sys_cal = s_last_cal_sys;
+        out->gyro_cal = s_last_cal_gyro;
+        out->accel_cal = s_last_cal_accel;
+        out->mag_cal = s_last_cal_mag;
+      }
+    } else {
+      s_cal_allzero_streak = 0;
+    }
   }
   s_last_cal_sys = out->sys_cal;
   s_last_cal_gyro = out->gyro_cal;
@@ -431,10 +459,35 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
   // Heartbeat log for mode/status debugging (every 500 samples ~5s)
   static uint32_t hb_count = 0;
   if (++hb_count % 500 == 0) {
-    uint8_t mode = 0;
-    bno055_read8(port, addr, BNO055_OPR_MODE_ADDR, &mode);
-    ESP_LOGI(TAG, "Status: Mode=0x%02X, Cal: S%d G%d A%d M%d", 
-             mode, out->sys_cal, out->gyro_cal, out->accel_cal, out->mag_cal);
+    /* Never write OPR_MODE here: a bogus read (e.g. 0x10 under RF load) is common;
+     * forcing NDOF again can reset fusion and wipe calibration live. Vote with
+     * multiple reads instead; only log if all disagree with NDOF. */
+    int ndof_votes = 0;
+    uint8_t mode_last = 0;
+    for (int k = 0; k < 3; k++) {
+      (void)bno055_write8(port, addr, BNO055_PAGE_ID_ADDR, 0);
+      uint8_t m = 0;
+      if (bno055_read8(port, addr, BNO055_OPR_MODE_ADDR, &m) == ESP_OK) {
+        mode_last = m;
+        if (m == (uint8_t)GF_TARGET_OPMODE) {
+          ndof_votes++;
+        }
+      }
+      if (k < 2) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+      }
+    }
+    uint8_t mode_log = (ndof_votes >= 1) ? (uint8_t)GF_TARGET_OPMODE : mode_last;
+    if (ndof_votes == 0 &&
+        (mode_last > (uint8_t)BNO055_OPERATION_MODE_NDOF ||
+         mode_last == (uint8_t)BNO055_OPERATION_MODE_CONFIG)) {
+      ESP_LOGW(TAG,
+               "OPR_MODE reads odd (e.g. 0x%02X) — ignoring (no mode write; preserves fusion cal)",
+               (unsigned)mode_last);
+    }
+    ESP_LOGI(TAG, "Status: Mode=0x%02X, Cal: S%d G%d A%d M%d",
+             (unsigned)mode_log, out->sys_cal, out->gyro_cal, out->accel_cal,
+             out->mag_cal);
   }
 
 out:

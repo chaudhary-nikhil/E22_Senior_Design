@@ -29,11 +29,23 @@ function resetAnalysisPlaceholders() {
     if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'session';
 }
 
+/** Prefer table stroke list so the gauge matches Per-Stroke Breakdown (not Python-only means). */
+function gfAvgEntryAngleForDisplay(m) {
+    if (!m) return 0;
+    const sb = m.stroke_breakdown;
+    if (Array.isArray(sb) && sb.length) {
+        const angles = sb.map((s) => Number(s.entry_angle) || 0).filter((x) => x > 0.05);
+        if (angles.length) return angles.reduce((a, b) => a + b, 0) / angles.length;
+    }
+    return Number(m.avg_entry_angle) || 0;
+}
+
 function updateAnalysis() {
     if (!sessionMetrics) return;
     const m = sessionMetrics;
-    drawGauge('gauge-aoa', m.avg_entry_angle || 0, 0, 90, 15, 40, '°');
-    setText('aoa-value', (m.avg_entry_angle || 0).toFixed(1) + '°');
+    const aoa = gfAvgEntryAngleForDisplay(m);
+    drawGauge('gauge-aoa', aoa, 0, 90, 15, 40, '°');
+    setText('aoa-value', aoa.toFixed(1) + '°');
     setText('aoa-ideal', (m.ideal_entry_angle || 30) + '°');
 
     const pcts = m.phase_pcts || { glide: 0, catch: 0, pull: 0, recovery: 0 };
@@ -89,12 +101,13 @@ function computeFormScore(m, opts = null) {
     const dev = (opts && typeof opts.avgDeviationOverride === 'number')
         ? opts.avgDeviationOverride
         : (m.avg_deviation || 0);
-    if (dev < 0.2) s += 2;
-    else if (dev < 0.4) s += 1.5;
-    else if (dev < 0.7) s += 0.5;
-    else if (dev > 1) s -= 1;
+    /* Same scale as on-device DTW: ~1.0 good, >1.12 drift, >1.2 clearly off */
+    if (dev > 0 && dev < 1.03) s += 2;
+    else if (dev < 1.08) s += 1.5;
+    else if (dev < 1.15) s += 0.5;
+    else if (dev > 1.22) s -= 1;
 
-    const angle = m.avg_entry_angle || 0;
+    const angle = gfAvgEntryAngleForDisplay(m);
     if (angle >= 20 && angle <= 35) s += 1;
     else if (angle >= 15 && angle <= 40) s += 0.5;
     else if (angle > 0) s -= 0.5;

@@ -51,7 +51,7 @@ message ImuSample {
 
   // Haptic feedback events (stretch goal)
   bool haptic_fired = 26;       // True if haptic was triggered at this sample
-  float deviation_score = 27;   // Deviation from ideal stroke (0.0 = perfect)
+  float deviation_score = 27;   // On-device DTW vs ideal (~1.0 typical match; higher = worse)
 
   // Multi-device metadata
   uint32 device_id = 28;        // Unique device identifier (from Kconfig)
