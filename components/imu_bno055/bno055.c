@@ -157,8 +157,8 @@ esp_err_t bno055_init(int port, uint8_t addr) {
   // vTaskDelay(pdMS_TO_TICKS(650));
 
   // Hardware reset via flywired GPIO → nRESET
-  // bno055_hw_reset();
-  // vTaskDelay(pdMS_TO_TICKS(2000));
+  bno055_hw_reset();
+  vTaskDelay(pdMS_TO_TICKS(2000));
 
   // Try both I2C addresses
   uint8_t addresses[] = {addr, (addr == BNO055_ADDR_A) ? BNO055_ADDR_B
@@ -198,40 +198,40 @@ esp_err_t bno055_init(int port, uint8_t addr) {
 
   addr = working_addr;
 
-  // Reset
-  ESP_LOGI(TAG, "Resetting BNO055...");
-  err = bno055_reset(port, addr);
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "BNO055 reset failed: %s", esp_err_to_name(err));
-    return err;
-  }
+  // // Reset
+  // ESP_LOGI(TAG, "Resetting BNO055...");
+  // err = bno055_reset(port, addr);
+  // if (err != ESP_OK) {
+  //   ESP_LOGE(TAG, "BNO055 reset failed: %s", esp_err_to_name(err));
+  //   return err;
+  // }
 
   // After soft reset, chip reboots and drops off the I2C bus for ~650ms.
   // Boot time varies chip-to-chip; poll CHIP_ID until it responds rather
   // than waiting a fixed time.
-  ESP_LOGI(TAG, "Waiting for BNO055 to come back after reset...");
-  const int reset_timeout_ms = 3000;
-  const int poll_interval_ms = 20;
-  int elapsed_ms = 650;
-  bool chip_back = false;
-  // Initial grace period — chip is guaranteed unresponsive for the first ~650ms
-  vTaskDelay(pdMS_TO_TICKS(650));
-  while (elapsed_ms < reset_timeout_ms) {
-    uint8_t id = 0;
-    esp_err_t poll_err = bno055_read8(port, addr, BNO055_CHIP_ID_ADDR, &id);
-    if (poll_err == ESP_OK && id == BNO055_ID) {
-      chip_back = true;
-      ESP_LOGI(TAG, "BNO055 responsive after reset (~%d ms)", elapsed_ms);
-      break;
-    }
-    vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
-    elapsed_ms += poll_interval_ms;
-  }
-  if (!chip_back) {
-    ESP_LOGE(TAG, "BNO055 did not come back after reset within %d ms",
-             reset_timeout_ms);
-    return ESP_ERR_TIMEOUT;
-  }
+  // ESP_LOGI(TAG, "Waiting for BNO055 to come back after reset...");
+  // const int reset_timeout_ms = 3000;
+  // const int poll_interval_ms = 20;
+  // int elapsed_ms = 650;
+  // bool chip_back = false;
+  // // Initial grace period — chip is guaranteed unresponsive for the first ~650ms
+  // vTaskDelay(pdMS_TO_TICKS(650));
+  // while (elapsed_ms < reset_timeout_ms) {
+  //   uint8_t id = 0;
+  //   esp_err_t poll_err = bno055_read8(port, addr, BNO055_CHIP_ID_ADDR, &id);
+  //   if (poll_err == ESP_OK && id == BNO055_ID) {
+  //     chip_back = true;
+  //     ESP_LOGI(TAG, "BNO055 responsive after reset (~%d ms)", elapsed_ms);
+  //     break;
+  //   }
+  //   vTaskDelay(pdMS_TO_TICKS(poll_interval_ms));
+  //   elapsed_ms += poll_interval_ms;
+  // }
+  // if (!chip_back) {
+  //   ESP_LOGE(TAG, "BNO055 did not come back after reset within %d ms",
+  //            reset_timeout_ms);
+  //   return ESP_ERR_TIMEOUT;
+  // }
 
   // Set to config mode
   ESP_LOGI(TAG, "Setting BNO055 to config mode...");
@@ -239,7 +239,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "BNO055 set config mode failed: %s", esp_err_to_name(err));
     return err;
-  }
+  } 
 
   // Configure device
   ESP_LOGI(TAG, "Configuring BNO055 power mode...");

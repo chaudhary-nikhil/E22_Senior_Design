@@ -596,8 +596,8 @@ void app_main(void) {
              I2C_SCL_GPIO);
   }
 
-  bno055_hw_reset();
-  vTaskDelay(pdMS_TO_TICKS(2000));
+  // bno055_hw_reset();
+  // vTaskDelay(pdMS_TO_TICKS(2000));
 
   // Initialize BNO055 - retry up to 5 times per TIDR 1-3-1
   {
@@ -853,6 +853,8 @@ void app_main(void) {
 
     /* IMU samples → protobuf on SD; dashboard integrates via StrokeProcessor after Wi‑Fi sync.
      * (USB/UART is IDF console only — not the PDP data path.) */
+    
+
     if (bno055_available || dummy_imu_available) {
       bno055_sample_t sample;
       if (bno055_available) {
@@ -863,6 +865,33 @@ void app_main(void) {
       if (err == ESP_OK) {
         // Calibration monitoring - log status changes and announce full
         // calibration
+        if (bno055_available) {
+          static uint32_t dbg_counter = 0;
+          dbg_counter++;
+          if (dbg_counter >= (uint32_t)CONFIG_GOLDENFORM_SAMPLE_HZ) {
+            dbg_counter = 0;
+            ESP_LOGI("IMU",
+              "t=%lu ms | "
+              "A[%+6.2f %+6.2f %+6.2f] "
+              "G[%+7.2f %+7.2f %+7.2f] "
+              "M[%+7.1f %+7.1f %+7.1f] | "
+              "RPY[%+6.1f %+6.1f %+6.1f] "
+                "Q[%+5.2f %+5.2f %+5.2f %+5.2f] | "
+              "LIA[%+6.2f %+6.2f %+6.2f] "
+              "T=%.1fC | "
+              "Cal sys=%d gyro=%d acc=%d mag=%d",
+              (unsigned long)sample.t_ms,
+              sample.ax, sample.ay, sample.az,
+              sample.gx, sample.gy, sample.gz,
+              sample.mx, sample.my, sample.mz,
+              sample.roll, sample.pitch, sample.yaw,
+              sample.qw, sample.qx, sample.qy, sample.qz,
+              sample.lia_x, sample.lia_y, sample.lia_z,
+              sample.temp,
+              sample.sys_cal, sample.gyro_cal,
+              sample.accel_cal, sample.mag_cal);
+          }
+        }
         
         if (bno055_available) {
           static int8_t prev_sys = -1, prev_gyro = -1, prev_accel = -1,
@@ -939,8 +968,7 @@ void app_main(void) {
         }
 
         // When logging, also store to SD card
-        if (current_state == STATE_LOGGING && storage_available &&
-            storage_is_recording()) {
+        if (current_state == STATE_LOGGING && storage_available && storage_is_recording()) {
           if (DEBUG_SD_CARD) {
             sample.ax = 1.0f;
             sample.ay = 1.0f;
