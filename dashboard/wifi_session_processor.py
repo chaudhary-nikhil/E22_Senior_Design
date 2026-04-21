@@ -257,6 +257,22 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        elif path.startswith('/vendor/') and path.endswith('.js'):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            rel = path.lstrip('/')
+            full = os.path.normpath(os.path.join(base_dir, rel))
+            try:
+                if os.path.commonpath([base_dir, full]) != base_dir:
+                    raise ValueError('path escape')
+            except ValueError:
+                self.send_response(403)
+                self.end_headers()
+                return
+            if os.path.isfile(full):
+                self._serve_static(rel, 'application/javascript')
+            else:
+                self.send_response(404)
+                self.end_headers()
         elif path == '/process':
             self._process_wifi_session()
         elif path == '/api/user':

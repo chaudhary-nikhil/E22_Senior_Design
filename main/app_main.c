@@ -151,6 +151,7 @@ static led_strip_handle_t led_strip = NULL;
 #endif
 
 static void transition_to_syncing(void);
+static void transition_to_idle(bool after_sync);
 
 // ============== Button polling (debounced; runs in main IMU loop) ==========
 /* GPIO0 = BOOT strap: holding it low during a brownout/reset forces UART download mode.
@@ -321,10 +322,18 @@ static void registration_done_worker(void *arg) {
   vTaskDelay(pdMS_TO_TICKS(100));
   /* Registration completion is a UI/account pairing event, not a data-transfer state.
    * The dashboard may call this while we're in SYNCING/LOGGING due to timing.
-   * Always stop the registration linger blink. AP stays up until the next recording
-   * so the user can replay JSON, review status, and push config/ideal. */
+   * If SYNCING is still active, leave transfer mode and stop blink right away.
+   * AP must stay up until the next recording so the user can replay JSON, review
+   * live calibration, and push config/ideal. */
   ap_lingering = false;
-  status_led_blink_stop_and_wait();
+  if (current_state == STATE_SYNCING) {
+    transition_to_idle(false);
+  } else {
+    /* Defensive: if callback arrives while already IDLE/LOGGING, still clear
+     * both blink tasks so LEDs don't look "stuck in sync". */
+    led_blink_stop_and_wait();
+    status_led_blink_stop_and_wait();
+  }
   if (wifi_available && wifi_server_is_ap_active()) {
     ap_post_reg_keepalive = true;
     ap_post_reg_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
