@@ -7,6 +7,7 @@
 #include "bus_i2c.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
+#include "dummy_imu.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -24,6 +25,25 @@
 #include <stdio.h>
 
 #define DEBUG_SD_CARD 0
+
+/**
+ * Dummy-IMU selection flag.
+ *
+ *   1 = Force dummy IMU replay from demo_jsons. Real BNO055 init is skipped
+ *       entirely (useful for bench testing SD / Wi‑Fi / dashboard pipeline
+ *       without a working sensor).
+ *   0 = Normal operation. Try to initialize the real BNO055; if it still
+ *       fails after IMU_MAX_INIT_ATTEMPTS attempts, automatically fall
+ *       through to dummy replay so the rest of the pipeline can keep
+ *       running. This is the "safe" default: you always get samples.
+ *
+ * The automatic fallback at the end of real-IMU init runs regardless of
+ * this flag value; setting it to 1 just short-circuits the retry loop.
+ */
+#define GOLDENFORM_FORCE_DUMMY_IMU 0
+
+/** Max BNO055 init retries before falling back to the dummy IMU (TIDR 1-3-1). */
+#define IMU_MAX_INIT_ATTEMPTS 5
 
 static const char *TAG = "GOLDENFORM";
 
@@ -107,6 +127,9 @@ static uint32_t ap_post_reg_start_ms = 0;
 
 // Subsystem status
 static bool bno055_available = false;
+/* Set true when the real BNO055 is unreachable and we fall back to the static
+ * replay stream in main/dummy_imu.c (see GOLDENFORM_FORCE_DUMMY_IMU). */
+static bool dummy_imu_available = false;
 static bool storage_available = false;
 static bool wifi_available = false;
 static bool system_has_error = false;
@@ -339,6 +362,11 @@ static void transition_to_logging(void) {
 
   session_sample_count = 0;
   session_start_time = esp_timer_get_time() / 1000;
+  if (dummy_imu_available) {
+    /* Rewind the replay stream so each recorded session starts from the same
+     * dummy sample (keeps SD captures reproducible when there's no real IMU). */
+    dummy_imu_reset();
+  }
 
   stroke_detector_reset_session();
 
@@ -602,11 +630,20 @@ void app_main(void) {
              I2C_SCL_GPIO);
   }
 
-  // Initialize BNO055 - retry up to 5 times per TIDR 1-3-1
+  // Initialize BNO055. Two paths, controlled by GOLDENFORM_FORCE_DUMMY_IMU:
+  //   - Forced dummy: skip hardware init, go straight to replay samples.
+  //   - Normal: try real init IMU_MAX_INIT_ATTEMPTS times (TIDR 1-3-1); if
+  //     every attempt fails, fall back to dummy replay so the rest of the
+  //     pipeline (SD logging, Wi‑Fi sync, dashboard) still has data to chew on.
+#if GOLDENFORM_FORCE_DUMMY_IMU
+  dummy_imu_available = true;
+  ESP_LOGW(TAG,
+           "GOLDENFORM_FORCE_DUMMY_IMU=1 - skipping real BNO055 init, "
+           "replaying demo samples from demo_jsons");
+#else
   {
-    const int IMU_MAX_RETRIES = 5;
-    for (int attempt = 1; attempt <= IMU_MAX_RETRIES; attempt++) {
-      ESP_LOGI(TAG, "IMU init attempt %d/%d", attempt, IMU_MAX_RETRIES);
+    for (int attempt = 1; attempt <= IMU_MAX_INIT_ATTEMPTS; attempt++) {
+      ESP_LOGI(TAG, "IMU init attempt %d/%d", attempt, IMU_MAX_INIT_ATTEMPTS);
       err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
       if (err == ESP_OK) {
         bno055_available = true;
@@ -616,18 +653,28 @@ void app_main(void) {
       }
       ESP_LOGW(TAG, "IMU init attempt %d failed: %s", attempt,
                esp_err_to_name(err));
-      if (attempt < IMU_MAX_RETRIES) {
-        vTaskDelay(pdMS_TO_TICKS(500));
+      if (attempt < IMU_MAX_INIT_ATTEMPTS) {
+        /* Progressive backoff gives the chip more time to recover between
+         * retries (500, 1000, 1500, ... ms). */
+        int backoff_ms = 500 * attempt;
+        ESP_LOGI(TAG, "Waiting %d ms before next attempt", backoff_ms);
+        vTaskDelay(pdMS_TO_TICKS(backoff_ms));
       }
     }
     if (!bno055_available) {
-      ESP_LOGE(
-          TAG,
-          "IMU initialization failed after %d attempts - entering error state",
-          IMU_MAX_RETRIES);
-      error_led_set(true);
+      /* Automatic fallback: real IMU unreachable → replay demo samples so the
+       * SD / Wi‑Fi / dashboard path still validates end-to-end. We intentionally
+       * do NOT set error_led_set(true) here: the system is still functional on
+       * dummy data. */
+      dummy_imu_available = true;
+      ESP_LOGW(TAG,
+               "IMU initialization failed after %d attempts - falling back to "
+               "dummy replay samples from demo_jsons for SD/WiFi pipeline "
+               "validation",
+               IMU_MAX_INIT_ATTEMPTS);
     }
   }
+#endif  // GOLDENFORM_FORCE_DUMMY_IMU
 
   // Try to restore BNO055 calibration from NVS (one-shot calibration)
   if (bno055_available) {
@@ -773,6 +820,8 @@ void app_main(void) {
   ESP_LOGI(TAG, "==========================================");
   ESP_LOGI(TAG, "System Status:");
   ESP_LOGI(TAG, "  BNO055 IMU: %s", bno055_available ? "OK" : "NOT FOUND");
+  ESP_LOGI(TAG, "  Dummy IMU replay: %s",
+           dummy_imu_available ? "ENABLED" : "OFF");
   ESP_LOGI(TAG, "  SD Card: %s", storage_available ? "OK" : "NOT FOUND");
   ESP_LOGI(TAG, "  WiFi AP: %s", wifi_available ? "OK" : "FAILED");
   ESP_LOGI(TAG, "  Haptic: %s", haptic_is_available() ? "OK" : "NOT AVAILABLE");
@@ -877,14 +926,20 @@ void app_main(void) {
     // Keep AP alive after registration/sync; only stop it when recording starts.
 
     /* IMU samples → protobuf on SD; dashboard integrates via StrokeProcessor after Wi‑Fi sync.
-     * (USB/UART is IDF console only — not the PDP data path.) */
-    if (bno055_available) {
+     * (USB/UART is IDF console only — not the PDP data path.)
+     * When the real BNO055 isn't available, feed the pipeline from the static
+     * replay table so SD logging, Wi‑Fi sync, and the dashboard still work. */
+    if (bno055_available || dummy_imu_available) {
       bno055_sample_t sample;
-      err = bno055_read_sample(I2C_NUM_0, bno055_bus_addr(), &sample);
+      if (bno055_available) {
+        err = bno055_read_sample(I2C_NUM_0, bno055_bus_addr(), &sample);
+      } else {
+        err = dummy_imu_next_sample(&sample) ? ESP_OK : ESP_FAIL;
+      }
       if (err == ESP_OK) {
         // Calibration monitoring - log status changes and announce full
-        // calibration
-        {
+        // calibration (skipped on dummy replay; those cal flags are synthetic).
+        if (bno055_available) {
           static int8_t prev_sys = -1, prev_gyro = -1, prev_accel = -1,
                         prev_mag = -1;
           static bool fully_calibrated_announced = false;
