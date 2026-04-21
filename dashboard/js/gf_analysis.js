@@ -29,15 +29,51 @@ function resetAnalysisPlaceholders() {
     if (typeof idealCompareMode !== 'undefined') idealCompareMode = 'session';
 }
 
+/** Matches `HAPTIC_REASON_*` in firmware `stroke_detector.h` (1=DTW, 2=entry, 4=pull short). */
+function gfHapticReasonSummary(bits) {
+    const r = Number(bits) || 0;
+    if (!r) return '';
+    const parts = [];
+    if (r & 1) parts.push('DTW high');
+    if (r & 2) parts.push('entry angle');
+    if (r & 4) parts.push('pull short');
+    return parts.join(', ');
+}
+
+/** Prefer table stroke list so the gauge matches Per-Stroke Breakdown (not Python-only means). */
+function gfAvgEntryAngleForDisplay(m) {
+    if (!m) return 0;
+    const sb = m.stroke_breakdown;
+    if (Array.isArray(sb) && sb.length) {
+        const angles = sb.map((s) => Number(s.entry_angle) || 0).filter((x) => x > 0.05);
+        if (angles.length) return angles.reduce((a, b) => a + b, 0) / angles.length;
+    }
+    return Number(m.avg_entry_angle) || 0;
+}
+
 function updateAnalysis() {
     if (!sessionMetrics) return;
     const m = sessionMetrics;
-    drawGauge('gauge-aoa', m.avg_entry_angle || 0, 0, 90, 15, 40, '°');
-    setText('aoa-value', (m.avg_entry_angle || 0).toFixed(1) + '°');
+    const aoa = gfAvgEntryAngleForDisplay(m);
+    drawGauge('gauge-aoa', aoa, 0, 90, 15, 40, '°');
+    setText('aoa-value', aoa.toFixed(1) + '°');
     setText('aoa-ideal', (m.ideal_entry_angle || 30) + '°');
 
-    const pcts = m.phase_pcts || { glide: 0, catch: 0, pull: 0, recovery: 0 };
-    const total = (pcts.glide || 0) + (pcts.catch || 0) + (pcts.pull || 0) + (pcts.recovery || 0) || 1;
+    let pcts = { ...(m.phase_pcts || { glide: 0, catch: 0, pull: 0, recovery: 0 }) };
+    let total =
+        (pcts.glide || 0) + (pcts.catch || 0) + (pcts.pull || 0) + (pcts.recovery || 0);
+    if (total < 0.5 && typeof gfComputePhasePctsFromProcessed === 'function' &&
+        typeof processedData !== 'undefined' && processedData && processedData.length > 10) {
+        const syn = gfComputePhasePctsFromProcessed();
+        const synTotal =
+            (syn.glide || 0) + (syn.catch || 0) + (syn.pull || 0) + (syn.recovery || 0);
+        if (synTotal >= 0.5) {
+            pcts = syn;
+            m.phase_pcts = { ...syn };
+            total = synTotal;
+        }
+    }
+    if (total < 0.5) total = 1;
     setWidth('phase-glide', (pcts.glide || 0) / total * 100);
     setWidth('phase-catch', (pcts.catch || 0) / total * 100);
     setWidth('phase-pull', (pcts.pull || 0) / total * 100);
@@ -89,12 +125,13 @@ function computeFormScore(m, opts = null) {
     const dev = (opts && typeof opts.avgDeviationOverride === 'number')
         ? opts.avgDeviationOverride
         : (m.avg_deviation || 0);
-    if (dev < 0.2) s += 2;
-    else if (dev < 0.4) s += 1.5;
-    else if (dev < 0.7) s += 0.5;
-    else if (dev > 1) s -= 1;
+    /* Same scale as on-device DTW: ~1.0 good, >1.12 drift, >1.2 clearly off */
+    if (dev > 0 && dev < 1.03) s += 2;
+    else if (dev < 1.08) s += 1.5;
+    else if (dev < 1.15) s += 0.5;
+    else if (dev > 1.22) s -= 1;
 
-    const angle = m.avg_entry_angle || 0;
+    const angle = gfAvgEntryAngleForDisplay(m);
     if (angle >= 20 && angle <= 35) s += 1;
     else if (angle >= 15 && angle <= 40) s += 0.5;
     else if (angle > 0) s -= 0.5;
@@ -193,6 +230,7 @@ function buildStrokeTable() {
                 time: Math.max(0, p.timestamp_s - (startTime / 1000)).toFixed(1),
                 angle: p.entry_angle || 0,
                 haptic: p.haptic_fired,
+                haptic_reason: Number(p.haptic_reason) || 0,
                 deviation: p.deviation || 0
             };
         });
@@ -206,11 +244,13 @@ function buildStrokeTable() {
             let angle = p.entry_angle || 0;
             let deviation = p.deviation_score || 0;
             let haptic = p.haptic_fired;
+            let hapticReason = Number(p.haptic_reason) || 0;
             const scanLimit = Math.min(start + 120, end + 120, processedData.length);
             for (let j = start + 1; j <= Math.min(end, scanLimit - 1); j++) {
                 const q = processedData[j];
                 if (q.deviation_score > 0 && deviation === 0) deviation = q.deviation_score;
                 if (q.haptic_fired) haptic = true;
+                hapticReason |= Number(q.haptic_reason) || 0;
                 if (q.entry_angle > 0 && angle === 0) angle = q.entry_angle;
             }
             const sk = sb.streamKey || '';
@@ -222,6 +262,7 @@ function buildStrokeTable() {
                 time: Math.max(0, (p.timestamp - startTime) / 1000).toFixed(1),
                 angle,
                 haptic,
+                haptic_reason: hapticReason,
                 deviation
             });
         }
@@ -233,12 +274,14 @@ function buildStrokeTable() {
                 let angle = p.entry_angle || 0;
                 let deviation = p.deviation_score || 0;
                 let haptic = p.haptic_fired;
+                let hapticReason = Number(p.haptic_reason) || 0;
                 const scanLimit = Math.min(i + 120, processedData.length);
                 for (let j = i + 1; j < scanLimit; j++) {
                     const q = processedData[j];
                     if (q.stroke_count > p.stroke_count) break;
                     if (q.deviation_score > 0 && deviation === 0) deviation = q.deviation_score;
                     if (q.haptic_fired) haptic = true;
+                    hapticReason |= Number(q.haptic_reason) || 0;
                     if (q.entry_angle > 0 && angle === 0) angle = q.entry_angle;
                 }
                 rows.push({
@@ -249,6 +292,7 @@ function buildStrokeTable() {
                     time: Math.max(0, (p.timestamp - startTime) / 1000).toFixed(1),
                     angle,
                     haptic,
+                    haptic_reason: hapticReason,
                     deviation
                 });
                 lastCount = p.stroke_count;
@@ -263,17 +307,27 @@ function buildStrokeTable() {
             : null;
         const fwDev = r.deviation || 0;
         const fwHaptic = !!r.haptic;
+        const hr = Number(r.haptic_reason) || 0;
+        const reasonText = gfHapticReasonSummary(hr);
         const clientDev = vi ? vi.deviation : 0;
         const devShow = selfBaseline
             ? fwDev
             : (fwDev > 0 ? fwDev : (vi ? clientDev : 0));
-        const cueTitle = fwHaptic
-            ? ('Band cue fired (haptic) · row deviation ' + devShow.toFixed(3))
-            : 'No band cue on this stroke (⚡ only when the wearable buzzed)';
-        const rowClass = fwHaptic ? 'row-haptic' : '';
-        const cueCell = fwHaptic
-            ? `<span class="haptic-marker" title="${String(cueTitle).replace(/"/g, '&quot;')}">⚡</span>`
-            : `<span style="color:var(--text3)" title="${String(cueTitle).replace(/"/g, '&quot;')}">—</span>`;
+        let cueTitle;
+        let rowClass = '';
+        let cueCell;
+        if (fwHaptic) {
+            cueTitle = 'Band buzzed (haptic)' + (reasonText ? ': ' + reasonText : '') + ' · deviation ' + devShow.toFixed(3);
+            rowClass = 'row-haptic';
+            cueCell = `<span class="haptic-marker" title="${String(cueTitle).replace(/"/g, '&quot;')}">⚡</span>`;
+        } else if (hr > 0) {
+            cueTitle = 'Firmware flagged: ' + reasonText + '. ◆ = coaching signal in data; motor may stay silent (warmup, haptics off, or threshold). Deviation ' + devShow.toFixed(3);
+            rowClass = 'row-coach-cue';
+            cueCell = `<span class="haptic-reason-marker" title="${String(cueTitle).replace(/"/g, '&quot;')}">◆</span>`;
+        } else {
+            cueTitle = 'No band cue — ⚡ only when the motor fired; ◆ when the wearable set a haptic_reason flag (sync after firmware update).';
+            cueCell = `<span style="color:var(--text3)" title="${String(cueTitle).replace(/"/g, '&quot;')}">—</span>`;
+        }
         let devCellHtml;
         let devClass = 'text-green';
         if (selfBaseline && fwDev <= 0) {

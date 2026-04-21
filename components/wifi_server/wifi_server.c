@@ -431,6 +431,8 @@ static esp_err_t wifi_init_softap(void) {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
+  /* AP + large uploads: modem sleep can drop stations mid-transfer on some chips. */
+  (void)esp_wifi_set_ps(WIFI_PS_NONE);
 
   /* Lower peak RF current slightly — reduces USB brownouts when AP first comes up (avoids mistaken "reset"). */
   {
@@ -453,8 +455,9 @@ static esp_err_t start_http_server(void) {
   config.lru_purge_enable = true;
   config.max_uri_handlers = 16; // Increased to accommodate all endpoints
   config.stack_size = 8192; // Larger stack for JSON generation
-  config.recv_wait_timeout = 10;
-  config.send_wait_timeout = 10;
+  /* Longer waits: data.json can stall on SD reads; short timeouts look like disconnects. */
+  config.recv_wait_timeout = 30;
+  config.send_wait_timeout = 120;
 
   if (httpd_start(&server, &config) == ESP_OK) {
     httpd_register_uri_handler(server, &root_uri);
@@ -1043,7 +1046,7 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
               "\"qw\":%.4f,\"qx\":%.4f,\"qy\":%.4f,\"qz\":%.4f,"
               "\"cal\":{\"sys\":%u,\"gyro\":%u,\"accel\":%u,\"mag\":%u},"
               "\"haptic\":%u,\"deviation\":%.3f,\"haptic_reason\":%u,\"pull_duration_ms\":%.1f,"
-              "\"strokes\":%u,\"turns\":%u,"
+              "\"strokes\":%u,"
               "\"dev_id\":%u,\"dev_role\":%u,"
               "\"entry_angle\":%.2f,\"breath_count\":%u}",
               (sess_sent > 0) ? "," : "", (unsigned)s->t_ms, s->ax, s->ay,
@@ -1051,7 +1054,7 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
               s->qx, s->qy, s->qz, (unsigned)s->sys_cal, (unsigned)s->gyro_cal,
               (unsigned)s->accel_cal, (unsigned)s->mag_cal,
               (unsigned)s->haptic_fired, s->deviation_score, (unsigned)s->haptic_reason, s->pull_duration_ms,
-              (unsigned)s->stroke_count, (unsigned)s->turn_count,
+              (unsigned)s->stroke_count,
               (unsigned)s->device_id, (unsigned)s->device_role,
               s->entry_angle, (unsigned)s->breath_count);
 
@@ -1065,7 +1068,9 @@ static esp_err_t data_json_handler(httpd_req_t *req) {
           }
           sess_sent++;
           total_sent++;
-          if (total_sent % 100 == 0)
+          /* Rare yield so the HTTP task doesn't starve the IDLE watchdog on huge exports;
+           * keep this sparse — each 1 ms costs ~1% of wall time at 100 Hz sampling. */
+          if (total_sent % 400 == 0)
             vTaskDelay(pdMS_TO_TICKS(1));
         }
       }
@@ -1410,8 +1415,13 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
   const char *skill = skill_str ? skill_str->valuestring : "intermediate";
 
   int skill_val = 1; // intermediate
-  if (strcmp(skill, "beginner") == 0) skill_val = 0;
-  else if (strcmp(skill, "advanced") == 0) skill_val = 2;
+  if (strcmp(skill, "beginner") == 0) {
+    skill_val = 0;
+  } else if (strcmp(skill, "advanced") == 0) {
+    skill_val = 2;
+  } else if (strcmp(skill, "competitive") == 0) {
+    skill_val = 3;
+  }
 
   if (role_json && cJSON_IsString(role_json) && role_json->valuestring) {
     esp_err_t re = goldenform_set_device_role_str(role_json->valuestring);
@@ -1424,8 +1434,8 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
 
   cJSON_Delete(root);
 
-  // Apply to stroke detector
-  stroke_detector_set_user_params(w_cm, skill_val);
+  // Apply to stroke detector: 0 beginner, 1 intermediate, 2 advanced, 3 competitive
+  stroke_detector_set_user_params(w_cm, (haptic_skill_level_t)skill_val);
 
   // Save to NVS
   nvs_handle_t nvs;
@@ -1435,7 +1445,8 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
     nvs_set_blob(nvs, "user_cfg_s", &skill_val, sizeof(skill_val));
     nvs_commit(nvs);
     nvs_close(nvs);
-    ESP_LOGI(TAG, "User config saved to NVS: wingspan=%.1f, skill=%d", w_cm, skill_val);
+    ESP_LOGI(TAG, "User config saved to NVS: wingspan=%.1f, height=%.1f, skill=%d", w_cm,
+             h_cm, skill_val);
   }
 
   const char *resp = "{\"status\":\"ok\"}";
@@ -1445,7 +1456,7 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-/** POST /api/registration_done — dashboard calls after saving the wearable; stops registration LED linger + AP. */
+/** POST /api/registration_done — dashboard calls after setup/calibration (or deferred); stops registration blink; AP stays up. */
 static esp_err_t registration_done_post_handler(httpd_req_t *req) {
   int total_len = req->content_len;
   if (total_len > 2048) {
@@ -1501,27 +1512,61 @@ static esp_err_t test_buzz_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static const char *gf_skill_json_str(haptic_skill_level_t s) {
+  switch (s) {
+    case HAPTIC_SKILL_BEGINNER:
+      return "beginner";
+    case HAPTIC_SKILL_ADVANCED:
+      return "advanced";
+    case HAPTIC_SKILL_COMPETITIVE:
+      return "competitive";
+    default:
+      return "intermediate";
+  }
+}
+
 // GET /api/device_info - extended device status with stretch goal info
 static esp_err_t device_status_handler(httpd_req_t *req) {
   extern bool haptic_is_available(void);
   extern bool stroke_detector_has_ideal(void);
-  extern void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
-                                         uint8_t *mag);
-  extern uint8_t bno055_get_last_opmode(void);
 
-  /* Same cal nibbles as the IMU sampling loop (serial), not a second I2C read (avoids contention). */
+  /* Live I2C read (serialized with the IMU loop) so the first poll after AP start is not stuck at 0. */
   uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
-  bno055_get_last_calibration(&sys, &gyro, &accel, &mag);
+  uint8_t bus = bno055_bus_addr();
+  if (bno055_get_calibration_status(I2C_NUM_0, bus, &sys, &gyro, &accel, &mag) !=
+      ESP_OK) {
+    bno055_get_last_calibration(&sys, &gyro, &accel, &mag);
+  }
   uint8_t opmode = bno055_get_last_opmode();
 
+  stroke_detector_haptic_profile_t hp;
+  stroke_detector_get_haptic_profile(&hp);
+  const char *skill_js = gf_skill_json_str(hp.skill_level);
+
+  float height_cm = 180.0f;
+  {
+    nvs_handle_t nvs_di;
+    size_t rs = sizeof(float);
+    if (nvs_open("goldenform", NVS_READONLY, &nvs_di) == ESP_OK) {
+      if (nvs_get_blob(nvs_di, "user_cfg_h", &height_cm, &rs) != ESP_OK)
+        height_cm = 180.0f;
+      nvs_close(nvs_di);
+    }
+  }
+
   const char *role_str = s_wrist_left ? "wrist_left" : "wrist_right";
-  char json[1024];
+  char json[2048];
   snprintf(json, sizeof(json),
            "{\"device_id\":%d,\"device_role\":\"%s\","
            "\"haptic_available\":%s,\"ideal_loaded\":%s,"
            "\"storage_ok\":%s,"
            "\"cal\":{\"sys\":%d,\"gyro\":%d,\"accel\":%d,\"mag\":%d},"
            "\"bno_opmode\":%d,"
+           "\"wingspan_cm\":%.1f,\"height_cm\":%.1f,"
+           "\"skill_level\":\"%s\",\"skill_level_int\":%d,"
+           "\"haptic_profile\":{"
+           "\"threshold\":%.3f,\"tier_strong_delta\":%.3f,\"tier_moderate_delta\":%.3f,"
+           "\"entry_tol_deg\":%.1f,\"skill_level_int\":%d},"
            "\"firmware\":\"GoldenForm v1.0\",\"mcu\":\"ESP32-S3-WROOM-1\","
            "\"ssid\":\"%s\","
            "\"sample_hz\":%d,\"multi_device\":%s}",
@@ -1532,6 +1577,15 @@ static esp_err_t device_status_handler(httpd_req_t *req) {
            storage_is_available() ? "true" : "false",
            sys, gyro, accel, mag,
            opmode,
+           hp.wingspan_cm,
+           height_cm,
+           skill_js,
+           (int)hp.skill_level,
+           hp.haptic_threshold,
+           hp.tier_strong_delta,
+           hp.tier_moderate_delta,
+           hp.entry_tol_deg,
+           (int)hp.skill_level,
            s_ap_ssid,
            CONFIG_GOLDENFORM_SAMPLE_HZ,
 #if defined(CONFIG_GOLDENFORM_MULTI_DEVICE_ENABLE)

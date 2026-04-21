@@ -16,6 +16,10 @@ import threading
 import queue
 import urllib.parse
 import time
+import io
+
+# Max upload for /api/stroke_video_track (multipart video)
+STROKE_VIDEO_MAX_BYTES = 120 * 1024 * 1024
 
 sys.path.insert(0, os.path.dirname(__file__))
 from simple_imu_visualizer import StrokeProcessor, align_sessions_by_hop, land_demo_enabled
@@ -226,15 +230,20 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         return u
 
     def do_GET(self):
-        if self.path == '/' or self.path == '/integrated_session_viewer.html':
+        # Request line can include ?query; browsers may add trailing slash — normalize for routing.
+        path = self.path.split('?', 1)[0]
+        if len(path) > 1 and path.endswith('/'):
+            path = path[:-1]
+
+        if path == '/' or path == '/integrated_session_viewer.html':
             self._serve_html()
-        elif self.path == '/app.css':
+        elif path == '/app.css':
             self._serve_static('app.css', 'text/css')
-        elif self.path == '/app.js':
+        elif path == '/app.js':
             self._serve_static('app.js', 'application/javascript')
-        elif self.path.startswith('/js/') and self.path.endswith('.js'):
+        elif path.startswith('/js/') and path.endswith('.js'):
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            rel = self.path.lstrip('/')
+            rel = path.lstrip('/')
             full = os.path.normpath(os.path.join(base_dir, rel))
             try:
                 if os.path.commonpath([base_dir, full]) != base_dir:
@@ -248,32 +257,36 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
-        elif self.path == '/process':
+        elif path == '/process':
             self._process_wifi_session()
-        elif self.path == '/api/user':
+        elif path == '/api/user':
             self._get_user_profile()
-        elif self.path == '/api/ideal_stroke':
+        elif path == '/api/ideal_stroke':
             self._get_ideal_stroke()
-        elif self.path == '/api/ideal_stroke/set_from_stroke':
+        elif path == '/api/ideal_stroke/set_from_stroke':
             self._set_from_stroke_api()
-        elif self.path == '/api/device_info':
+        elif path == '/api/device_info':
             self._get_device_info()
-        elif self.path.startswith('/api/events'):
+        elif path.startswith('/api/events'):
             self._sse_events()
-        elif self.path == '/api/devices':
+        elif path == '/api/devices':
             self._get_devices()
-        elif self.path == '/api/sessions':
+        elif path == '/api/sessions':
             self._get_sessions()
-        elif self.path.startswith('/api/sessions/'):
-            parts = self.path.split('/')
+        elif path.startswith('/api/sessions/'):
+            parts = path.split('/')
             if len(parts) >= 4 and parts[3].isdigit():
                 self._get_session_detail(int(parts[3]))
             else:
                 self._get_sessions()
-        elif self.path.startswith('/api/progress'):
+        elif path.startswith('/api/progress'):
             self._get_progress()
-        elif self.path == '/api/bootstrap':
+        elif path == '/api/bootstrap':
             self._get_bootstrap()
+        elif path == '/stroke_video_calibration.html':
+            self._serve_static('stroke_video_calibration.html', 'text/html')
+        elif path == '/hand_track_viewer.html':
+            self._serve_static('hand_track_viewer.html', 'text/html')
         else:
             self.send_response(404)
             self.end_headers()
@@ -314,6 +327,8 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._merge_sessions()
         elif path == '/api/coaching/insights':
             self._coaching_insights()
+        elif path == '/api/stroke_video_track':
+            self._stroke_video_track_api()
         else:
             self.send_response(404)
             self.end_headers()
@@ -394,7 +409,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     height_cm=float(body.get('height_cm', 0) or 0),
                     wingspan_cm=float(body.get('wingspan_cm', 0) or 0),
                     skill_level=str(body.get('skill_level', 'beginner') or 'beginner'),
-                    pool_length=float(body.get('pool_length', 25) or 25),
                 )
             except ValueError as e:
                 self._send_json({'error': str(e)}, 400)
@@ -444,8 +458,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 kw['wingspan_cm'] = float(body.get('wingspan_cm') or 0)
             if 'skill_level' in body:
                 kw['skill_level'] = body.get('skill_level')
-            if 'pool_length' in body:
-                kw['pool_length'] = float(body.get('pool_length') or 25)
             db.update_user_profile(u['id'], **kw)
             user = db.get_user_by_id(u['id'])
             _sse_publish('profile', {'user_id': u['id']})
@@ -481,7 +493,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             self._send_json({'error': str(e)}, 500)
 
     def _notify_registration_done(self):
-        """Forward to ESP32 so it clears registration linger + stops status LED + closes AP."""
+        """Forward to ESP32: stop setup/status LED blink. AP stays up (replay + live device_info)."""
         try:
             req = urllib.request.Request(
                 f'{ESP32_URL}/api/registration_done',
@@ -892,16 +904,22 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'mx': mx, 'my': my, 'mz': mz,
                         'gx': sample.get('gx', 0), 'gy': sample.get('gy', 0), 'gz': sample.get('gz', 0),
                         'qw': sample.get('qw', 1), 'qx': sample.get('qx', 0), 'qy': sample.get('qy', 0), 'qz': sample.get('qz', 0),
+                        'haptic_fired': sample.get('haptic', sample.get('haptic_fired', False)),
                         'haptic': sample.get('haptic', sample.get('haptic_fired', False)),
+                        'haptic_reason': int(sample.get('haptic_reason', 0) or 0),
+                        'pull_duration_ms': float(sample.get('pull_duration_ms', 0) or 0),
                         'deviation': sample.get('deviation', sample.get('deviation_score', 0.0)),
+                        'deviation_score': sample.get('deviation', sample.get('deviation_score', 0.0)),
                         'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
                         'entry_angle': float(sample.get('entry_angle', 0) or 0),
                         'dev_id': sample.get('dev_id', sample.get('device_id', 0)),
                         'dev_role': sample.get('dev_role', sample.get('device_role', 0)),
                         'cal': sample.get('cal', {
-                            'sys': sample.get('cal_sys', 0), 'accel': sample.get('cal_accel', 0),
-                            'gyro': sample.get('cal_gyro', 0), 'mag': sample.get('cal_mag', 0)
-                        })
+                            'sys': sample.get('cal_sys', sample.get('sys_cal', 0)),
+                            'accel': sample.get('cal_accel', sample.get('accel_cal', 0)),
+                            'gyro': sample.get('cal_gyro', sample.get('gyro_cal', 0)),
+                            'mag': sample.get('cal_mag', sample.get('mag_cal', 0)),
+                        }),
                     }
                     result = processor.process_data(data_dict)
                     if result:
@@ -1023,6 +1041,89 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get('Content-Length', 0))
         return json.loads(self.rfile.read(length)) if length > 0 else {}
 
+    def _stroke_video_track_api(self):
+        """POST multipart: video file + optional hand, stride, smooth → JSON hand track (MediaPipe)."""
+        u = self._current_user()
+        if not u:
+            self._send_json({
+                'error': 'Sign in required. Open the main app, log in, then use this page.',
+                'auth_required': True,
+            }, 401)
+            return
+        ctype = (self.headers.get('Content-Type') or '').lower()
+        if 'multipart/form-data' not in ctype:
+            self._send_json({'error': 'Use multipart/form-data with field "video".'}, 400)
+            return
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0 or length > STROKE_VIDEO_MAX_BYTES:
+            self._send_json({
+                'error': f'Video size must be 1 … {STROKE_VIDEO_MAX_BYTES // (1024 * 1024)} MB.',
+            }, 400)
+            return
+        body = self.rfile.read(length)
+        try:
+            import cgi
+            fp = io.BytesIO(body)
+            environ = {
+                'REQUEST_METHOD': 'POST',
+                'CONTENT_TYPE': self.headers.get('Content-Type', ''),
+                'CONTENT_LENGTH': str(length),
+            }
+            form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+        except Exception as e:
+            self._send_json({'error': f'Multipart parse failed: {e}'}, 400)
+            return
+
+        file_item = None
+        if 'video' in form:
+            file_item = form['video']
+        elif 'file' in form:
+            file_item = form['file']
+        if file_item is None or not getattr(file_item, 'file', None):
+            self._send_json({'error': 'Missing file field "video".'}, 400)
+            return
+        raw = file_item.file.read()
+        if not raw:
+            self._send_json({'error': 'Empty file.'}, 400)
+            return
+
+        hand = (form.getfirst('hand') or 'auto').strip()
+        try:
+            stride = max(1, int(form.getfirst('stride') or '1'))
+        except (TypeError, ValueError):
+            stride = 1
+        try:
+            smooth = max(0, int(form.getfirst('smooth') or '0'))
+        except (TypeError, ValueError):
+            smooth = 0
+
+        try:
+            import stroke_video_track as svt
+            out = svt.process_video_bytes(
+                raw,
+                hand_preference=hand,
+                frame_stride=stride,
+                smooth_window=smooth,
+                landmark_index=0,
+            )
+        except RuntimeError as e:
+            self._send_json({
+                'ok': False,
+                'error': str(e),
+                'hint': 'Install: pip install -r requirements-calibration.txt',
+            }, 503)
+            return
+        except Exception as e:
+            self._send_json({'ok': False, 'error': str(e)}, 500)
+            return
+
+        if isinstance(out, dict) and out.get('ok'):
+            out['requested_by_user_id'] = u['id']
+        self._send_json(out, 200 if (isinstance(out, dict) and out.get('ok')) else 422)
+
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode()
         try:
@@ -1041,7 +1142,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             req = urllib.request.Request(url)
             req.add_header('Accept', 'application/json')
 
-            with urllib.request.urlopen(req, timeout=8) as response:
+            with urllib.request.urlopen(req, timeout=120) as response:
                 result = json.loads(response.read().decode('utf-8'))
 
             sessions_raw = result.get('sessions', [])
@@ -1088,17 +1189,19 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         'qy': sample.get('qy', 0),
                         'qz': sample.get('qz', 0),
                         'haptic_fired': sample.get('haptic', sample.get('haptic_fired', False)),
+                        'haptic_reason': int(sample.get('haptic_reason', 0) or 0),
+                        'pull_duration_ms': float(sample.get('pull_duration_ms', 0) or 0),
                         'deviation_score': sample.get('deviation', sample.get('deviation_score', 0.0)),
                         'strokes': sample.get('strokes', sample.get('stroke_count', 0)),
                         'entry_angle': float(sample.get('entry_angle', 0) or 0),
                         'dev_id': sample.get('dev_id', 0),
                         'dev_role': dev_role,
                         'cal': sample.get('cal', {
-                            'sys': sample.get('cal_sys', 0),
-                            'accel': sample.get('cal_accel', 0),
-                            'gyro': sample.get('cal_gyro', 0),
-                            'mag': sample.get('cal_mag', 0),
-                        })
+                            'sys': sample.get('cal_sys', sample.get('sys_cal', 0)),
+                            'accel': sample.get('cal_accel', sample.get('accel_cal', 0)),
+                            'gyro': sample.get('cal_gyro', sample.get('gyro_cal', 0)),
+                            'mag': sample.get('cal_mag', sample.get('mag_cal', 0)),
+                        }),
                     }
 
                     processed_json = processor.process_data(data_dict)
@@ -1190,7 +1293,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
     def _calculate_stroke_metrics(self, processed_data, processor):
         if len(processed_data) == 0:
             return {
-                'stroke_count': 0, 'turn_count': 0, 'duration': 0, 'stroke_rate': 0,
+                'stroke_count': 0, 'duration': 0, 'stroke_rate': 0,
                 'avg_stroke_time': 0, 'consistency': 0, 'peak_accel_avg': 0,
                 'avg_entry_angle': 0, 'ideal_entry_angle': 30.0,
                 'phase_pcts': {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0},
@@ -1233,6 +1336,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
             angle = float(p.get('entry_angle', 0) or 0)
             dev = float(p.get('deviation_score', 0) or 0)
             haptic = bool(p.get('haptic_fired', False))
+            haptic_reason = int(p.get('haptic_reason', 0) or 0)
             scan_limit = min(idx + 120, len(processed_data))
             for j in range(idx + 1, scan_limit):
                 q = processed_data[j]
@@ -1247,6 +1351,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                     dev = qdev
                 if q.get('haptic_fired', False):
                     haptic = True
+                haptic_reason |= int(q.get('haptic_reason', 0) or 0)
                 qa = float(q.get('entry_angle', 0) or 0)
                 if qa > 0.05 and angle == 0:
                     angle = qa
@@ -1255,6 +1360,7 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                 'timestamp_s': t_ms / 1000.0,
                 'entry_angle': angle,
                 'haptic_fired': haptic,
+                'haptic_reason': haptic_reason,
                 'deviation': dev
             })
 
@@ -1270,14 +1376,15 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
                         if (p.get('calibration', {}).get('gyro', 0) >= 2))
         n = len(processed_data)
 
-        # Get entry angles from processor or from stroke breakdown
+        # Angle of Attack should match the per-stroke table (firmware boundaries + impact angle).
+        # processor.entry_angles uses Python-only stroke instants and often disagrees with fw counts.
         avg_entry_angle = 0
-        if hasattr(processor, 'entry_angles') and processor.entry_angles:
-            avg_entry_angle = sum(processor.entry_angles) / len(processor.entry_angles)
-        elif stroke_breakdown:
+        if stroke_breakdown:
             angles = [s['entry_angle'] for s in stroke_breakdown if s['entry_angle'] > 0]
             if angles:
                 avg_entry_angle = sum(angles) / len(angles)
+        if avg_entry_angle <= 0 and hasattr(processor, 'entry_angles') and processor.entry_angles:
+            avg_entry_angle = sum(processor.entry_angles) / len(processor.entry_angles)
 
         phase_pcts = {'glide': 0, 'catch': 0, 'pull': 0, 'recovery': 0}
         if hasattr(processor, 'last_phase_pcts'):
@@ -1302,7 +1409,6 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
 
         metrics = {
             'stroke_count': eff_strokes,
-            'turn_count': processor.turn_count,
             'duration': duration,
             'stroke_rate': (eff_strokes / duration * 60) if duration > 0 else 0,
             'avg_stroke_time': 0,
@@ -1341,13 +1447,15 @@ class WiFiSessionHandler(BaseHTTPRequestHandler):
         score = 5.0  # baseline
         # Consistency bonus (0-100% → 0-3 points)
         score += min(metrics.get('consistency', 0) / 100 * 3, 3)
-        # Low deviation bonus (0 = +2, 1 = 0, >1 = -1)
+        # DTW deviation (~1.0 good vs ideal on device; higher = worse)
         dev = metrics.get('avg_deviation', 0)
-        if dev < 0.3:
+        if dev > 0 and dev < 1.03:
             score += 2
-        elif dev < 0.7:
+        elif dev < 1.08:
             score += 1
-        elif dev > 1.0:
+        elif dev < 1.15:
+            score += 0.5
+        elif dev > 1.22:
             score -= 1
         # Entry angle quality (within 15-40 ideal range)
         angle = metrics.get('avg_entry_angle', 0)

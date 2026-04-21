@@ -1554,6 +1554,15 @@ body > * {
   background: rgba(239, 68, 68, 0.06);
 }
 
+.row-coach-cue {
+  background: rgba(234, 179, 8, 0.07);
+}
+
+.haptic-reason-marker {
+  color: var(--amber);
+  font-size: 1.05em;
+}
+
 .data-table tr.analysis-row-selected {
   box-shadow: inset 3px 0 0 var(--gold);
   background: rgba(197, 165, 90, 0.1);

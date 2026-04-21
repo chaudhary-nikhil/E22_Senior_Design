@@ -280,7 +280,7 @@ def _build_prompt(
         "If deviation vs ideal is high, relate it to catch/pull line and rhythm — not vague motivation.",
         "",
         f"Session: {sc} strokes, {dur:.1f}s, stroke rate ~{rate:.1f}/min, consistency ~{cons:.0f}%.",
-        f"Average entry angle ~{avg_ang:.1f}°. Firmware/session avg deviation field: {avg_dev:.3f}.",
+        f"Average entry angle ~{avg_ang:.1f}°. Session avg DTW deviation (on-band scale, ~1.0 = typical vs ideal): {avg_dev:.3f}.",
     ]
     if avg_vs_ideal_f is not None:
         lines.append(f"App-computed average deviation vs loaded ideal shape: {avg_vs_ideal_f:.3f}.")

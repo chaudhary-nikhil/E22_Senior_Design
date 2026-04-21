@@ -16,28 +16,21 @@ function limitTimelineEvents(events, max) {
 }
 
 function computeStrokeBoundaries() {
-    strokeBoundaries = [];
     hapticEvents = [];
-    refreshStrokeFieldMode();
-    let prevSk = null;
-    let prevSn = -1;
+    /* Notches come from the single canonical source (computeCanonicalStrokeBoundaries)
+     * so the timeline, summary card, and checkpoint warp can never disagree. */
+    const canon = (typeof computeCanonicalStrokeBoundaries === 'function')
+        ? computeCanonicalStrokeBoundaries()
+        : [];
+    strokeBoundaries = canon.map(b => ({
+        index: b.index,
+        strokeNum: b.strokeNum,
+        streamKey: b.streamKey,
+        label: formatStreamStrokeLabel(processedData[b.index], b.strokeNum)
+    }));
     for (let i = 0; i < processedData.length; i++) {
         const d = processedData[i];
-        const sk = getStreamKey(d);
-        const sn = strokeNumAt(d);
-        if (sn > 0) {
-            const isNewStroke = (prevSn < 0) || (sk !== prevSk) || (sk === prevSk && sn > prevSn);
-            if (isNewStroke) {
-                strokeBoundaries.push({
-                    index: i,
-                    strokeNum: sn,
-                    streamKey: sk,
-                    label: formatStreamStrokeLabel(d, sn)
-                });
-                prevSk = sk;
-                prevSn = sn;
-            }
-        }
+        if (!d) continue;
         // Leading edge only: firmware may leave haptic_fired true across many consecutive samples.
         // One marker per buzz event keeps the timeline usable and avoids DOM / layout meltdown.
         if (d.haptic_fired && (i === 0 || !processedData[i - 1].haptic_fired)) {

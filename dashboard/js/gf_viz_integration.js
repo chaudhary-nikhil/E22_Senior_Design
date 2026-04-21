@@ -57,6 +57,66 @@ const GF_0401_START_A = 0.25;   // m/s²  --  accel_mag to start integration
 const GF_0401_END_GY = 0.2;
 const GF_0401_END_A = 0.25;
 const GF_0401_MIN_ON_MS = 500;
+/** If Python batch replay never opens the motion gate, position stays ~0 — still "valid" fields. */
+const GF_POS_DEGENERATE_SPAN_M = 1e-5;
+/** HPF time constant (s) on world-frame accel. Subtracts a slow EMA baseline to remove
+ *  residual gravity / quaternion-yaw-drift before double-integration. fc ≈ 0.08 Hz — well
+ *  below the 0.4-1 Hz stroke band, so real pull accelerations pass through. Prevents the
+ *  "smooth elliptical loop" drift artifact that replaces the true S-shaped pull path. */
+const GF_WORLD_ACCEL_HPF_TAU_S = 2.0;
+
+/**
+ * Stroke-checkpoint template (RRT-style path planning) -- freestyle only.
+ * A freestyle arm cycle ends where it began in body frame, but IMU integration drift
+ * leaves the end of the integrated trail offset from the start. These templates define
+ * the target positions (meters, stroke-local, Y = up, Z = forward along swim direction)
+ * at 4 chronological checkpoints: catch (origin), deepest pull, recovery apex, re-entry.
+ * Values tuned to a typical wrist-relative-to-shoulder magnitude for ~1 m of reach.
+ * Negative Y = below shoulder (depth); positive Y = above shoulder (recovery high).
+ * Note: scene coordinates use ySign = -1 via vizMapProcessorPosition, so template Y
+ * retains its physical meaning when multiplied by -ySign inside the warp.
+ */
+const GF_STROKE_TEMPLATE_NADIR_M = { x: 0.00, y: -0.35, z: +0.20 };
+const GF_STROKE_TEMPLATE_APEX_M  = { x: 0.00, y: +0.25, z: -0.10 };
+/** Minimum stroke length (samples) below which the template warp is skipped -- nadir/apex
+ *  detection becomes unreliable and the piecewise-linear correction risks spiking. */
+const GF_STROKE_WARP_MIN_SAMPLES = 8;
+
+/** Jump-bridge thresholds. A sample-to-sample position delta larger than
+ *  `GF_JUMP_BRIDGE_K * median(|delta|)` inside a single stroke is treated as a spurious
+ *  teleport (Python reset misaligned with firmware strokes, cal dropout re-zero, or a large
+ *  dt gap). We stitch it out by subtracting the jump offset from every sample past the
+ *  spike, preserving relative motion on both sides. Idempotent. */
+const GF_JUMP_BRIDGE_K = 8;
+const GF_JUMP_BRIDGE_MAX_CORRECTIONS = 3;
+const GF_JUMP_BRIDGE_MIN_SAMPLES = 8;
+
+/**
+ * Stroke-type gate for the template warp. Today the entire dashboard assumes freestyle
+ * (entry-angle targets, coaching copy, resampleTrailFreestyle), so there is no
+ * stroke_type field on samples yet; this stub returns true for every segment. When
+ * stroke-type classification lands (e.g. `seg.stroke_type === 'freestyle'`), tighten
+ * this helper without touching the warp itself.
+ */
+function isFreestyleStroke(seg) {
+    if (!seg) return false;
+    return true;
+}
+
+function _processorPositionSpanMeters() {
+    let minx = Infinity, miny = Infinity, minz = Infinity;
+    let maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
+    for (let i = 0; i < processedData.length; i++) {
+        const p = processedData[i].position;
+        if (!p || !Number.isFinite(p.px) || !Number.isFinite(p.py) || !Number.isFinite(p.pz)) {
+            return 0;
+        }
+        minx = Math.min(minx, p.px); maxx = Math.max(maxx, p.px);
+        miny = Math.min(miny, p.py); maxy = Math.max(maxy, p.py);
+        minz = Math.min(minz, p.pz); maxz = Math.max(maxz, p.pz);
+    }
+    return Math.max(maxx - minx, maxy - miny, maxz - minz);
+}
 
 function buildRawIntegratedPositions() {
     rawIntegratedPositions = [];
@@ -72,7 +132,8 @@ function buildRawIntegratedPositions() {
         && Number.isFinite(d.position.py)
         && Number.isFinite(d.position.pz)
     );
-    if (hasProcessorPos) {
+    const processorSpreadOk = hasProcessorPos && _processorPositionSpanMeters() > GF_POS_DEGENERATE_SPAN_M;
+    if (processorSpreadOk) {
         let prevStroke = strokeNumAt(processedData[0]);
         for (let i = 0; i < processedData.length; i++) {
             const d = processedData[i];
@@ -84,7 +145,11 @@ function buildRawIntegratedPositions() {
         return;
     }
 
-    const hasTracking = processedData.some(d => d.tracking_active !== undefined);
+    /* Python may set tracking_active on every sample to false (UART gate never opened). If we honored
+     * that literally, the JS path would skip all LIA integration — flat trail, only attitude moves. */
+    const hasTrackingField = processedData.some(d => d.tracking_active !== undefined);
+    const trackingEverTrue = processedData.some(d => d.tracking_active === true);
+    const hasTracking = hasTrackingField && trackingEverTrue;
     computeStrokeBoundaries();
     const useStrokeSegments = !hasTracking && strokeBoundaries && strokeBoundaries.length > 0;
     const strokeSegAt = (idx) => {
@@ -110,6 +175,8 @@ function buildRawIntegratedPositions() {
     const ky = gfKalman1D(0.3, 0.1, 1.0, 0.0);
     const kz = gfKalman1D(0.3, 0.1, 1.0, 0.0);
     let vx = 0, vy = 0, vz = 0, px = 0, py = 0, pz = 0;
+    /* World-frame accel HPF state (see GF_WORLD_ACCEL_HPF_TAU_S). */
+    let emaAx = 0, emaAy = 0, emaAz = 0;
     let prevStroke = strokeNumAt(processedData[0]);
     for (let i = 0; i < processedData.length; i++) {
         const d = processedData[i];
@@ -135,6 +202,17 @@ function buildRawIntegratedPositions() {
         const sy = ky(ay);
         const sz = kz(az);
         const wA = new THREE.Vector3(sx, sy, sz).applyQuaternion(nq(d.quaternion));
+
+        /* HPF baseline update — always run so the baseline is accurate when the gate opens. */
+        if (GF_WORLD_ACCEL_HPF_TAU_S > 0 && dt > 0) {
+            const alpha = Math.min(1, dt / GF_WORLD_ACCEL_HPF_TAU_S);
+            emaAx += alpha * (wA.x - emaAx);
+            emaAy += alpha * (wA.y - emaAy);
+            emaAz += alpha * (wA.z - emaAz);
+            wA.x -= emaAx;
+            wA.y -= emaAy;
+            wA.z -= emaAz;
+        }
 
         const aMag = Math.hypot(wA.x, wA.y, wA.z);
         const ts = (d.timestamp != null) ? Number(d.timestamp) : i * 20;
@@ -193,10 +271,25 @@ function integratePositions() {
     integratedPositions = [];
     rawIntegratedPositions = [];
     positionStreamPositions = [];
+    /* Invalidate the per-stroke sagittal-transform cache (PCA angle + mirror sign) so a
+     * new session -- or a re-run of integration on the same session -- starts with fresh
+     * decisions instead of reusing bounds from a previous session's processedData. */
+    if (typeof invalidateSideViewSagittalCache === 'function') invalidateSideViewSagittalCache();
     if (!processedData.length) return;
     buildRawIntegratedPositions();
     applyPerStrokeOriginOffset(rawIntegratedPositions);
     buildPlaybackStrokeSegments();
+    /* Stitch out single-sample teleports (Python reset misaligned with firmware strokes,
+     * cal dropout hard-zero, long dt gap) before the checkpoint warp sees the stroke. */
+    if (typeof window === 'undefined' || window.GF_JUMP_BRIDGE !== false) {
+        rawIntegratedPositions = bridgeStrokeJumps(rawIntegratedPositions);
+    }
+    /* RRT-style 4-checkpoint warp: closes each freestyle stroke's integrated loop and
+     * anchors the nadir/apex to the template. Toggle off for debugging via
+     * `window.GF_STROKE_CHECKPOINT_WARP = false` in the console before reload. */
+    if (typeof window === 'undefined' || window.GF_STROKE_CHECKPOINT_WARP !== false) {
+        applyStrokeCheckpointWarp(rawIntegratedPositions);
+    }
     let filled = fillMissingRawPositions(rawIntegratedPositions);
     filled = smoothRawPathPerStroke(filled);
     positionStreamPositions = filled;
@@ -213,17 +306,33 @@ function getSegStart(upToIndex) {
     return 0;
 }
 
+/**
+ * Gaussian-kernel smoothing along the time axis.
+ * Box-car averaging (the old approach) flattens peaks and introduces phase lag, which
+ * converts the real back-and-forth S-shape of an underwater pull into a featureless
+ * ellipse. A Gaussian with σ ≈ windowSize/4 preserves peaks and phase while still
+ * knocking down high-frequency integration jitter.
+ */
 function smoothTrailPoints(points, windowSize) {
     if (!points.length || windowSize < 2) return points;
     const half = Math.floor(windowSize / 2);
+    const sigma = Math.max(0.5, windowSize / 4);
+    const two_s2 = 2 * sigma * sigma;
+    const weights = new Array(half * 2 + 1);
+    for (let k = -half; k <= half; k++) weights[k + half] = Math.exp(-(k * k) / two_s2);
     const out = [];
     for (let i = 0; i < points.length; i++) {
-        let x = 0, y = 0, z = 0, n = 0;
-        for (let j = Math.max(0, i - half); j <= Math.min(points.length - 1, i + half); j++) {
-            x += points[j].x; y += points[j].y; z += points[j].z;
-            n++;
+        let x = 0, y = 0, z = 0, wsum = 0;
+        const jmin = Math.max(0, i - half);
+        const jmax = Math.min(points.length - 1, i + half);
+        for (let j = jmin; j <= jmax; j++) {
+            const w = weights[j - i + half];
+            x += points[j].x * w;
+            y += points[j].y * w;
+            z += points[j].z * w;
+            wsum += w;
         }
-        out.push(new THREE.Vector3(x / n, y / n, z / n));
+        out.push(new THREE.Vector3(x / wsum, y / wsum, z / wsum));
     }
     return out;
 }
@@ -251,7 +360,11 @@ function fillMissingRawPositions(points) {
 
 function smoothRawPathPerStroke(points) {
     if (!points.length) return points;
-    const w = Math.min(11, Math.max(3, Math.floor(points.length / 8) * 2 + 1));
+    /* Smaller, per-stroke-sized window (σ ≈ w/4 in the Gaussian kernel). A 5-sample
+     * window at ~50 Hz is σ ≈ 25 ms -- plenty to denoise integration jitter without
+     * washing out the S-curve of a 1-2 s pull. Box-car 11 was turning real strokes
+     * into ellipses. */
+    const w = Math.min(5, Math.max(3, Math.floor(points.length / 20) * 2 + 1));
     if (!playbackStrokeSegments.length) {
         return smoothTrailPoints(points, w);
     }
@@ -304,37 +417,32 @@ function resampleTrailFreestyle(rawPts, colors) {
 
 function buildPlaybackStrokeSegments() {
     playbackStrokeSegments = [];
-    refreshStrokeFieldMode();
-    let prevSk = null;
-    let prevSn = -1;
-    let start = 0;
-    for (let i = 0; i < processedData.length; i++) {
-        const d = processedData[i];
-        const sk = getStreamKey(d);
-        const c = strokeNumAt(d);
-        if (c <= 0) continue;
-        const isNewStroke = (prevSn < 0) || (sk !== prevSk) || (sk === prevSk && c > prevSn);
-        if (isNewStroke) {
-            if (prevSn > 0 && start < i) {
-                playbackStrokeSegments.push({
-                    startIdx: start,
-                    endIdx: i - 1,
-                    strokeNum: prevSn,
-                    streamKey: prevSk
-                });
-            }
-            start = i;
-            prevSk = sk;
-            prevSn = c;
+    if (!processedData || !processedData.length) return;
+    /* One segment per firmware STROKE_DET edge. Each segment starts at a boundary sample
+     * and ends at the sample before the next boundary on the same stream, clamped so it
+     * never crosses into a different stream (interleaved multi-device timelines). */
+    const canon = (typeof computeCanonicalStrokeBoundaries === 'function')
+        ? computeCanonicalStrokeBoundaries()
+        : [];
+    if (!canon.length) return;
+    const n = processedData.length;
+    for (let k = 0; k < canon.length; k++) {
+        const b = canon[k];
+        let end = n - 1;
+        for (let j = k + 1; j < canon.length; j++) {
+            if (canon[j].streamKey === b.streamKey) { end = canon[j].index - 1; break; }
         }
-    }
-    if (prevSn > 0 && start < processedData.length) {
-        playbackStrokeSegments.push({
-            startIdx: start,
-            endIdx: processedData.length - 1,
-            strokeNum: prevSn,
-            streamKey: prevSk
-        });
+        for (let i = b.index + 1; i <= end; i++) {
+            if (getStreamKey(processedData[i]) !== b.streamKey) { end = i - 1; break; }
+        }
+        if (end > b.index) {
+            playbackStrokeSegments.push({
+                startIdx: b.index,
+                endIdx: end,
+                strokeNum: b.strokeNum,
+                streamKey: b.streamKey
+            });
+        }
     }
 }
 
@@ -367,6 +475,7 @@ function applyPerStrokeOriginOffset(points) {
     const originByKey = new Map(); // key = `${sk}::${sc}` -> origin index
     function strokeKey(sk, sc) { return String(sk) + '::' + String(sc); }
     function phaseAt(i) {
+        if (typeof phaseAtSample === 'function') return phaseAtSample(i);
         const d = processedData[i] || {};
         return String(d.stroke_phase || d.phase || '').toLowerCase();
     }
@@ -422,5 +531,203 @@ function applyPerStrokeOriginOffset(points) {
         const o = clones.get(oi);
         if (!o || !points[i] || !points[i].sub) continue;
         points[i].sub(o);
+    }
+}
+
+/**
+ * RRT-style path closure: warp each freestyle stroke's integrated path to pass through
+ * 4 prescribed checkpoints -- catch (origin), deepest pull (template nadir), recovery
+ * apex (template apex), re-entry (origin). Eliminates the end-of-stroke gap caused by
+ * residual IMU integration drift while preserving the inter-checkpoint shape.
+ *
+ * The correction is piecewise-linear in sample index between consecutive checkpoints,
+ * so the path passes through every checkpoint exactly and the existing Gaussian smoother
+ * handles the kink at each checkpoint afterwards.
+ *
+ * Operates in-place on `points` (which are THREE.Vector3 in scene coords with `positionScale`
+ * already baked in via `vizMapProcessorPosition`). Falls back to a simple end-only linear
+ * loop closure when the stroke doesn't look freestyle-shaped (nadir after apex, apex at
+ * end, too few samples).
+ *
+ * Requires `playbackStrokeSegments` to be built first.
+ */
+/**
+ * bridgeStrokeJumps: per-stroke single-sample teleport fix.
+ *
+ * Scans each canonical stroke segment for a position delta whose magnitude is much larger
+ * than the stroke's typical step (median * GF_JUMP_BRIDGE_K). Each such jump is treated
+ * as an off-device reset (Python stroke_detected misaligned with firmware `strokes`, cal
+ * dropout hard-zero, or a long dt gap) rather than real motion, and stitched out by
+ * subtracting the excess offset from every sample at or after the spike. Shape on both
+ * sides of the jump is preserved; only the tail is translated into alignment.
+ *
+ * Runs in the integration pipeline after `applyPerStrokeOriginOffset` and before
+ * `applyStrokeCheckpointWarp` so the nadir/apex detector sees continuous geometry.
+ * Returns a new array (points are cloned); caller should reassign.
+ */
+function bridgeStrokeJumps(points) {
+    if (!points || !points.length) return points;
+    if (!playbackStrokeSegments || !playbackStrokeSegments.length) return points;
+    const out = points.map(p => (p && p.clone)
+        ? p.clone()
+        : new THREE.Vector3(
+            (p && Number.isFinite(p.x)) ? p.x : 0,
+            (p && Number.isFinite(p.y)) ? p.y : 0,
+            (p && Number.isFinite(p.z)) ? p.z : 0
+        )
+    );
+    for (const seg of playbackStrokeSegments) {
+        const startIdx = seg.startIdx;
+        const endIdx = seg.endIdx;
+        if (!(endIdx > startIdx)) continue;
+        if ((endIdx - startIdx + 1) < GF_JUMP_BRIDGE_MIN_SAMPLES) continue;
+
+        const mags = [];
+        for (let i = startIdx + 1; i <= endIdx; i++) {
+            const a = out[i - 1], b = out[i];
+            if (!a || !b) { mags.push(0); continue; }
+            mags.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+        }
+        if (!mags.length) continue;
+        const sorted = mags.slice().sort((a, b) => a - b);
+        const med = sorted[Math.floor(sorted.length / 2)] || 0;
+        const thr = Math.max(med * GF_JUMP_BRIDGE_K, 1e-5);
+
+        const cands = [];
+        for (let k = 0; k < mags.length; k++) {
+            if (mags[k] > thr) cands.push({ i: startIdx + 1 + k, m: mags[k] });
+        }
+        if (!cands.length) continue;
+        cands.sort((a, b) => b.m - a.m);
+        const picks = cands.slice(0, GF_JUMP_BRIDGE_MAX_CORRECTIONS).sort((a, b) => a.i - b.i);
+
+        for (const c of picks) {
+            let ex = 0, ey = 0, ez = 0, n = 0;
+            const kLo = Math.max(startIdx + 1, c.i - 2);
+            const kHi = Math.min(endIdx, c.i + 2);
+            for (let k = kLo; k <= kHi; k++) {
+                if (k === c.i) continue;
+                const a = out[k - 1], b = out[k];
+                if (!a || !b) continue;
+                const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+                if (Math.hypot(dx, dy, dz) > thr) continue;
+                ex += dx; ey += dy; ez += dz; n++;
+            }
+            if (n > 0) { ex /= n; ey /= n; ez /= n; }
+            const a = out[c.i - 1], b = out[c.i];
+            if (!a || !b) continue;
+            const ox = (b.x - a.x) - ex;
+            const oy = (b.y - a.y) - ey;
+            const oz = (b.z - a.z) - ez;
+            if (!Number.isFinite(ox) || !Number.isFinite(oy) || !Number.isFinite(oz)) continue;
+            for (let j = c.i; j <= endIdx; j++) {
+                if (!out[j]) continue;
+                out[j].x -= ox;
+                out[j].y -= oy;
+                out[j].z -= oz;
+            }
+        }
+    }
+    return out;
+}
+
+function applyStrokeCheckpointWarp(points) {
+    if (!points || !points.length) return;
+    if (!playbackStrokeSegments || !playbackStrokeSegments.length) return;
+    if (typeof THREE === 'undefined') return;
+
+    const s = (typeof positionScale !== 'undefined' && positionScale > 0) ? positionScale : 1;
+    const ySign = (typeof window !== 'undefined' && Number.isFinite(window.VIZ_WORLD_Y_SIGN))
+        ? window.VIZ_WORLD_Y_SIGN
+        : -1;
+    /* Template is specified in physical meters (Y = up). Scene Y is flipped by ySign in
+     * vizMapProcessorPosition, so mirror that flip here so +Y meaning matches in both. */
+    const nadirTarget = new THREE.Vector3(
+        GF_STROKE_TEMPLATE_NADIR_M.x * s,
+        ySign * -1 * GF_STROKE_TEMPLATE_NADIR_M.y * s,
+        GF_STROKE_TEMPLATE_NADIR_M.z * s
+    );
+    const apexTarget = new THREE.Vector3(
+        GF_STROKE_TEMPLATE_APEX_M.x * s,
+        ySign * -1 * GF_STROKE_TEMPLATE_APEX_M.y * s,
+        GF_STROKE_TEMPLATE_APEX_M.z * s
+    );
+    const originTarget = new THREE.Vector3(0, 0, 0);
+
+    /* Apply a piecewise-linear offset correction given an ordered list of checkpoints.
+     * For each sample i in [cps[0].idx..cps[last].idx], subtract
+     *   lerp(cps[k].offset, cps[k+1].offset, alpha)
+     * where [k, k+1] is the bracketing segment and alpha is the normalised position in
+     * that segment. Each sample is corrected exactly once (no double-counting at shared
+     * endpoints). Guarantees points[cp.idx] == cp.target for every checkpoint. */
+    function applyPiecewiseOffsets(cps) {
+        if (!cps || cps.length < 2) return;
+        let k = 0;
+        const first = cps[0].idx;
+        const last  = cps[cps.length - 1].idx;
+        for (let i = first; i <= last; i++) {
+            while (k + 1 < cps.length - 1 && i >= cps[k + 1].idx) k++;
+            const a = cps[k];
+            const b = cps[k + 1];
+            const span = b.idx - a.idx;
+            const alpha = span > 0 ? (i - a.idx) / span : 0;
+            const p = points[i];
+            if (!p || !Number.isFinite(p.x)) continue;
+            p.x -= a.offset.x + (b.offset.x - a.offset.x) * alpha;
+            p.y -= a.offset.y + (b.offset.y - a.offset.y) * alpha;
+            p.z -= a.offset.z + (b.offset.z - a.offset.z) * alpha;
+        }
+    }
+
+    function applyLinearLoopClosure(startIdx, endIdx) {
+        const pS = points[startIdx];
+        const pE = points[endIdx];
+        if (!pS || !pE) return;
+        applyPiecewiseOffsets([
+            { idx: startIdx, offset: pS.clone().sub(originTarget) },
+            { idx: endIdx,   offset: pE.clone().sub(originTarget) }
+        ]);
+    }
+
+    for (const seg of playbackStrokeSegments) {
+        if (!seg || !isFreestyleStroke(seg)) continue;
+        const s0 = seg.startIdx;
+        const e0 = seg.endIdx;
+        if (s0 == null || e0 == null || e0 <= s0) continue;
+        if ((e0 - s0 + 1) < GF_STROKE_WARP_MIN_SAMPLES) {
+            applyLinearLoopClosure(s0, e0);
+            continue;
+        }
+
+        /* Detect nadir (deepest) and apex (highest) by scene-Y extrema inside the stroke.
+         * Exclude the endpoints so the piecewise-linear segmentation is non-degenerate. */
+        let iNadir = -1, iApex = -1;
+        let yMin = Infinity, yMax = -Infinity;
+        for (let i = s0 + 1; i < e0; i++) {
+            const p = points[i];
+            if (!p || !Number.isFinite(p.y)) continue;
+            if (p.y < yMin) { yMin = p.y; iNadir = i; }
+            if (p.y > yMax) { yMax = p.y; iApex  = i; }
+        }
+
+        const freestyleLike = (
+            iNadir > s0 && iNadir < e0 &&
+            iApex  > s0 && iApex  < e0 &&
+            iNadir < iApex &&
+            (iApex - iNadir) >= 2
+        );
+        if (!freestyleLike) {
+            /* Non-freestyle-shaped cycle (or detection failed) -- close the loop but
+             * leave the interior shape alone so we don't introduce a bogus template. */
+            applyLinearLoopClosure(s0, e0);
+            continue;
+        }
+
+        applyPiecewiseOffsets([
+            { idx: s0,     offset: points[s0].clone().sub(originTarget) },
+            { idx: iNadir, offset: points[iNadir].clone().sub(nadirTarget) },
+            { idx: iApex,  offset: points[iApex].clone().sub(apexTarget) },
+            { idx: e0,     offset: points[e0].clone().sub(originTarget) }
+        ]);
     }
 }

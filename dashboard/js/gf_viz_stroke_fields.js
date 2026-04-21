@@ -4,15 +4,164 @@
  */
 
 function refreshStrokeFieldMode() {
-    /* Prefer Python stroke_count when present — it aligns with impact detection + integration.
-       Firmware `strokes` alone can disagree and breaks per-stroke origin / playback bounds. */
-    const hasProc = processedData.some(d => (d.stroke_count || 0) > 0);
+    /* Prefer firmware `strokes` when present -- each increment corresponds to an on-device
+     * `STROKE_DET: Stroke #N detected` event (the STROKE_DET monitor log is printed on the
+     * same sample where `bno055_sample_t.stroke_count` increments). Python `stroke_count`
+     * is a replay-side re-detection from raw IMU and only serves as a fallback for sessions
+     * recorded before firmware counting existed. Mirrors the server rule in
+     * wifi_session_processor._calculate_stroke_metrics (`use_fw = any(strokes>0)`). */
     const hasFw = processedData.some(d => (d.strokes || 0) > 0);
-    useFwStrokesForViz = hasFw && !hasProc;
+    const hasProc = processedData.some(d => (d.stroke_count || 0) > 0);
+    useFwStrokesForViz = hasFw;
+    if (!hasFw && hasProc) useFwStrokesForViz = false;
 }
 
 function strokeNumAt(d) {
     return useFwStrokesForViz ? (d.strokes || 0) : (d.stroke_count || 0);
+}
+
+function gfStrokeNumAtPd(d, useFw) {
+    return useFw ? (Number(d.strokes) || 0) : (Number(d.stroke_count) || 0);
+}
+
+/**
+ * Phase for sample i in array pd (same rules as phaseAtSample; useFw matches firmware vs Python stroke index).
+ */
+function gfPhaseAtSampleIndex(pd, i, useFw) {
+    if (!pd || i < 0 || i >= pd.length) return 'idle';
+    const d = pd[i];
+    if (!d) return 'idle';
+    const reported = String(d.stroke_phase || d.phase || '').toLowerCase();
+    if (reported && reported !== 'idle') return reported;
+
+    const sc = gfStrokeNumAtPd(d, useFw);
+    if (sc <= 0) return reported || 'idle';
+    const sk = getStreamKey(d);
+
+    let start = i;
+    for (let k = i - 1; k >= 0; k--) {
+        const dk = pd[k];
+        if (!dk || getStreamKey(dk) !== sk) break;
+        if (gfStrokeNumAtPd(dk, useFw) === sc) start = k;
+        else break;
+    }
+    let end = i;
+    for (let k = i + 1; k < pd.length; k++) {
+        const dk = pd[k];
+        if (!dk || getStreamKey(dk) !== sk) break;
+        if (gfStrokeNumAtPd(dk, useFw) === sc) end = k;
+        else break;
+    }
+    const segLen = end - start;
+    if (segLen <= 0) return reported || 'idle';
+
+    let t0 = pd[start] && pd[start].timestamp;
+    let t1 = pd[end] && pd[end].timestamp;
+    let ts = d.timestamp;
+    let r;
+    if (Number.isFinite(t0) && Number.isFinite(t1) && Number.isFinite(ts) && t1 > t0) {
+        r = (ts - t0) / (t1 - t0);
+    } else {
+        r = (i - start) / segLen;
+    }
+    if (!Number.isFinite(r)) r = 0;
+    if (r < 0) r = 0;
+    else if (r > 1) r = 1;
+
+    if (r < 0.15) return 'catch';
+    if (r < 0.50) return 'pull';
+    if (r < 0.80) return 'recovery';
+    return 'glide';
+}
+
+/**
+ * Stroke-phase mix (0–100 each) for a session array — used when metrics.phase_pcts is missing (e.g. AP JSON).
+ */
+function gfPhasePctsFromPd(pd) {
+    if (!pd || pd.length < 2) return { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    const hasFw = pd.some(d => (Number(d.strokes) || 0) > 0);
+    const hasProc = pd.some(d => (Number(d.stroke_count) || 0) > 0);
+    let useFw = hasFw;
+    if (!hasFw && hasProc) useFw = false;
+
+    const c = { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    let n = 0;
+    for (let i = 0; i < pd.length; i++) {
+        const ph = gfPhaseAtSampleIndex(pd, i, useFw);
+        if (!ph || ph === 'idle') continue;
+        if (Object.prototype.hasOwnProperty.call(c, ph)) {
+            c[ph]++;
+            n++;
+        }
+    }
+    if (!n) return { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    const out = { glide: 0, catch: 0, pull: 0, recovery: 0 };
+    for (const k of Object.keys(c)) {
+        out[k] = Math.round((c[k] / n) * 1000) / 10;
+    }
+    return out;
+}
+
+/** Uses global processedData; for Analysis tab fallback. */
+function gfComputePhasePctsFromProcessed() {
+    return gfPhasePctsFromPd(typeof processedData !== 'undefined' ? processedData : []);
+}
+
+/**
+ * Single source of truth for stroke-detection edges across the dashboard.
+ *
+ * Walks `processedData` once and emits one entry per firmware STROKE_DET event: a sample
+ * is a boundary iff `strokeNumAt(sample) > lastSeenFor(streamKey(sample))`. Crucially,
+ * this does NOT emit a phantom boundary on a bare stream switch (which the old
+ * `computeStrokeBoundaries` loop did via `sk !== prevSk`), so merged multi-band sessions
+ * and replay-spliced streams stop producing ghost notches that nothing else agrees with.
+ *
+ * Returns `[{index, strokeNum, streamKey}, ...]`. O(N), pure -- safe to call from every
+ * consumer (timeline, playback segments, summary, playback dropdown).
+ */
+function computeCanonicalStrokeBoundaries() {
+    refreshStrokeFieldMode();
+    const out = [];
+    if (!processedData || !processedData.length) return out;
+    const lastPerStream = new Map();
+    for (let i = 0; i < processedData.length; i++) {
+        const d = processedData[i];
+        if (!d) continue;
+        const sk = getStreamKey(d);
+        const sn = strokeNumAt(d);
+        if (sn <= 0) continue;
+        const last = lastPerStream.get(sk);
+        if (last === undefined || sn > last) {
+            out.push({ index: i, strokeNum: sn, streamKey: sk });
+        }
+        lastPerStream.set(sk, sn);
+    }
+    return out;
+}
+
+/** Total strokes across all streams -- firmware-STROKE_DET-aligned ground truth. */
+function canonicalStrokeCount() {
+    return computeCanonicalStrokeBoundaries().length;
+}
+
+/**
+ * Returns a stroke-phase string ('catch'|'pull'|'recovery'|'glide'|'idle') for sample `i`.
+ *
+ * Why this is needed: when the BNO055 drops below MIN_CAL_LEVEL the Python processor
+ * short-circuits stroke-phase tracking and leaves `current_phase` at 'idle' for every
+ * sample in that window. If the firmware detected strokes on-device the stroke number
+ * still shows up (via `d.strokes`) but `stroke_phase` is 'idle' across the whole
+ * stroke, so the side view / 3D trail render everything gray. This helper falls back
+ * to a time-in-stroke heuristic that mirrors the Python phase-duration defaults
+ * (catch 0-15%, pull 15-50%, recovery 50-80%, glide 80-100%). The ratios match the
+ * `fallbacks` block near line 840 in simple_imu_visualizer.py.
+ *
+ * Returns the processor phase unchanged when it reports a meaningful phase.
+ */
+function phaseAtSample(i) {
+    if (!processedData || i < 0 || i >= processedData.length) return 'idle';
+    refreshStrokeFieldMode();
+    return gfPhaseAtSampleIndex(processedData, i, useFwStrokesForViz);
 }
 
 /** Stable id for the physical band or merged session slice (for dual-wrist timelines). */

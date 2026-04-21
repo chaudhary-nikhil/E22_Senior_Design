@@ -358,7 +358,6 @@ async function pushUserConfigToDevice(silent = false) {
     const wingspan = parseLenToCm(wingspanRaw, units) || 180;
     const height = parseLenToCm(heightRaw, units) || 180;
     const skill = document.getElementById('settings-skill') ? document.getElementById('settings-skill').value : 'beginner';
-    const poolLength = document.getElementById('settings-pool-length') ? parseFloat(document.getElementById('settings-pool-length').value) : 25;
     const devRoleEl = document.getElementById('dev-role');
     const device_role = devRoleEl ? normalizeDeviceRole(devRoleEl.value) : 'wrist_right';
 
@@ -375,7 +374,6 @@ async function pushUserConfigToDevice(silent = false) {
         wingspan_cm: isNaN(wingspan) ? 180 : wingspan,
         height_cm: isNaN(height) ? 180 : height,
         skill_level: skill,
-        pool_length: isNaN(poolLength) ? 25 : poolLength,
         device_role
     });
 

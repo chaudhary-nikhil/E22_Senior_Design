@@ -38,18 +38,14 @@ static const char *TAG = "STROKE_DET";
 #define IMPACT_DELTA_A_THRESHOLD 4.0f    // m/s² fallback delta
 #define ENTRY_GYRO_THRESHOLD 0.8f        // rad/s hand rotation
 #define MIN_STROKE_INTERVAL_MS 1100      // 1.1s between strokes
-/* Wall push-off is far stronger than stroke impacts; strokes often peak ~20–28 m/s² LIA. */
-#define WALL_IMPACT_THRESHOLD 34.0f      // m/s² — must exceed typical stroke spikes
-#define WALL_SUSTAINED_COUNT 4           // consecutive high-accel samples (stricter)
-#define STROKE_TURN_COOLDOWN_MS 2000     // ignore wall/turn right after a stroke impact
-#define TURN_LOCKOUT_MS 2500             // 2.5s lockout after turn
 #define STROKE_INTEGRATION_TIMEOUT_MS 600 // 0.6s integration window
 
 // Ideal stroke comparison
 #define MAX_IDEAL_SAMPLES 200   // max samples for ideal stroke (~2s at 100Hz)
 #define MAX_CURRENT_SAMPLES 200 // max samples to accumulate per stroke
-#define DEFAULT_HAPTIC_THRESHOLD 0.65f // deviation score threshold
-#define HAPTIC_WARMUP_STROKES 2       // skip haptic on first N strokes of a session
+#define DEFAULT_HAPTIC_THRESHOLD 1.08f /* unused legacy; presets set real value (~1.0 DTW scale) */
+/* Default until stroke_detector_apply_skill_level sets skill-specific warmup. */
+#define HAPTIC_WARMUP_STROKES_DEFAULT 2
 
 // History buffer
 #define MAX_RECENT_SAMPLES 12
@@ -60,9 +56,7 @@ static const char *TAG = "STROKE_DET";
 typedef struct {
   // Stroke detection state
   uint32_t stroke_count;
-  uint32_t turn_count;
   uint32_t last_stroke_time_ms;
-  uint32_t last_wall_impact_time_ms;
   uint32_t last_timestamp_ms;
   bool has_previous_sample;
 
@@ -72,7 +66,6 @@ typedef struct {
   int recent_world_az_idx; // circular index
   float prev_accel_mag;
   bool has_prev_accel_mag;
-  int wall_high_count;
 
   // Stroke integration window
   bool stroke_integrating;
@@ -101,6 +94,13 @@ typedef struct {
   // User parameters
   float wingspan_cm;
   haptic_skill_level_t skill_level;
+  /** Extra deviation beyond haptic_threshold to reach double / triple pulse tiers */
+  float haptic_tier_strong_delta;
+  float haptic_tier_moderate_delta;
+  /** Degrees from ideal entry before ENTRY_BAD (beginner: looser, advanced: tighter) */
+  float entry_angle_tol_deg;
+  /** Skip haptic on first N strokes (higher for beginners — less early overload). */
+  uint8_t haptic_warmup_strokes;
 } detector_state_t;
 
 static detector_state_t s_state;
@@ -138,22 +138,83 @@ static float compare_strokes(const float *current, int cur_count,
 // Public API
 // ============================================================================
 
+/**
+ * Skill presets — beginner (highest DTW threshold = fewest cues) → competitive (tightest).
+ *
+ * On-device DTW clusters ~1.0–1.15 for “in the ballpark” vs a stored ideal; beginners naturally
+ * vary more while learning — motor-learning guidance favors fewer, higher-salience cues at low
+ * skill to avoid noise overload (cf. guidance hypothesis / bandwidth effects in skill acquisition).
+ * Warmup strokes scale up for beginners so early laps are not all buzz.
+ */
+static void stroke_detector_apply_skill_level(haptic_skill_level_t skill) {
+  s_state.skill_level = skill;
+  switch (skill) {
+  case HAPTIC_SKILL_BEGINNER:
+    s_state.haptic_threshold = 1.30f;
+    s_state.haptic_tier_strong_delta = 0.28f;
+    s_state.haptic_tier_moderate_delta = 0.15f;
+    s_state.entry_angle_tol_deg = 34.0f;
+    s_state.haptic_warmup_strokes = 4;
+    break;
+  case HAPTIC_SKILL_INTERMEDIATE:
+    s_state.haptic_threshold = 1.14f;
+    s_state.haptic_tier_strong_delta = 0.20f;
+    s_state.haptic_tier_moderate_delta = 0.10f;
+    s_state.entry_angle_tol_deg = 22.0f;
+    s_state.haptic_warmup_strokes = 3;
+    break;
+  case HAPTIC_SKILL_ADVANCED:
+    s_state.haptic_threshold = 1.06f;
+    s_state.haptic_tier_strong_delta = 0.14f;
+    s_state.haptic_tier_moderate_delta = 0.07f;
+    s_state.entry_angle_tol_deg = 14.0f;
+    s_state.haptic_warmup_strokes = 2;
+    break;
+  case HAPTIC_SKILL_COMPETITIVE:
+    s_state.haptic_threshold = 0.99f;
+    s_state.haptic_tier_strong_delta = 0.10f;
+    s_state.haptic_tier_moderate_delta = 0.05f;
+    s_state.entry_angle_tol_deg = 8.0f;
+    s_state.haptic_warmup_strokes = 2;
+    break;
+  default:
+    s_state.haptic_threshold = 1.14f;
+    s_state.haptic_tier_strong_delta = 0.20f;
+    s_state.haptic_tier_moderate_delta = 0.10f;
+    s_state.entry_angle_tol_deg = 22.0f;
+    s_state.haptic_warmup_strokes = 3;
+    s_state.skill_level = HAPTIC_SKILL_INTERMEDIATE;
+    break;
+  }
+}
+
 void stroke_detector_init(void) {
   memset(&s_state, 0, sizeof(s_state));
-  s_state.haptic_threshold = 0.5f; // Default intermediate
   s_state.haptic_enabled = true;
-  s_state.wingspan_cm = 180.0f; // Default reference wingspan
-  s_state.skill_level = HAPTIC_SKILL_INTERMEDIATE;
-  ESP_LOGI(TAG, "Stroke detector initialized (haptic threshold: %.2f)",
-           s_state.haptic_threshold);
+  s_state.wingspan_cm = 180.0f;
+  s_state.haptic_warmup_strokes = HAPTIC_WARMUP_STROKES_DEFAULT;
+  stroke_detector_apply_skill_level(HAPTIC_SKILL_INTERMEDIATE);
+  ESP_LOGI(TAG, "Stroke detector init: skill=%d thresh=%.2f entry±%.0f°",
+           (int)s_state.skill_level, s_state.haptic_threshold,
+           s_state.entry_angle_tol_deg);
+}
+
+void stroke_detector_get_haptic_profile(stroke_detector_haptic_profile_t *out) {
+  if (!out) {
+    return;
+  }
+  out->haptic_threshold = s_state.haptic_threshold;
+  out->tier_strong_delta = s_state.haptic_tier_strong_delta;
+  out->tier_moderate_delta = s_state.haptic_tier_moderate_delta;
+  out->entry_tol_deg = s_state.entry_angle_tol_deg;
+  out->skill_level = s_state.skill_level;
+  out->wingspan_cm = s_state.wingspan_cm;
 }
 
 void stroke_detector_reset_session(void) {
   // Reset only session-specific fields
   s_state.stroke_count = 0;
-  s_state.turn_count = 0;
   s_state.last_stroke_time_ms = 0;
-  s_state.last_wall_impact_time_ms = 0;
   s_state.has_previous_sample = false;
   
   memset(s_state.recent_world_az, 0, sizeof(s_state.recent_world_az));
@@ -161,7 +222,6 @@ void stroke_detector_reset_session(void) {
   s_state.recent_world_az_idx = 0;
   s_state.prev_accel_mag = 0.0f;
   s_state.has_prev_accel_mag = false;
-  s_state.wall_high_count = 0;
   
   s_state.stroke_integrating = false;
   s_state.stroke_integration_start_ms = 0;
@@ -205,10 +265,6 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
   // Gyroscope magnitude
   float gyro_mag = sqrtf(sample->gx * sample->gx + sample->gy * sample->gy +
                          sample->gz * sample->gz);
-
-  bool in_turn_lockout =
-      ((t_ms - s_state.last_wall_impact_time_ms) < TURN_LOCKOUT_MS) &&
-      (s_state.last_wall_impact_time_ms > 0);
 
   // --- UPDATE HISTORY BUFFER (circular) ---
   int az_idx = s_state.recent_world_az_idx % MAX_RECENT_SAMPLES;
@@ -262,7 +318,7 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 
   // --- FINAL STROKE DECISION ---
   bool stroke_detected = impact_detected && interval_ok && has_entry_rotation &&
-                         !in_turn_lockout && !s_state.stroke_integrating &&
+                         !s_state.stroke_integrating &&
                          (was_moving_downward || is_impact_by_jerk);
 
   if (stroke_detected) {
@@ -270,7 +326,6 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
     s_state.last_stroke_time_ms = t_ms;
     s_state.recent_world_az_count = 0;
     s_state.recent_world_az_idx = 0;
-    s_state.wall_high_count = 0; // stroke spikes must not accumulate toward "wall"
 
     // Start integration window for ideal comparison
     s_state.stroke_integrating = true;
@@ -295,32 +350,6 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
              "entry=%.1f°)",
              (unsigned)s_state.stroke_count, accel_mag, world_az, gyro_mag,
              event.entry_angle);
-  }
-
-  // --- WALL / TURN (after stroke): hard strokes must not register as turns ---
-  {
-    uint32_t since_stroke = (s_state.last_stroke_time_ms > 0)
-                                ? (t_ms - s_state.last_stroke_time_ms)
-                                : STROKE_TURN_COOLDOWN_MS + 1;
-    if (since_stroke >= STROKE_TURN_COOLDOWN_MS) {
-      if (accel_mag > WALL_IMPACT_THRESHOLD) {
-        s_state.wall_high_count++;
-        if (s_state.wall_high_count >= WALL_SUSTAINED_COUNT) {
-          uint32_t time_since_wall = t_ms - s_state.last_wall_impact_time_ms;
-          if (time_since_wall > TURN_LOCKOUT_MS) {
-            s_state.turn_count++;
-            event.turn_detected = true;
-          }
-          s_state.last_wall_impact_time_ms = t_ms;
-          s_state.recent_world_az_count = 0;
-          s_state.wall_high_count = 0;
-        }
-      } else {
-        s_state.wall_high_count = 0;
-      }
-    } else {
-      s_state.wall_high_count = 0;
-    }
   }
 
   // --- INTEGRATION WINDOW (accumulate LIA for comparison) ---
@@ -357,8 +386,10 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 
           bool technique_bad = (event.deviation_score > s_state.haptic_threshold);
           float entry_diff = fabsf(s_state.latched_entry_angle - s_state.ideal_entry_angle);
-          bool entry_bad = (s_state.ideal_entry_angle > 5.0f) && (entry_diff > 15.0f);
-          bool pull_short = (time_in_stroke < 250);  // Pull under 250ms is too short
+          bool entry_bad = (s_state.ideal_entry_angle > 5.0f) &&
+                           (entry_diff > s_state.entry_angle_tol_deg);
+          /* Pull duration flag: integration ends at ~600ms window end; threshold is legacy hook. */
+          bool pull_short = (time_in_stroke < 250);
 
           // Set reason codes so app can explain WHY haptic fired
           event.haptic_reason = HAPTIC_REASON_NONE;
@@ -370,12 +401,17 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
                    event.deviation_score, s_state.latched_entry_angle, s_state.ideal_entry_angle, 
                    s_state.haptic_threshold, (unsigned)time_in_stroke, event.haptic_reason);
 
-          bool past_warmup = (s_state.stroke_count > HAPTIC_WARMUP_STROKES);
-          if (s_state.haptic_enabled && haptic_is_available() && past_warmup && (technique_bad || entry_bad)) {
-            if (event.deviation_score > (s_state.haptic_threshold + 0.3f) || entry_bad) {
+          bool past_warmup =
+              (s_state.stroke_count > (uint32_t)s_state.haptic_warmup_strokes);
+          if (s_state.haptic_enabled && haptic_is_available() && past_warmup &&
+              (technique_bad || entry_bad)) {
+            if (event.deviation_score >
+                    (s_state.haptic_threshold + s_state.haptic_tier_strong_delta) ||
+                entry_bad) {
               haptic_play_pattern(HAPTIC_PATTERN_TRIPLE_PULSE);
               event.haptic_fired = true;
-            } else if (event.deviation_score > (s_state.haptic_threshold + 0.15f)) {
+            } else if (event.deviation_score >
+                       (s_state.haptic_threshold + s_state.haptic_tier_moderate_delta)) {
               haptic_play_pattern(HAPTIC_PATTERN_DOUBLE_PULSE);
               event.haptic_fired = true;
             } else if (technique_bad) {
@@ -408,7 +444,6 @@ stroke_event_t stroke_detector_feed(const bno055_sample_t *sample) {
 
   // Populate event (note: deviation_score already set if window closed this frame)
   event.stroke_count = s_state.stroke_count;
-  event.turn_count = s_state.turn_count;
 
   return event;
 }
@@ -444,8 +479,6 @@ bool stroke_detector_has_ideal(void) { return s_state.ideal_loaded; }
 
 uint32_t stroke_detector_get_count(void) { return s_state.stroke_count; }
 
-uint32_t stroke_detector_get_turn_count(void) { return s_state.turn_count; }
-
 float stroke_detector_get_deviation(void) { return s_state.last_deviation; }
 
 void stroke_detector_set_haptic_threshold(float threshold) {
@@ -462,24 +495,14 @@ void stroke_detector_set_user_params(float wingspan_cm, haptic_skill_level_t ski
   if (wingspan_cm > 50.0f && wingspan_cm < 250.0f) {
     s_state.wingspan_cm = wingspan_cm;
   }
-  s_state.skill_level = skill_level;
+  stroke_detector_apply_skill_level(skill_level);
 
-  switch (skill_level) {
-  case HAPTIC_SKILL_BEGINNER:
-    s_state.haptic_threshold = 1.00f;
-    break;
-  case HAPTIC_SKILL_INTERMEDIATE:
-    s_state.haptic_threshold = 0.65f;
-    break;
-  case HAPTIC_SKILL_ADVANCED:
-    s_state.haptic_threshold = 0.38f;
-    break;
-  default:
-    s_state.haptic_threshold = 0.65f;
-  }
-
-  ESP_LOGI(TAG, "User params updated: wingspan=%.1fcm, skill=%d, haptic_threshold=%.2f",
-           s_state.wingspan_cm, (int)s_state.skill_level, s_state.haptic_threshold);
+  ESP_LOGI(TAG,
+           "User params: wingspan=%.1fcm skill=%d thresh=%.2f dStrong=+%.2f dMod=+%.2f "
+           "entry±%.0f°",
+           s_state.wingspan_cm, (int)s_state.skill_level, s_state.haptic_threshold,
+           s_state.haptic_tier_strong_delta, s_state.haptic_tier_moderate_delta,
+           s_state.entry_angle_tol_deg);
 }
 
 float stroke_detector_get_ideal_entry_angle(void) { return s_state.ideal_entry_angle; }

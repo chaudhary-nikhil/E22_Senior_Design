@@ -130,7 +130,7 @@ class StrokeProcessor:
         self.last_timestamp_ms = None
         self.in_stroke = False
         self.just_reset = False
-        
+
         # Kalman Filters for Acceleration (X, Y, Z)
         # TUNING for HUMAN MOTION:
         # Q (Process Noise): 0.3 -> High because human motion changes accel rapidly.
@@ -138,6 +138,18 @@ class StrokeProcessor:
         self.kalman_ax = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_ay = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
         self.kalman_az = SimpleKalmanFilter(0.3, 0.1, 1.0, 0.0)
+
+        # --- DRIFT-KILL: slow baseline (EMA) for world-frame accel -----------
+        # Double-integrating even a 0.05 m/s² residual (gravity bleed from
+        # quaternion yaw drift in IMU+ mode) generates ~0.1 m of bogus curve
+        # per stroke, which shows up as the "smooth elliptical loop" instead
+        # of the real S-shaped pull path. Subtracting a slow EMA (τ≈2 s)
+        # behaves like a 1st-order high-pass with fc ≈ 0.08 Hz -- well below
+        # stroke frequency (0.4-1 Hz) so real motion passes untouched.
+        self._ema_int_ax = 0.0
+        self._ema_int_ay = 0.0
+        self._ema_int_az = 0.0
+        self.WORLD_ACCEL_HPF_TAU_S = 2.0
         
         
         # =====================================================================
@@ -195,18 +207,6 @@ class StrokeProcessor:
         # one stroke per arm cycle. Typical stroke 0.8-1.5s; fast ~0.7s.
         self.MIN_STROKE_INTERVAL = 1.1  # seconds — avoids counting return/recovery as a stroke
         
-        # TURN/WALL DETECTION (prevent false positives at wall)
-        # Flip turn: 20-40 m/s² impact. Open turn: 15-25 m/s² (hand contacts wall).
-        # Normal swimming strokes: 5-12 m/s². Vigorous dry-land strokes: up to 15 m/s².
-        # Must be well above stroke range to avoid false positives.
-        self.WALL_IMPACT_THRESHOLD = 34.0  # m/s² — above typical stroke LIA peaks; real wall push is higher
-        self.WALL_SUSTAINED_COUNT = 4  # require N consecutive high-accel samples (stricter than strokes)
-        self.STROKE_TURN_COOLDOWN_MS = 2000  # ignore wall/turn shortly after a stroke impact
-        self.TURN_LOCKOUT_DURATION = 2.5  # seconds
-        self.last_wall_impact_time_ms = 0
-        self.wall_high_count = 0
-        self.turn_count = 0
-        
         # Track recent world-frame vertical acceleration for downward motion detection
         self.recent_world_az = []  # Ring buffer of recent world_az values
         self.MAX_RECENT_SAMPLES = 12  # Keep last 12 samples (~120ms at 100Hz)
@@ -214,7 +214,7 @@ class StrokeProcessor:
         self.prev_accel_mag = None
         self.last_stroke_time_ms = 0  # Timestamp of last detected stroke
         
-        # GLIDE PHASE DETECTION (suppress strokes during glide after turn)
+        # GLIDE PHASE DETECTION (suppress strokes during passive glide)
         # During glide, acceleration is very low and steady
         self.GLIDE_ACCEL_THRESHOLD = 1.5  # m/s² - below this is likely gliding
         self.glide_sample_count = 0  # Count consecutive low-accel samples
@@ -296,7 +296,6 @@ class StrokeProcessor:
         self.debug_is_impact = False
         self.debug_jerk = 0.0
         self.debug_is_impact_by_jerk = False
-        self.debug_in_turn_lockout = False
 
         # --- Live visualization gate (0401fbde-style): separate from impact stroke counting ---
         self.legacy_pos_track = False
@@ -469,16 +468,12 @@ class StrokeProcessor:
             #   1. Check if PREVIOUS samples (before current) show downward motion
             #   2. Detect CURRENT sample as impact (high magnitude + positive world_az)
             #   3. Verify with gyroscope (hand rotating during entry)
-            #   4. Filter out wall impacts and gliding phases
+            #   4. Filter out gliding phases
             #
             # This PREVENTS false positives from:
             #   - Recovery phase (arm going UP in air - no downward history)
-            #   - Wall/turn impacts (filtered by extreme magnitude + lockout)
             #   - Gliding phases (filtered by low sustained acceleration)
             # =================================================================
-            
-            time_since_wall = (t_ms - self.last_wall_impact_time_ms) / 1000.0 if self.last_wall_impact_time_ms else 999.0
-            in_turn_lockout = (self.last_wall_impact_time_ms > 0 and time_since_wall < self.TURN_LOCKOUT_DURATION)
             
             # --- GLIDE PHASE DETECTION ---
             # During glide, acceleration is very low and steady
@@ -536,7 +531,7 @@ class StrokeProcessor:
             # - magnitude is already above the entry threshold
             # - jerk (or delta) is large (sharp-change)
             # - hand is rotating (entry motion)
-            # - NOT in wall/turn lockout and NOT gliding
+            # - NOT gliding
             # This stays independent of the hand's end position (sideways drift doesn't matter).
             is_impact_by_jerk = (
                 accel_mag > self.WATER_ENTRY_ACCEL_THRESHOLD
@@ -557,9 +552,8 @@ class StrokeProcessor:
             #   2. is_impact_spike: Current sample shows water impact signature
             #   3. interval_ok: Enough time since last stroke (avoids counting return/recovery)
             #   4. has_entry_rotation: Hand is rotating (entry motion)
-            #   5. NOT in turn lockout: Not immediately after wall impact
-            #   6. NOT gliding: Not in passive glide phase
-            #   7. NOT still in current stroke: No double-count during same arm cycle
+            #   5. NOT gliding: Not in passive glide phase
+            #   6. NOT still in current stroke: No double-count during same arm cycle
             impact_detected = is_impact_spike or is_impact_by_jerk
 
             # Primary path: clean downward history + vertical reversal impact
@@ -568,7 +562,6 @@ class StrokeProcessor:
                 impact_detected
                 and interval_ok
                 and has_entry_rotation
-                and not in_turn_lockout
                 and (not self.is_gliding or self.land_demo)
                 and not self.stroke_integrating  # ignore peaks during pull-through/recovery of same stroke
                 # Require true downward→impact signature; "jerk-only" peaks overcount strokes on land.
@@ -583,20 +576,20 @@ class StrokeProcessor:
             self.debug_is_impact = is_impact_spike
             self.debug_jerk = jerk
             self.debug_is_impact_by_jerk = is_impact_by_jerk
-            self.debug_in_turn_lockout = in_turn_lockout
             
             if stroke_detected:
                 self.stroke_count += 1
                 self.last_stroke_time_ms = t_ms
-                self.wall_high_count = 0
                 self.recent_world_az.clear()
                 self.glide_sample_count = 0
-                # Live: position reset is owned by the 0401fbde-style legacy motion gate (below).
-                # Batch + stroke_pull only: zero trail at impact (stroke-anchored viz). uart_match /
-                # motion_segment match 0401fbde — motion gate alone resets position, not impact.
-                if self.batch_mode and self.replay_integration_mode == 'stroke_pull':
-                    self.position = [0.0, 0.0, 0.0]
-                    self.velocity = [0.0, 0.0, 0.0]
+                # Per-stroke reset (all modes): 0401fbde's live UART behaviour relies on the
+                # motion gate opening and closing between bursts. In continuous swimming the
+                # gate stays open for the entire lap, so drift accumulates for many seconds.
+                # Zeroing position+velocity at each impact anchors every stroke to a clean
+                # origin, which matches the JS `applyPerStrokeOriginOffset` behaviour and
+                # keeps each stroke's integrated shape independent of cumulative bias.
+                self.position = [0.0, 0.0, 0.0]
+                self.velocity = [0.0, 0.0, 0.0]
                 self.in_stroke = True
                 self.stroke_start_time = t_ms
                 self.stroke_integrating = True
@@ -615,22 +608,6 @@ class StrokeProcessor:
                 self.last_entry_gy = float(data_dict.get('gy', 0) or 0)
                 self.last_entry_gz = float(data_dict.get('gz', 0) or 0)
 
-            # --- WALL/TURN (after stroke): vigorous strokes must not register as turns ---
-            since_stroke_ms = (t_ms - self.last_stroke_time_ms) if self.last_stroke_time_ms else self.STROKE_TURN_COOLDOWN_MS + 1
-            if since_stroke_ms >= self.STROKE_TURN_COOLDOWN_MS:
-                if accel_mag > self.WALL_IMPACT_THRESHOLD:
-                    self.wall_high_count += 1
-                    if self.wall_high_count >= self.WALL_SUSTAINED_COUNT:
-                        if (t_ms - self.last_wall_impact_time_ms) / 1000.0 > self.TURN_LOCKOUT_DURATION:
-                            self.turn_count += 1
-                        self.last_wall_impact_time_ms = t_ms
-                        self.recent_world_az.clear()
-                        self.wall_high_count = 0
-                else:
-                    self.wall_high_count = 0
-            else:
-                self.wall_high_count = 0
-            
             # --- STROKE PHASE TRACKING (gyroscope-enhanced, runs AFTER stroke
             # detection so stroke_integrating/stroke_start_time are up-to-date) ---
             # Research: IEEE Swimming Phase Segmentation (2020), Frontiers
@@ -751,6 +728,22 @@ class StrokeProcessor:
             int_ay = 2 * (xy + wz) * smooth_x + (ww - xx + yy - zz) * smooth_y + 2 * (yz - wx) * smooth_z
             int_az = 2 * (xz - wy) * smooth_x + 2 * (yz + wx) * smooth_y + (ww - xx - yy + zz) * smooth_z
 
+            # HPF on world-frame accel: subtract slow EMA baseline. This removes
+            # any residual gravity / quaternion-drift bias before double-integration,
+            # which is what produces the "smooth loop" drift artifact instead of the
+            # real back-and-forth S-curve of a pull. Adaptive to dt so variable rate
+            # is handled. Continuously updated (even when not integrating) so the
+            # baseline stays accurate when a segment opens.
+            tau = self.WORLD_ACCEL_HPF_TAU_S
+            if tau > 0.0 and dt > 0.0:
+                alpha = min(1.0, dt / tau)
+                self._ema_int_ax += alpha * (int_ax - self._ema_int_ax)
+                self._ema_int_ay += alpha * (int_ay - self._ema_int_ay)
+                self._ema_int_az += alpha * (int_az - self._ema_int_az)
+                int_ax -= self._ema_int_ax
+                int_ay -= self._ema_int_ay
+                int_az -= self._ema_int_az
+
             if not self.batch_mode:
                 integrate_now = self.legacy_pos_track
             elif self.replay_integration_mode == "uart_match":
@@ -828,7 +821,6 @@ class StrokeProcessor:
             "tracking_active": self._tracking_active_for_output(),
             "stroke_count": self.stroke_count,
             "strokes": fw_strokes,
-            "turn_count": self.turn_count,
             "just_reset": self.just_reset,
             
             # Angle of attack (prefer firmware-reported angle at impact)
@@ -871,7 +863,6 @@ class StrokeProcessor:
                 "was_downward": self.debug_was_downward,
                 "is_impact": self.debug_is_impact,
                 "is_impact_by_jerk": self.debug_is_impact_by_jerk,
-                "turn_lockout": self.debug_in_turn_lockout,
                 "is_gliding": self.is_gliding
             }
         }
@@ -997,7 +988,6 @@ class SSEHandler(BaseHTTPRequestHandler):
                 stroke_processor_instance.recent_accel_mag.clear()
                 stroke_processor_instance.prev_accel_mag = None
                 stroke_processor_instance.last_stroke_time_ms = 0
-                stroke_processor_instance.last_wall_impact_time_ms = 0
                 stroke_processor_instance.glide_sample_count = 0
                 stroke_processor_instance.is_gliding = False
             self.send_response(200)
@@ -1164,10 +1154,8 @@ def serial_receiver(processor: StrokeProcessor, preferred_port=None):
                                 az_str = f"wAz:{processor.debug_world_az:+.1f}"
                                 down_str = "DOWN" if processor.debug_was_downward else "----"
                                 impact_str = "IMPACT" if processor.debug_is_impact else "------"
-                                lock_str = "LOCK" if processor.debug_in_turn_lockout else "----"
-                                
                                 # Use print() with carriage return to update in-place
-                                print(f"CAL: S={cal_sys} G={cal_gyro} A={cal_accel} | {count_str} | {az_str} {down_str} {impact_str} {lock_str} | {hint}          ", end='\r', flush=True)
+                                print(f"CAL: S={cal_sys} G={cal_gyro} A={cal_accel} | {count_str} | {az_str} {down_str} {impact_str} | {hint}          ", end='\r', flush=True)
                                 
                                 last_cal_print_time = current_time
                                 last_cal_status = cal_status

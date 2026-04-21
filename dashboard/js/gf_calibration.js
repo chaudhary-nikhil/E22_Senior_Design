@@ -284,6 +284,9 @@ function maybeAutoSaveCalibrationFromPoll(res) {
         persistCalibrationSnapshot({ ...n, bno_opmode: res.bno_opmode }, res.device_id);
         if (nowReady && !wasReady) {
             try { if (typeof showToast === 'function') showToast('Calibration ready — saved snapshot', 'success'); } catch (e) { /* ignore */ }
+            if (typeof gfNotifyBandRegistrationQuiet === 'function') {
+                gfNotifyBandRegistrationQuiet().catch(() => {});
+            }
         }
     }
 }
@@ -319,6 +322,9 @@ async function saveCalibrationSnapshotManual() {
     persistCalibrationSnapshot(cal, res.device_id);
     updateCalibrationDisplay({ cal: normalizeCal(cal) });
     showToast('Calibration snapshot saved in this browser', 'success');
+    if (typeof gfNotifyBandRegistrationQuiet === 'function') {
+        gfNotifyBandRegistrationQuiet().catch(() => {});
+    }
 }
 
 function updateCalibrationDisplay(d) {
@@ -387,6 +393,38 @@ function updateCalibrationDisplay(d) {
     }
     if (cardEl) cardEl.classList.toggle('card--calibration-ready', liveReady);
 
+    const devParams = document.getElementById('cal-device-params');
+    if (devParams) {
+        const sk = d.skill_level != null ? String(d.skill_level) : '';
+        const ws = d.wingspan_cm != null && Number.isFinite(Number(d.wingspan_cm)) ? Number(d.wingspan_cm) : null;
+        const ht = d.height_cm != null && Number.isFinite(Number(d.height_cm)) ? Number(d.height_cm) : null;
+        const hp = d.haptic_profile && typeof d.haptic_profile === 'object' ? d.haptic_profile : null;
+        const hasDevice = !!(sk || ws != null || ht != null || hp);
+        /* Only refresh when payload is full device_info — session scrub passes samples without these fields. */
+        if (hasDevice) {
+            const parts = [];
+            if (sk) {
+                parts.push('Skill on band: <strong>' + sk.charAt(0).toUpperCase() + sk.slice(1) + '</strong>');
+            }
+            if (ws != null) {
+                parts.push('wingspan ' + ws.toFixed(1) + ' cm');
+            }
+            if (ht != null) {
+                parts.push('height ' + ht.toFixed(1) + ' cm');
+            }
+            if (hp && hp.threshold != null) {
+                const th = Number(hp.threshold);
+                const et = hp.entry_tol_deg != null ? Number(hp.entry_tol_deg) : NaN;
+                parts.push(
+                    'haptic DTW threshold ' + (Number.isFinite(th) ? th.toFixed(2) : '—') +
+                    ', entry ±' + (Number.isFinite(et) ? et.toFixed(0) : '—') + '°'
+                );
+            }
+            devParams.innerHTML = '<span style="color:var(--text3)">Live from firmware</span> · ' + parts.join(' · ');
+            devParams.hidden = false;
+        }
+    }
+
     updateNavCalPill({ cal: nCal });
 }
 
@@ -429,5 +467,10 @@ function clearCalibrationLiveDisplay() {
     }
     const cardEl = document.getElementById('card-imu-calibration');
     if (cardEl) cardEl.classList.remove('card--calibration-ready');
+    const devParams = document.getElementById('cal-device-params');
+    if (devParams) {
+        devParams.hidden = true;
+        devParams.textContent = '';
+    }
 }
 

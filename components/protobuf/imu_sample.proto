@@ -51,7 +51,7 @@ message ImuSample {
 
   // Haptic feedback events (stretch goal)
   bool haptic_fired = 26;       // True if haptic was triggered at this sample
-  float deviation_score = 27;   // Deviation from ideal stroke (0.0 = perfect)
+  float deviation_score = 27;   // On-device DTW vs ideal (~1.0 typical match; higher = worse)
 
   // Multi-device metadata
   uint32 device_id = 28;        // Unique device identifier (from Kconfig)
@@ -59,7 +59,7 @@ message ImuSample {
 
   // Session running counts
   uint32 stroke_count = 30;     // Running stroke count for this session
-  uint32 turn_count = 31;       // Running turn count for this session
+  reserved 31;                  // was turn_count (removed — not reliable enough to ship)
 
   // Legacy wire field; always 0 in current builds (kept for old SD/session compatibility)
   uint32 breath_count = 32;

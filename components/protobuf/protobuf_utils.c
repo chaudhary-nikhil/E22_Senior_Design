@@ -46,13 +46,13 @@ static void sample_to_proto(const bno055_sample_t *sample,
   msg->accel_cal = sample->accel_cal;
   msg->mag_cal = sample->mag_cal;
   msg->haptic_fired = sample->haptic_fired;
+  /* DTW scale: ~1.0 vs ideal typical; higher = worse (see stroke_detector + dtw_classifier). */
   msg->deviation_score = sample->deviation_score;
   msg->haptic_reason = sample->haptic_reason;
   msg->pull_duration_ms = sample->pull_duration_ms;
   msg->device_id = sample->device_id;
   msg->device_role = sample->device_role;
   msg->stroke_count = sample->stroke_count;
-  msg->turn_count = sample->turn_count;
   msg->breath_count = sample->breath_count;
   msg->entry_angle = sample->entry_angle;
 }
@@ -91,7 +91,6 @@ static void proto_to_sample(const goldenform_ImuSample *msg,
   sample->device_id = msg->device_id;
   sample->device_role = msg->device_role;
   sample->stroke_count = msg->stroke_count;
-  sample->turn_count = msg->turn_count;
   sample->breath_count = msg->breath_count;
   sample->entry_angle = msg->entry_angle;
 }

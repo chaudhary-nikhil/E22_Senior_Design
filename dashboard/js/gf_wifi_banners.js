@@ -124,9 +124,9 @@ async function addWearableFromConnection() {
             if (typeof pushUserConfigToDevice === 'function') {
                 await pushUserConfigToDevice(true);
             }
-            /* Tell the wearable registration finished so it stops the status LED blink and closes the AP. */
-            if (typeof apiPost === 'function') {
-                await apiPost('/api/registration_done', {});
+            /* Firmware stops setup blink; AP stays up. Live cal uses direct device_info first (gf_wifi_poll_sync). */
+            if (typeof gfNotifyBandRegistrationQuiet === 'function') {
+                await gfNotifyBandRegistrationQuiet();
             }
         } else {
             showToast((reg && reg.error) || 'Could not add wearable', 'error');

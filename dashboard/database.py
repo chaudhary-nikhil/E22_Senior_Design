@@ -183,6 +183,7 @@ def _public_user(row) -> dict:
         return None
     d = dict(row)
     d.pop('password_hash', None)
+    d.pop('pool_length', None)  # legacy column; not used by dashboard (no pool-distance metrics)
     return d
 
 

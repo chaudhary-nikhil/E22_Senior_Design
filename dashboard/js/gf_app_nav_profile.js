@@ -160,6 +160,7 @@ function _formatCmForUI(cm, units, mode) {
 // Expose for other modules (e.g. pushUserConfigToDevice).
 window.gfParseLenToCm = _parseLenToCm;
 window.gfGetUnits = _getUnits;
+window.gfFormatCmForUI = _formatCmForUI;
 
 function persistUserProfileCache() {
     if (!userProfile || typeof userProfile.name !== 'string' || !userProfile.name.trim()) return;
@@ -170,8 +171,7 @@ function persistUserProfileCache() {
             name: userProfile.name,
             height_cm: userProfile.height_cm,
             wingspan_cm: userProfile.wingspan_cm,
-            skill_level: userProfile.skill_level,
-            pool_length: userProfile.pool_length
+            skill_level: userProfile.skill_level
         }));
     } catch (e) { /* quota */ }
 }
@@ -254,8 +254,7 @@ async function createAccountFromModal(e) {
         password,
         height_cm: _parseLenToCm(heightRaw, units),
         wingspan_cm: _parseLenToCm(wingspanRaw, units),
-        skill_level: document.getElementById('reg-skill')?.value || 'beginner',
-        pool_length: parseFloat(document.getElementById('reg-pool-length')?.value) || 25
+        skill_level: document.getElementById('reg-skill')?.value || 'beginner'
     };
     const res = await apiPost('/api/auth/register', body);
     if (res && res.status === 'ok' && res.token) {
@@ -298,8 +297,7 @@ async function saveProfileFromSettings(e) {
         name: nameInput,
         height_cm: _parseLenToCm(heightRaw, units),
         wingspan_cm: _parseLenToCm(wingspanRaw, units),
-        skill_level: document.getElementById('settings-skill')?.value || 'beginner',
-        pool_length: parseFloat(document.getElementById('settings-pool-length')?.value) || 25
+        skill_level: document.getElementById('settings-skill')?.value || 'beginner'
     };
     const res = await apiPost('/api/profile', body);
     if (res && res.status === 'ok' && res.profile) {
@@ -334,7 +332,7 @@ async function logoutUser() {
     try { if (typeof stopRealtimeEvents === 'function') stopRealtimeEvents(); } catch (e) { /* ignore */ }
 
     ['login-email', 'login-password', 'reg-name', 'reg-email', 'reg-password',
-     'reg-height', 'reg-wingspan', 'reg-pool-length'].forEach(id => {
+     'reg-height', 'reg-wingspan'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = '';
     });
@@ -418,7 +416,6 @@ function updateProfileUI() {
         if (wEl) wEl.value = _formatCmForUI(userProfile.wingspan_cm || 0, units, 'wingspan');
     });
     ['settings-skill', 'reg-skill'].forEach(id => { const el = document.getElementById(id); if (el) el.value = userProfile.skill_level || 'beginner'; });
-    ['settings-pool-length', 'reg-pool-length'].forEach(id => { const el = document.getElementById(id); if (el) el.value = userProfile.pool_length || '25'; });
     ['settings-wearable-count', 'reg-wearable-count'].forEach((id) => {
         const wc = document.getElementById(id);
         if (wc) wc.value = String(getExpectedWearableCount());

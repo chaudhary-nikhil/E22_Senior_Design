@@ -58,8 +58,10 @@ static const char *TAG = "GOLDENFORM";
 
 // Status LEDs on GPIO 40, 41, 42
 #define POWER_LED_GPIO 40  // Always on when powered
-#define STATUS_LED_GPIO 9 // ON during logging, BLINKS during syncing
-#define ERROR_LED_GPIO 1  // ON when any error occurs (IMU, SD card, WiFi)
+// #define STATUS_LED_GPIO 9 // ON during logging, BLINKS during syncing
+// #define ERROR_LED_GPIO 1  // ON when any error occurs (IMU, SD card, WiFi)
+#define STATUS_LED_GPIO 41 // ON during logging, BLINKS during syncing
+#define ERROR_LED_GPIO 42  // ON when any error occurs (IMU, SD card, WiFi)
 
 // ============== Application State Machine ==============
 typedef enum {
@@ -482,7 +484,8 @@ static void handle_button_press(void) {
     transition_to_idle(false);
     break;
   case STATE_SYNCING:
-    transition_to_idle(true);
+    /* End Wi‑Fi session without erasing SD (same rationale as auto transfer complete). */
+    transition_to_idle(false);
     break;
   }
 }
@@ -607,8 +610,8 @@ void app_main(void) {
       err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
       if (err == ESP_OK) {
         bno055_available = true;
-        ESP_LOGI(TAG, "BNO055 initialized at 0x%02X (attempt %d)",
-                 BNO055_ADDR_A, attempt);
+        ESP_LOGI(TAG, "BNO055 initialized at I2C 0x%02X (attempt %d)",
+                 bno055_bus_addr(), attempt);
         break;
       }
       ESP_LOGW(TAG, "IMU init attempt %d failed: %s", attempt,
@@ -644,7 +647,7 @@ void app_main(void) {
         if (err == ESP_OK && cal_size == 22) {
           // Load saved calibration offsets into BNO055
           esp_err_t load_err =
-              bno055_load_calibration_data(I2C_NUM_0, BNO055_ADDR_A, cal_data);
+              bno055_load_calibration_data(I2C_NUM_0, bno055_bus_addr(), cal_data);
           if (load_err == ESP_OK) {
             ESP_LOGI(
                 TAG,
@@ -755,6 +758,9 @@ void app_main(void) {
     if (nvs_get_blob(nvs, "user_cfg_h", &h_cm, &required_size) != ESP_OK) h_cm = 180.0f;
     required_size = sizeof(int);
     if (nvs_get_blob(nvs, "user_cfg_s", &skill_val, &required_size) != ESP_OK) skill_val = 1;
+    if (skill_val < (int)HAPTIC_SKILL_BEGINNER || skill_val > (int)HAPTIC_SKILL_COMPETITIVE) {
+      skill_val = (int)HAPTIC_SKILL_INTERMEDIATE;
+    }
 
     stroke_detector_set_user_params(w_cm, (haptic_skill_level_t)skill_val);
     nvs_close(nvs);
@@ -824,12 +830,18 @@ void app_main(void) {
       handle_button_press();
     }
 
-    // Auto-return to IDLE when sync transfer completes (AP stays alive)
+    /* When JSON/protobuf export finishes, end SYNC state but do NOT erase the SD.
+     * Erasing here raced the host: transfer_complete fires as soon as one download
+     * finishes, while Python /process may still be parsing, or the user may retry /
+     * open data.json again — files were deleted ~1s later and sync appeared to
+     * "disconnect" with data lost. Session .pb files remain until the next swim
+     * (new files) or manual cleanup; frees space on card can be added later via UI. */
     if (current_state == STATE_SYNCING && wifi_available &&
         wifi_server_is_transfer_complete()) {
-      ESP_LOGI(TAG, "Transfer complete — returning to IDLE (AP stays alive)");
+      ESP_LOGI(TAG,
+               "Transfer complete — IDLE (AP stays up; SD session files kept for replay)");
       vTaskDelay(pdMS_TO_TICKS(1000));
-      transition_to_idle(true);
+      transition_to_idle(false);
     }
 
     // Sync timeout: auto-return to IDLE after 5 minutes with no transfer
@@ -868,7 +880,7 @@ void app_main(void) {
      * (USB/UART is IDF console only — not the PDP data path.) */
     if (bno055_available) {
       bno055_sample_t sample;
-      err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
+      err = bno055_read_sample(I2C_NUM_0, bno055_bus_addr(), &sample);
       if (err == ESP_OK) {
         // Calibration monitoring - log status changes and announce full
         // calibration
@@ -900,7 +912,7 @@ void app_main(void) {
                 // Save calibration to NVS for one-shot calibration on next boot
                 uint8_t cal_data[22];
                 esp_err_t save_err = bno055_save_calibration_data(
-                    I2C_NUM_0, BNO055_ADDR_A, cal_data);
+                    I2C_NUM_0, bno055_bus_addr(), cal_data);
                 if (save_err == ESP_OK) {
                   nvs_handle_t nvs;
                   if (nvs_open("goldenform", NVS_READWRITE, &nvs) == ESP_OK) {
@@ -932,7 +944,6 @@ void app_main(void) {
         sample.haptic_reason = stroke_event.haptic_reason;
         sample.pull_duration_ms = stroke_event.pull_duration_ms;
         sample.stroke_count = stroke_event.stroke_count;
-        sample.turn_count = stroke_event.turn_count;
 
         // Populate device metadata (wrist side from NVS / user_config, not compile-time)
         sample.device_id = CONFIG_GOLDENFORM_DEVICE_ID;
@@ -943,9 +954,6 @@ void app_main(void) {
 
         if (stroke_event.stroke_detected) {
           ESP_LOGI(TAG, "Stroke #%u detected", (unsigned)stroke_event.stroke_count);
-        }
-        if (stroke_event.turn_detected) {
-          ESP_LOGI(TAG, "Turn #%u detected", (unsigned)stroke_event.turn_count);
         }
 
         // When logging, also store to SD card

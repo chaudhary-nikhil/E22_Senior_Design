@@ -71,6 +71,28 @@ window.addEventListener('DOMContentLoaded', async () => {
         try { return await fn(); } catch (e) { return null; }
     };
     try { bindNavigationButtons(); } catch (e) { /* ignore */ }
+    try {
+        const d3 = document.querySelector('.viz-3d-details');
+        if (d3) {
+            d3.addEventListener('toggle', () => {
+                if (!d3.open) return;
+                try {
+                    if (typeof init3D === 'function') init3D();
+                    if (renderer && camera) {
+                        const c = document.getElementById('canvas3d');
+                        if (c) {
+                            const w = Math.min(Math.max(c.clientWidth || 800, 400), 1400);
+                            const h = Math.min(Math.max(c.clientHeight || 450, 400), 900);
+                            renderer.setSize(w, h, false);
+                            camera.aspect = w / h;
+                            camera.updateProjectionMatrix();
+                        }
+                    }
+                    if (renderer && scene && camera) renderer.render(scene, camera);
+                } catch (e) { /* ignore */ }
+            });
+        }
+    } catch (e) { /* ignore */ }
     /* Run before loadUserProfile: that await can be slow; otherwise setup badges stay "Loading…"
        and the nav hint never updates until the whole chain completes. */
     try { if (typeof renderSetupJourney === 'function') renderSetupJourney(); } catch (e) { /* ignore */ }

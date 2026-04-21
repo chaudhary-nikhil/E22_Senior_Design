@@ -83,11 +83,6 @@
                 <div class="card-value" id="home-last-haptic">--</div>
                 <div class="card-sub">haptic fired</div>
             </div>
-            <div class="card stat-card">
-                <div class="card-title">Last Distance</div>
-                <div class="card-value" id="home-last-distance">--</div>
-                <div class="card-sub">meters</div>
-            </div>
         </div>
         <div class="card" id="quick-actions" style="margin-top:16px;display:none;">
             <div class="card-title">Quick actions</div>
@@ -111,12 +106,15 @@
                 <div class="card viz-card viz-side-card">
                     <div class="card-title">Side view: LIA position and device tilt</div>
                     <p class="viz-side-lead">Forward and vertical motion for each stroke. With two bands merged, paths use <strong>solid = this stroke’s band</strong> and <strong>dashed = other band</strong> (same time window). Use <strong>Speed</strong> to slow playback.</p>
+                    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:0 0 8px;">
+                        <button type="button" class="btn btn-outline btn-sm" id="download-side-view-btn" onclick="exportSideViewCoordinates()" title="Download all side-view 2D coordinates for strokes in the selected session as JSON.">Download 2D coordinates (JSON)</button>
+                    </div>
                     <div class="viz-side-canvas-wrap">
                         <canvas id="canvas-side-view" width="880" height="340"></canvas>
                     </div>
                 </div>
-                <details class="viz-3d-details" open>
-                    <summary class="viz-3d-summary">3D view: drag to rotate, pinch to zoom. Collapse for more side view.</summary>
+                <details class="viz-3d-details">
+                    <summary class="viz-3d-summary">3D view: click to expand. Drag to rotate, pinch to zoom.</summary>
                     <div class="card viz-card viz-card--nested3d">
                         <canvas id="canvas3d" width="800" height="450"></canvas>
                         <p style="font-size:0.78em;color:var(--text3);margin:8px 0 0;line-height:1.4;">Two bands merged: <strong>two cubes</strong> (nearest time on each stream) and <strong>two trail colors</strong>.</p>
@@ -218,9 +216,6 @@
                     <div class="card-title">Session Summary</div>
                     <div class="summary-grid">
                         <span>Strokes: <strong id="sum-strokes">-</strong></span>
-                        <span>Turns: <strong id="sum-turns">-</strong></span>
-                        <span>Distance: <strong id="sum-distance">-</strong></span>
-                        <span>Pace: <strong id="sum-pace">-</strong></span>
                         <span>Duration: <strong id="sum-duration">-</strong></span>
                         <span>Rate: <strong id="sum-rate">-</strong></span>
                         <span>Consistency: <strong id="sum-consistency">-</strong></span>
@@ -389,6 +384,12 @@
             <h1 class="page-heading__title">Settings</h1>
             <p class="page-heading__sub">Profile, wearables, IMU calibration, baseline</p>
         </header>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-title">Research · video ground truth</div>
+            <p class="settings-field-hint" style="margin-top:8px;">Upload a lab swim-stroke video and export 2D wrist positions (MediaPipe) as JSON for comparison with IMU-integrated paths.</p>
+            <a class="btn btn-outline btn-sm" href="/stroke_video_calibration.html" style="margin-top:10px;display:inline-block;">Open video hand-track tool</a>
+            <a class="btn btn-outline btn-sm" href="/hand_track_viewer.html" style="margin-top:10px;display:inline-block;margin-left:8px;">Visualize hand-track JSON</a>
+        </div>
         <div class="grid-2">
             <div class="card">
                 <div class="card-title">Profile</div>
@@ -416,9 +417,8 @@
                         <option value="beginner">Beginner</option>
                         <option value="intermediate">Intermediate</option>
                         <option value="advanced">Advanced</option>
-                        <option value="competitive">Competitive</option>
+                        <option value="competitive" title="Strictest haptic: smallest deviation from ideal before nudges (racing / elite tuning)">Competitive</option>
                     </select>
-                    <label>Pool Length (m)</label><input type="number" id="settings-pool-length" placeholder="25" style="margin-bottom:12px;">
                     <label>How many wearables?</label>
                     <input type="number" id="settings-wearable-count" min="1" max="2" value="1" style="margin-bottom:12px;" title="1 or 2 (left and right)">
                     <p class="settings-field-hint">1 = one wrist, 2 = both. The checklist uses this.</p>
@@ -465,6 +465,7 @@
                 <div class="cal-item"><span class="cal-label">Mag</span><span class="cal-badge cal-warn" id="cal-mag">--</span></div>
             </div>
             <div class="cal-quality-row">Quality <strong id="cal-quality">--</strong></div>
+            <p id="cal-device-params" class="cal-hint" hidden style="margin-top:8px;"></p>
             <p id="cal-hint" class="cal-hint"></p>
             <p id="cal-saved-strip" class="cal-saved-strip"></p>
             <div class="cal-save-row">
@@ -545,7 +546,7 @@
                                 <option value="beginner">Beginner</option>
                                 <option value="intermediate">Intermediate</option>
                                 <option value="advanced">Advanced</option>
-                                <option value="competitive">Competitive</option>
+                                <option value="competitive" title="Strictest haptic: smallest deviation from ideal before nudges">Competitive</option>
                             </select>
                         </div>
                         <div>
@@ -555,10 +556,6 @@
                         <div>
                             <label>Wingspan</label>
                             <input type="text" id="reg-wingspan" placeholder="72">
-                        </div>
-                        <div>
-                            <label>Pool (m)</label>
-                            <input type="number" id="reg-pool-length" placeholder="25" min="10" max="100">
                         </div>
                         <div>
                             <label>Wearables</label>
