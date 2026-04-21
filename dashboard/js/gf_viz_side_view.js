@@ -197,8 +197,37 @@ function _decideSagittalPolarity(rotPts) {
 }
 
 /**
+ * Decide Y-sign from phase physics: in-water phases (catch, pull) should plot BELOW the
+ * out-of-water phases (recovery, glide) in the math-CCW frame (+y up). Picking ySign this
+ * way keeps every stroke visually upright (pull dips, recovery arcs over the top), which
+ * also produces consistent loop winding across strokes without the 180-degree mirror that
+ * a shoelace-area based lock would apply. Returns {ySign, ambiguous}.
+ */
+function _decideVerticalPolarity(rotPtsAfterXSign) {
+    if (!rotPtsAfterXSign || rotPtsAfterXSign.length < 4) {
+        return { ySign: 1, ambiguous: true };
+    }
+    let inSum = 0, inCount = 0, outSum = 0, outCount = 0;
+    let minY = Infinity, maxY = -Infinity;
+    for (const p of rotPtsAfterXSign) {
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+        const ph = _phaseForSideView(p.i);
+        if (ph === 'catch' || ph === 'pull') { inSum += p.y; inCount += 1; }
+        else if (ph === 'recovery' || ph === 'glide') { outSum += p.y; outCount += 1; }
+    }
+    if (inCount < 2 || outCount < 2) return { ySign: 1, ambiguous: true };
+    const inMean = inSum / inCount;
+    const outMean = outSum / outCount;
+    const range = Math.max(maxY - minY, 1e-9);
+    const delta = outMean - inMean; // want positive (recovery/glide above catch/pull)
+    const ambiguous = Math.abs(delta) < range * 0.05;
+    return { ySign: delta >= 0 ? 1 : -1, ambiguous };
+}
+
+/**
  * Apply X and Y sign flips to a rotated 2D polyline. xSign normalizes "catch/pull reads +X",
- * ySign normalizes winding direction (CCW vs CW) across strokes. Either flip alone is a
+ * ySign normalizes "pull is below recovery" across strokes. Either flip alone is a
  * reflection (flips winding); applying both is a 180-degree rotation (preserves winding).
  */
 function _applySagittalSigns(rotPts, xSign, ySign) {
@@ -307,28 +336,33 @@ function _getStrokeSagittalTransform(b) {
     } else if (!decision.ambiguous && !_sagittalFirstPerStream.has(streamKey)) {
         _sagittalFirstPerStream.set(streamKey, finalSign);
     }
-    /* Decide the Y-sign so this stroke's winding matches the session majority. A pure X-mirror
-     * is a reflection and flips shoelace area sign; applying a matching Y-mirror restores winding
-     * while keeping the forward-is-+X semantic (net transform becomes a 180deg rotation). */
+    /* Decide the Y-sign from phase physics: catch/pull below recovery/glide. This keeps
+     * every stroke visually upright (pull dips underwater, recovery arcs overhead) and also
+     * makes loop winding consistent across strokes as a side-effect -- without the 180-degree
+     * rotation a shoelace-area based lock would apply, which made Y-flipped strokes look
+     * like they rotated the opposite direction. */
     const xSignedFull = _applySagittalSigns(rotFull, finalSign, 1);
-    const areaX = _signedArea2D(xSignedFull);
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const p of xSignedFull) {
-        if (p.x < minX) minX = p.x;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
+    const vert = _decideVerticalPolarity(xSignedFull);
+    let ySign = vert.ySign;
+    if (vert.ambiguous) {
+        /* Phase info was insufficient (no confident catch/pull vs recovery/glide split).
+         * Fall back to the session-majority shoelace winding lock so ambiguous strokes at
+         * least agree with the rest of the session on rotation sense. */
+        const areaX = _signedArea2D(xSignedFull);
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of xSignedFull) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        }
+        const bbArea = Math.max((maxX - minX) * (maxY - minY), 1e-9);
+        const lockedSign = _sagittalWindingPerStream.get(streamKey); // +1/-1 or undefined
+        if (lockedSign && Math.abs(areaX) >= bbArea * 0.01) {
+            const areaSign = areaX >= 0 ? 1 : -1;
+            ySign = (areaSign === lockedSign) ? 1 : -1;
+        }
     }
-    const bbArea = Math.max((maxX - minX) * (maxY - minY), 1e-9);
-    const areaAmbiguous = Math.abs(areaX) < bbArea * 0.01;
-    const lockedSign = _sagittalWindingPerStream.get(streamKey); // +1/-1 or undefined
-    let ySign = 1;
-    if (lockedSign && !areaAmbiguous) {
-        const areaSign = areaX >= 0 ? 1 : -1;
-        ySign = (areaSign === lockedSign) ? 1 : -1;
-    }
-    /* areaAmbiguous or no lock -> leave ySign = +1, which keeps existing behaviour for
-     * edge cases like single-stroke or all-flat sessions. */
     const out = { pcaAng, sign: finalSign, ySign };
     _sagittalCache.set(key, out);
     return out;
