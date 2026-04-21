@@ -221,8 +221,12 @@ esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys,
                                         uint8_t *gyro, uint8_t *accel,
                                         uint8_t *mag);
 /**
- * @brief Last fusion calibration values from the most recent bno055_read_sample() (same numbers as IMU loop / serial).
- *        Use this for HTTP /api/device_info instead of a second I2C read to avoid bus contention with the sampling task.
+ * @brief I2C address selected during bno055_init() (0x28 or 0x29). Use for all runtime reads/writes.
+ */
+uint8_t bno055_bus_addr(void);
+/**
+ * @brief Last fusion calibration values from the most recent successful bno055_read_sample().
+ *        Prefer bno055_get_calibration_status() for HTTP when the main loop has not updated the cache yet.
  */
 void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
                                  uint8_t *mag);

@@ -1410,8 +1410,13 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
   const char *skill = skill_str ? skill_str->valuestring : "intermediate";
 
   int skill_val = 1; // intermediate
-  if (strcmp(skill, "beginner") == 0) skill_val = 0;
-  else if (strcmp(skill, "advanced") == 0) skill_val = 2;
+  if (strcmp(skill, "beginner") == 0) {
+    skill_val = 0;
+  } else if (strcmp(skill, "advanced") == 0) {
+    skill_val = 2;
+  } else if (strcmp(skill, "competitive") == 0) {
+    skill_val = 3;
+  }
 
   if (role_json && cJSON_IsString(role_json) && role_json->valuestring) {
     esp_err_t re = goldenform_set_device_role_str(role_json->valuestring);
@@ -1424,8 +1429,8 @@ static esp_err_t user_config_post_handler(httpd_req_t *req) {
 
   cJSON_Delete(root);
 
-  // Apply to stroke detector
-  stroke_detector_set_user_params(w_cm, skill_val);
+  // Apply to stroke detector: 0 beginner, 1 intermediate, 2 advanced, 3 competitive
+  stroke_detector_set_user_params(w_cm, (haptic_skill_level_t)skill_val);
 
   // Save to NVS
   nvs_handle_t nvs;
@@ -1505,13 +1510,14 @@ static esp_err_t test_buzz_handler(httpd_req_t *req) {
 static esp_err_t device_status_handler(httpd_req_t *req) {
   extern bool haptic_is_available(void);
   extern bool stroke_detector_has_ideal(void);
-  extern void bno055_get_last_calibration(uint8_t *sys, uint8_t *gyro, uint8_t *accel,
-                                         uint8_t *mag);
-  extern uint8_t bno055_get_last_opmode(void);
 
-  /* Same cal nibbles as the IMU sampling loop (serial), not a second I2C read (avoids contention). */
+  /* Live I2C read (serialized with the IMU loop) so the first poll after AP start is not stuck at 0. */
   uint8_t sys = 0, gyro = 0, accel = 0, mag = 0;
-  bno055_get_last_calibration(&sys, &gyro, &accel, &mag);
+  uint8_t bus = bno055_bus_addr();
+  if (bno055_get_calibration_status(I2C_NUM_0, bus, &sys, &gyro, &accel, &mag) !=
+      ESP_OK) {
+    bno055_get_last_calibration(&sys, &gyro, &accel, &mag);
+  }
   uint8_t opmode = bno055_get_last_opmode();
 
   const char *role_str = s_wrist_left ? "wrist_left" : "wrist_right";

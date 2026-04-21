@@ -26,14 +26,14 @@ extern "C" {
 // Haptic reason bitfield — tells the app exactly WHY the motor fired
 #define HAPTIC_REASON_NONE       0x00
 #define HAPTIC_REASON_DTW_HIGH   0x01  // Overall stroke shape deviation exceeded threshold
-#define HAPTIC_REASON_ENTRY_BAD  0x02  // Entry angle outside ideal ± 15°
-#define HAPTIC_REASON_PULL_SHORT 0x04  // Pull phase shorter than expected
+#define HAPTIC_REASON_ENTRY_BAD  0x02  // Entry angle outside ideal ± tolerance (skill-dependent)
+#define HAPTIC_REASON_PULL_SHORT 0x04  // Pull phase shorter than expected (see stroke_detector.c)
 
 typedef struct {
   bool stroke_detected;      // True on the sample where a new stroke was detected
   bool turn_detected;        // True when a wall/turn impact is detected
   bool haptic_fired;         // True if haptic was triggered this sample
-  float deviation_score;     // 0.0 = perfect match, 1.0+ = poor match
+  float deviation_score;     // DTW scale: ~1.0 typical vs ideal, higher = worse
   float entry_angle;         // Water entry angle (degrees) from quaternion pitch
   uint32_t stroke_count;     // Running total of strokes detected
   uint32_t turn_count;       // Running total of turns detected
@@ -41,14 +41,32 @@ typedef struct {
   float pull_duration_ms;    // Duration of pull/integration phase for this stroke (ms)
 } stroke_event_t;
 
-// Skill levels for haptic thresholding
+/**
+ * Skill levels for haptic thresholding (NVS user_cfg_s / POST skill_level).
+ * Ordering: beginner (most relaxed) → … → competitive (strictest, race-pace tuning).
+ */
 typedef enum {
   HAPTIC_SKILL_BEGINNER = 0,
   HAPTIC_SKILL_INTERMEDIATE = 1,
-  HAPTIC_SKILL_ADVANCED = 2
+  HAPTIC_SKILL_ADVANCED = 2,
+  HAPTIC_SKILL_COMPETITIVE = 3
 } haptic_skill_level_t;
 
+/** Snapshot of haptic tuning for the current skill (for logging / tests). */
+typedef struct {
+  float haptic_threshold;
+  float tier_strong_delta;
+  float tier_moderate_delta;
+  float entry_tol_deg;
+  haptic_skill_level_t skill_level;
+} stroke_detector_haptic_profile_t;
+
 void stroke_detector_init(void);
+
+/**
+ * @brief Read back the active haptic profile (after init / set_user_params).
+ */
+void stroke_detector_get_haptic_profile(stroke_detector_haptic_profile_t *out);
 
 /**
  * @brief Reset session-specific state
@@ -107,10 +125,10 @@ float stroke_detector_get_deviation(void);
 /**
  * @brief Set the deviation threshold for haptic trigger
  *
- * When the deviation score exceeds this threshold, haptic fires.
- * Default: 0.5 (moderate tolerance).
+ * When the deviation score exceeds this threshold, haptic fires (unless overridden by skill preset).
+ * Skill presets use ~1.00–1.14 on the on-device DTW scale.
  *
- * @param threshold Deviation threshold (0.0-2.0 typical range)
+ * @param threshold Deviation threshold on same scale as process_dtw_buffer()
  */
 void stroke_detector_set_haptic_threshold(float threshold);
 /**

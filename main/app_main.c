@@ -609,8 +609,8 @@ void app_main(void) {
       err = bno055_init(I2C_NUM_0, BNO055_ADDR_A);
       if (err == ESP_OK) {
         bno055_available = true;
-        ESP_LOGI(TAG, "BNO055 initialized at 0x%02X (attempt %d)",
-                 BNO055_ADDR_A, attempt);
+        ESP_LOGI(TAG, "BNO055 initialized at I2C 0x%02X (attempt %d)",
+                 bno055_bus_addr(), attempt);
         break;
       }
       ESP_LOGW(TAG, "IMU init attempt %d failed: %s", attempt,
@@ -646,7 +646,7 @@ void app_main(void) {
         if (err == ESP_OK && cal_size == 22) {
           // Load saved calibration offsets into BNO055
           esp_err_t load_err =
-              bno055_load_calibration_data(I2C_NUM_0, BNO055_ADDR_A, cal_data);
+              bno055_load_calibration_data(I2C_NUM_0, bno055_bus_addr(), cal_data);
           if (load_err == ESP_OK) {
             ESP_LOGI(
                 TAG,
@@ -757,6 +757,9 @@ void app_main(void) {
     if (nvs_get_blob(nvs, "user_cfg_h", &h_cm, &required_size) != ESP_OK) h_cm = 180.0f;
     required_size = sizeof(int);
     if (nvs_get_blob(nvs, "user_cfg_s", &skill_val, &required_size) != ESP_OK) skill_val = 1;
+    if (skill_val < (int)HAPTIC_SKILL_BEGINNER || skill_val > (int)HAPTIC_SKILL_COMPETITIVE) {
+      skill_val = (int)HAPTIC_SKILL_INTERMEDIATE;
+    }
 
     stroke_detector_set_user_params(w_cm, (haptic_skill_level_t)skill_val);
     nvs_close(nvs);
@@ -870,7 +873,7 @@ void app_main(void) {
      * (USB/UART is IDF console only — not the PDP data path.) */
     if (bno055_available) {
       bno055_sample_t sample;
-      err = bno055_read_sample(I2C_NUM_0, BNO055_ADDR_A, &sample);
+      err = bno055_read_sample(I2C_NUM_0, bno055_bus_addr(), &sample);
       if (err == ESP_OK) {
         // Calibration monitoring - log status changes and announce full
         // calibration
@@ -902,7 +905,7 @@ void app_main(void) {
                 // Save calibration to NVS for one-shot calibration on next boot
                 uint8_t cal_data[22];
                 esp_err_t save_err = bno055_save_calibration_data(
-                    I2C_NUM_0, BNO055_ADDR_A, cal_data);
+                    I2C_NUM_0, bno055_bus_addr(), cal_data);
                 if (save_err == ESP_OK) {
                   nvs_handle_t nvs;
                   if (nvs_open("goldenform", NVS_READWRITE, &nvs) == ESP_OK) {

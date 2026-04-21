@@ -2,6 +2,7 @@
 #include "bus_i2c.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <string.h>
 
@@ -9,6 +10,27 @@ static const char *TAG = "BNO055";
 
 // Session start time - resets to 0 on each boot
 static uint32_t session_start_time = 0;
+
+static SemaphoreHandle_t s_bno_bus_mutex = NULL;
+
+static void bno055_bus_lock(void) {
+  if (!s_bno_bus_mutex) {
+    s_bno_bus_mutex = xSemaphoreCreateRecursiveMutex();
+  }
+  if (s_bno_bus_mutex) {
+    xSemaphoreTakeRecursive(s_bno_bus_mutex, portMAX_DELAY);
+  }
+}
+
+static void bno055_bus_unlock(void) {
+  if (s_bno_bus_mutex) {
+    xSemaphoreGiveRecursive(s_bno_bus_mutex);
+  }
+}
+
+static uint8_t s_bus_addr = BNO055_ADDR_A;
+
+uint8_t bno055_bus_addr(void) { return s_bus_addr; }
 
 /* Updated only inside bno055_read_sample (sampling task). HTTP uses this instead of a concurrent I2C cal read. */
 static volatile uint8_t s_last_cal_sys = 0;
@@ -148,6 +170,7 @@ esp_err_t bno055_init(int port, uint8_t addr) {
   }
 
   addr = working_addr;
+  s_bus_addr = working_addr;
 
   // Reset and configure
   ESP_LOGI(TAG, "Resetting BNO055...");
@@ -206,18 +229,27 @@ esp_err_t bno055_init(int port, uint8_t addr) {
 
   vTaskDelay(pdMS_TO_TICKS(100));
 
-  ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X", (unsigned)GF_TARGET_OPMODE);
+  ESP_LOGI(TAG, "BNO055 initialized successfully in mode 0x%02X (I2C 0x%02X)",
+           (unsigned)GF_TARGET_OPMODE, (unsigned)s_bus_addr);
   return ESP_OK;
+}
+
+/** Mode write + settle; caller holds bno055_bus_lock when required. */
+static esp_err_t bno055_set_opmode_unlocked(int port, uint8_t addr,
+                                            bno055_opmode_t mode) {
+  esp_err_t err = bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
+  if (err == ESP_OK) {
+    s_last_opmode = (uint8_t)mode;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return err;
 }
 
 esp_err_t bno055_set_operation_mode(int port, uint8_t addr,
                                     bno055_opmode_t mode) {
-  esp_err_t err = bno055_write8(port, addr, BNO055_OPR_MODE_ADDR, (uint8_t)mode);
-  if (err == ESP_OK) {
-    s_last_opmode = (uint8_t)mode;
-    // Datasheet: allow mode switch to settle (min 7ms).
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
+  bno055_bus_lock();
+  esp_err_t err = bno055_set_opmode_unlocked(port, addr, mode);
+  bno055_bus_unlock();
   return err;
 }
 
@@ -229,23 +261,41 @@ esp_err_t bno055_reset(int port, uint8_t addr) {
 esp_err_t bno055_get_calibration_status(int port, uint8_t addr, uint8_t *sys,
                                         uint8_t *gyro, uint8_t *accel,
                                         uint8_t *mag) {
-  uint8_t cal_status;
-  esp_err_t err = bno055_read8(port, addr, BNO055_CALIB_STAT_ADDR, &cal_status);
+  if (!sys || !gyro || !accel || !mag) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  *sys = *gyro = *accel = *mag = 0;
+
+  bno055_bus_lock();
+  /* CALIB_STAT (0x35) is only valid on register page 0. */
+  esp_err_t err = bno055_write8(port, addr, BNO055_PAGE_ID_ADDR, 0);
   if (err != ESP_OK) {
+    bno055_bus_unlock();
     return err;
   }
-
-  *sys = (cal_status >> 6) & 0x03;
-  *gyro = (cal_status >> 4) & 0x03;
-  *accel = (cal_status >> 2) & 0x03;
-  *mag = cal_status & 0x03;
-
-  return ESP_OK;
+  uint8_t cal_status = 0;
+  err = bno055_read8(port, addr, BNO055_CALIB_STAT_ADDR, &cal_status);
+  if (err == ESP_OK) {
+    *sys = (cal_status >> 6) & 0x03;
+    *gyro = (cal_status >> 4) & 0x03;
+    *accel = (cal_status >> 2) & 0x03;
+    *mag = cal_status & 0x03;
+  }
+  bno055_bus_unlock();
+  return err;
 }
 
 esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
   if (!out) {
     return ESP_ERR_INVALID_ARG;
+  }
+
+  bno055_bus_lock();
+
+  /* Fusion data vector is defined on page 0 (same as CALIB_STAT). */
+  if (bno055_write8(port, addr, BNO055_PAGE_ID_ADDR, 0) != ESP_OK) {
+    bno055_bus_unlock();
+    return ESP_ERR_INVALID_RESPONSE;
   }
 
   // Use relative timestamp starting from 0 for this session
@@ -254,6 +304,7 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
   }
   out->t_ms = (xTaskGetTickCount() * portTICK_PERIOD_MS) - session_start_time;
 
+  esp_err_t err = ESP_OK;
   // Read accelerometer data
   int16_t ax_raw, ay_raw, az_raw;
   if (bno055_read16(port, addr, BNO055_ACCEL_DATA_X_LSB_ADDR, &ax_raw) !=
@@ -262,7 +313,8 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
           ESP_OK ||
       bno055_read16(port, addr, BNO055_ACCEL_DATA_Z_LSB_ADDR, &az_raw) !=
           ESP_OK) {
-    return ESP_ERR_INVALID_RESPONSE;
+    err = ESP_ERR_INVALID_RESPONSE;
+    goto out;
   }
 
   // Convert to m/s² (LSB = 1 mg = 0.001 m/s²)
@@ -278,7 +330,8 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
           ESP_OK ||
       bno055_read16(port, addr, BNO055_GYRO_DATA_Z_LSB_ADDR, &gz_raw) !=
           ESP_OK) {
-    return ESP_ERR_INVALID_RESPONSE;
+    err = ESP_ERR_INVALID_RESPONSE;
+    goto out;
   }
 
   // Convert to rad/s (LSB = 1/900 dps, convert dps to rad/s)
@@ -294,7 +347,8 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
           ESP_OK ||
       bno055_read16(port, addr, BNO055_MAG_DATA_Z_LSB_ADDR, &mz_raw) !=
           ESP_OK) {
-    return ESP_ERR_INVALID_RESPONSE;
+    err = ESP_ERR_INVALID_RESPONSE;
+    goto out;
   }
 
   // Convert to μT (LSB = 1/16 μT)
@@ -308,7 +362,8 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
       bno055_read16(port, addr, BNO055_EULER_P_LSB_ADDR, &pitch_raw) !=
           ESP_OK ||
       bno055_read16(port, addr, BNO055_EULER_H_LSB_ADDR, &yaw_raw) != ESP_OK) {
-    return ESP_ERR_INVALID_RESPONSE;
+    err = ESP_ERR_INVALID_RESPONSE;
+    goto out;
   }
 
   // Convert to degrees (LSB = 1/16 degrees)
@@ -326,7 +381,8 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
           ESP_OK ||
       bno055_read16(port, addr, BNO055_QUATERNION_DATA_Z_LSB_ADDR, &qz_raw) !=
           ESP_OK) {
-    return ESP_ERR_INVALID_RESPONSE;
+    err = ESP_ERR_INVALID_RESPONSE;
+    goto out;
   }
 
   // Convert quaternion (LSB = 1/(2^14))
@@ -343,7 +399,8 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
                     &lia_y_raw) != ESP_OK ||
       bno055_read16(port, addr, BNO055_LINEAR_ACCEL_DATA_Z_LSB_ADDR,
                     &lia_z_raw) != ESP_OK) {
-    return ESP_ERR_INVALID_RESPONSE;
+    err = ESP_ERR_INVALID_RESPONSE;
+    goto out;
   }
 
   // Convert to m/s^2 (LSB = 1/100 m/s^2)
@@ -361,9 +418,11 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
     out->temp = 0.0f;
   }
 
-  // Read calibration status
-  bno055_get_calibration_status(port, addr, &out->sys_cal, &out->gyro_cal,
-                                &out->accel_cal, &out->mag_cal);
+  /* Calibration status: same mutex depth (recursive) as this function. */
+  if (bno055_get_calibration_status(port, addr, &out->sys_cal, &out->gyro_cal,
+                                    &out->accel_cal, &out->mag_cal) != ESP_OK) {
+    out->sys_cal = out->gyro_cal = out->accel_cal = out->mag_cal = 0;
+  }
   s_last_cal_sys = out->sys_cal;
   s_last_cal_gyro = out->gyro_cal;
   s_last_cal_accel = out->accel_cal;
@@ -378,7 +437,9 @@ esp_err_t bno055_read_sample(int port, uint8_t addr, bno055_sample_t *out) {
              mode, out->sys_cal, out->gyro_cal, out->accel_cal, out->mag_cal);
   }
 
-  return ESP_OK;
+out:
+  bno055_bus_unlock();
+  return err;
 }
 
 esp_err_t bno055_start_calibration(int port, uint8_t addr) {
@@ -395,30 +456,30 @@ esp_err_t bno055_save_calibration_data(int port, uint8_t addr,
   if (!cal_data)
     return ESP_ERR_INVALID_ARG;
 
-  // Must be in CONFIG mode to read offset registers (BNO055 datasheet 3.6.4)
+  bno055_bus_lock();
   esp_err_t err =
-      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
-  if (err != ESP_OK)
+      bno055_set_opmode_unlocked(port, addr, BNO055_OPERATION_MODE_CONFIG);
+  if (err != ESP_OK) {
+    bno055_bus_unlock();
     return err;
+  }
   vTaskDelay(pdMS_TO_TICKS(25));
 
-  // Read 22 bytes: accel offsets (6) + mag offsets (6) + gyro offsets (6) +
-  //                accel radius (2) + mag radius (2)
   for (int i = 0; i < 22; i++) {
     err = bno055_read8(port, addr, BNO055_ACCEL_OFFSET_X_LSB_ADDR + i,
                        &cal_data[i]);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to read cal offset at reg 0x%02X",
                BNO055_ACCEL_OFFSET_X_LSB_ADDR + i);
-      // Restore fusion mode before returning error
-      bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
+      (void)bno055_set_opmode_unlocked(port, addr, GF_TARGET_OPMODE);
+      bno055_bus_unlock();
       return err;
     }
   }
 
-  // Restore fusion mode
-  err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
+  err = bno055_set_opmode_unlocked(port, addr, GF_TARGET_OPMODE);
   vTaskDelay(pdMS_TO_TICKS(20));
+  bno055_bus_unlock();
 
   ESP_LOGI(TAG, "Calibration data saved (22 bytes)");
   return err;
@@ -429,28 +490,30 @@ esp_err_t bno055_load_calibration_data(int port, uint8_t addr,
   if (!cal_data)
     return ESP_ERR_INVALID_ARG;
 
-  // Must be in CONFIG mode to write offset registers
+  bno055_bus_lock();
   esp_err_t err =
-      bno055_set_operation_mode(port, addr, BNO055_OPERATION_MODE_CONFIG);
-  if (err != ESP_OK)
+      bno055_set_opmode_unlocked(port, addr, BNO055_OPERATION_MODE_CONFIG);
+  if (err != ESP_OK) {
+    bno055_bus_unlock();
     return err;
+  }
   vTaskDelay(pdMS_TO_TICKS(25));
 
-  // Write 22 bytes of calibration offsets + radii
   for (int i = 0; i < 22; i++) {
     err = bno055_write8(port, addr, BNO055_ACCEL_OFFSET_X_LSB_ADDR + i,
                         cal_data[i]);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to write cal offset at reg 0x%02X",
                BNO055_ACCEL_OFFSET_X_LSB_ADDR + i);
-      bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
+      (void)bno055_set_opmode_unlocked(port, addr, GF_TARGET_OPMODE);
+      bno055_bus_unlock();
       return err;
     }
   }
 
-  // Restore fusion mode
-  err = bno055_set_operation_mode(port, addr, GF_TARGET_OPMODE);
+  err = bno055_set_opmode_unlocked(port, addr, GF_TARGET_OPMODE);
   vTaskDelay(pdMS_TO_TICKS(20));
+  bno055_bus_unlock();
 
   ESP_LOGI(TAG, "Calibration data restored (22 bytes)");
   return err;
