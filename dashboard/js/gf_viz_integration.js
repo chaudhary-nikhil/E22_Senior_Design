@@ -82,6 +82,15 @@ const GF_STROKE_TEMPLATE_APEX_M  = { x: 0.00, y: +0.25, z: -0.10 };
  *  detection becomes unreliable and the piecewise-linear correction risks spiking. */
 const GF_STROKE_WARP_MIN_SAMPLES = 8;
 
+/** Jump-bridge thresholds. A sample-to-sample position delta larger than
+ *  `GF_JUMP_BRIDGE_K * median(|delta|)` inside a single stroke is treated as a spurious
+ *  teleport (Python reset misaligned with firmware strokes, cal dropout re-zero, or a large
+ *  dt gap). We stitch it out by subtracting the jump offset from every sample past the
+ *  spike, preserving relative motion on both sides. Idempotent. */
+const GF_JUMP_BRIDGE_K = 8;
+const GF_JUMP_BRIDGE_MAX_CORRECTIONS = 3;
+const GF_JUMP_BRIDGE_MIN_SAMPLES = 8;
+
 /**
  * Stroke-type gate for the template warp. Today the entire dashboard assumes freestyle
  * (entry-angle targets, coaching copy, resampleTrailFreestyle), so there is no
@@ -270,6 +279,11 @@ function integratePositions() {
     buildRawIntegratedPositions();
     applyPerStrokeOriginOffset(rawIntegratedPositions);
     buildPlaybackStrokeSegments();
+    /* Stitch out single-sample teleports (Python reset misaligned with firmware strokes,
+     * cal dropout hard-zero, long dt gap) before the checkpoint warp sees the stroke. */
+    if (typeof window === 'undefined' || window.GF_JUMP_BRIDGE !== false) {
+        rawIntegratedPositions = bridgeStrokeJumps(rawIntegratedPositions);
+    }
     /* RRT-style 4-checkpoint warp: closes each freestyle stroke's integrated loop and
      * anchors the nadir/apex to the template. Toggle off for debugging via
      * `window.GF_STROKE_CHECKPOINT_WARP = false` in the console before reload. */
@@ -537,6 +551,86 @@ function applyPerStrokeOriginOffset(points) {
  *
  * Requires `playbackStrokeSegments` to be built first.
  */
+/**
+ * bridgeStrokeJumps: per-stroke single-sample teleport fix.
+ *
+ * Scans each canonical stroke segment for a position delta whose magnitude is much larger
+ * than the stroke's typical step (median * GF_JUMP_BRIDGE_K). Each such jump is treated
+ * as an off-device reset (Python stroke_detected misaligned with firmware `strokes`, cal
+ * dropout hard-zero, or a long dt gap) rather than real motion, and stitched out by
+ * subtracting the excess offset from every sample at or after the spike. Shape on both
+ * sides of the jump is preserved; only the tail is translated into alignment.
+ *
+ * Runs in the integration pipeline after `applyPerStrokeOriginOffset` and before
+ * `applyStrokeCheckpointWarp` so the nadir/apex detector sees continuous geometry.
+ * Returns a new array (points are cloned); caller should reassign.
+ */
+function bridgeStrokeJumps(points) {
+    if (!points || !points.length) return points;
+    if (!playbackStrokeSegments || !playbackStrokeSegments.length) return points;
+    const out = points.map(p => (p && p.clone)
+        ? p.clone()
+        : new THREE.Vector3(
+            (p && Number.isFinite(p.x)) ? p.x : 0,
+            (p && Number.isFinite(p.y)) ? p.y : 0,
+            (p && Number.isFinite(p.z)) ? p.z : 0
+        )
+    );
+    for (const seg of playbackStrokeSegments) {
+        const startIdx = seg.startIdx;
+        const endIdx = seg.endIdx;
+        if (!(endIdx > startIdx)) continue;
+        if ((endIdx - startIdx + 1) < GF_JUMP_BRIDGE_MIN_SAMPLES) continue;
+
+        const mags = [];
+        for (let i = startIdx + 1; i <= endIdx; i++) {
+            const a = out[i - 1], b = out[i];
+            if (!a || !b) { mags.push(0); continue; }
+            mags.push(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z));
+        }
+        if (!mags.length) continue;
+        const sorted = mags.slice().sort((a, b) => a - b);
+        const med = sorted[Math.floor(sorted.length / 2)] || 0;
+        const thr = Math.max(med * GF_JUMP_BRIDGE_K, 1e-5);
+
+        const cands = [];
+        for (let k = 0; k < mags.length; k++) {
+            if (mags[k] > thr) cands.push({ i: startIdx + 1 + k, m: mags[k] });
+        }
+        if (!cands.length) continue;
+        cands.sort((a, b) => b.m - a.m);
+        const picks = cands.slice(0, GF_JUMP_BRIDGE_MAX_CORRECTIONS).sort((a, b) => a.i - b.i);
+
+        for (const c of picks) {
+            let ex = 0, ey = 0, ez = 0, n = 0;
+            const kLo = Math.max(startIdx + 1, c.i - 2);
+            const kHi = Math.min(endIdx, c.i + 2);
+            for (let k = kLo; k <= kHi; k++) {
+                if (k === c.i) continue;
+                const a = out[k - 1], b = out[k];
+                if (!a || !b) continue;
+                const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+                if (Math.hypot(dx, dy, dz) > thr) continue;
+                ex += dx; ey += dy; ez += dz; n++;
+            }
+            if (n > 0) { ex /= n; ey /= n; ez /= n; }
+            const a = out[c.i - 1], b = out[c.i];
+            if (!a || !b) continue;
+            const ox = (b.x - a.x) - ex;
+            const oy = (b.y - a.y) - ey;
+            const oz = (b.z - a.z) - ez;
+            if (!Number.isFinite(ox) || !Number.isFinite(oy) || !Number.isFinite(oz)) continue;
+            for (let j = c.i; j <= endIdx; j++) {
+                if (!out[j]) continue;
+                out[j].x -= ox;
+                out[j].y -= oy;
+                out[j].z -= oz;
+            }
+        }
+    }
+    return out;
+}
+
 function applyStrokeCheckpointWarp(points) {
     if (!points || !points.length) return;
     if (!playbackStrokeSegments || !playbackStrokeSegments.length) return;
