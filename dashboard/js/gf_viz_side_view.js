@@ -133,12 +133,34 @@ function _phaseForSideView(i) {
  * between stroke-start and stroke-end screenshots). Cache invalidation is wired into
  * integratePositions() so a fresh session starts with fresh decisions.
  */
-let _sagittalCache = new Map();          // "streamKey#strokeNum" -> { pcaAng, sign }
-let _sagittalFirstPerStream = new Map(); // streamKey -> first confident sign seen (session-wide lock)
+let _sagittalCache = new Map();          // "streamKey#strokeNum" -> { pcaAng, sign, ySign }
+let _sagittalFirstPerStream = new Map(); // streamKey -> first confident xSign seen (session-wide lock)
+/* Session-locked winding (+1 = CCW reads positive shoelace area, -1 = CW). Seeded once per
+ * session by _ensureSessionWindingLock() by tallying the majority signed-area sign across all
+ * canonical strokes on that stream. Without this, the X-mirror applied by _applySagittalSigns
+ * flips 2D loop winding, so strokes that happen to need an X-flip end up rotating opposite to
+ * the rest of the session (stroke #1 CW while strokes #2..#N are CCW in the reported session). */
+let _sagittalWindingPerStream = new Map(); // streamKey -> +1 | -1 (majority winding)
+let _sagittalWindingLockSeeded = false;
 
 function invalidateSideViewSagittalCache() {
     _sagittalCache.clear();
     _sagittalFirstPerStream.clear();
+    _sagittalWindingPerStream.clear();
+    _sagittalWindingLockSeeded = false;
+}
+
+/** Shoelace signed area of a 2D polyline/loop. Positive = CCW in math-standard axes. */
+function _signedArea2D(pts) {
+    if (!pts || pts.length < 3) return 0;
+    let a = 0;
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        const q = pts[(i + 1) % n];
+        a += p.x * q.y - q.x * p.y;
+    }
+    return 0.5 * a;
 }
 
 /**
@@ -174,9 +196,83 @@ function _decideSagittalPolarity(rotPts) {
     return { sign, ambiguous };
 }
 
+/**
+ * Apply X and Y sign flips to a rotated 2D polyline. xSign normalizes "catch/pull reads +X",
+ * ySign normalizes winding direction (CCW vs CW) across strokes. Either flip alone is a
+ * reflection (flips winding); applying both is a 180-degree rotation (preserves winding).
+ */
+function _applySagittalSigns(rotPts, xSign, ySign) {
+    if (!rotPts || !rotPts.length) return rotPts;
+    const sx = xSign < 0 ? -1 : 1;
+    const sy = ySign < 0 ? -1 : 1;
+    if (sx === 1 && sy === 1) return rotPts;
+    return rotPts.map(p => ({ x: sx * p.x, y: sy * p.y, i: p.i }));
+}
+
+/** Legacy 1-sign wrapper; internal callers use _applySagittalSigns with both signs. */
 function _applySagittalSign(rotPts, sign) {
-    if (sign >= 0) return rotPts;
-    return rotPts.map(p => ({ x: -p.x, y: p.y, i: p.i }));
+    return _applySagittalSigns(rotPts, sign, 1);
+}
+
+/**
+ * Seed `_sagittalWindingPerStream` with the majority winding sign per stream, scanning every
+ * canonical stroke in the session exactly once. Runs lazily on the first transform request
+ * after a cache invalidation. Ties or all-zero areas leave the stream at +1 (CCW default).
+ */
+function _ensureSessionWindingLock() {
+    if (_sagittalWindingLockSeeded) return;
+    _sagittalWindingLockSeeded = true;
+    if (!processedData || !processedData.length) return;
+    if (typeof computeCanonicalStrokeBoundaries !== 'function') return;
+    const canon = computeCanonicalStrokeBoundaries();
+    if (!canon || !canon.length) return;
+    const n = processedData.length;
+    const tally = new Map(); // streamKey -> { pos: count, neg: count }
+    for (let k = 0; k < canon.length; k++) {
+        const b = canon[k];
+        let end = n - 1;
+        for (let j = k + 1; j < canon.length; j++) {
+            if (canon[j].streamKey === b.streamKey) { end = canon[j].index - 1; break; }
+        }
+        for (let i = b.index + 1; i <= end; i++) {
+            if (getStreamKey(processedData[i]) !== b.streamKey) { end = i - 1; break; }
+        }
+        if (end <= b.index) continue;
+        const p0 = getLiaPositionSample(b.index);
+        const raw = [];
+        for (let i = b.index; i <= end; i++) {
+            const p = getLiaPositionSample(i);
+            raw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
+        }
+        if (raw.length < 3) continue;
+        const pcaAng = principalAxisAngleRad2D(raw);
+        const rot = rotatePts2D(raw, -pcaAng);
+        const decision = _decideSagittalPolarity(rot);
+        const xSigned = _applySagittalSigns(rot, decision.sign, 1);
+        const area = _signedArea2D(xSigned);
+        let bbArea = 0;
+        {
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const p of xSigned) {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+                if (p.y < minY) minY = p.y;
+                if (p.y > maxY) maxY = p.y;
+            }
+            bbArea = Math.max((maxX - minX) * (maxY - minY), 1e-9);
+        }
+        /* Skip near-flat strokes from the vote (low confidence). They'll inherit the lock later. */
+        if (Math.abs(area) < bbArea * 0.01) continue;
+        const sk = b.streamKey || '0';
+        if (!tally.has(sk)) tally.set(sk, { pos: 0, neg: 0 });
+        const t = tally.get(sk);
+        if (area >= 0) t.pos += 1;
+        else t.neg += 1;
+    }
+    tally.forEach((t, sk) => {
+        if (t.pos === 0 && t.neg === 0) return;
+        _sagittalWindingPerStream.set(sk, t.pos >= t.neg ? 1 : -1);
+    });
 }
 
 /**
@@ -186,10 +282,13 @@ function _applySagittalSign(rotPts, sign) {
  * therefore never mirror on X mid-stroke.
  */
 function _getStrokeSagittalTransform(b) {
-    if (!b || b.strokeNum <= 0) return { pcaAng: 0, sign: 1 };
+    if (!b || b.strokeNum <= 0) return { pcaAng: 0, sign: 1, ySign: 1 };
     const key = (b.streamKey || '0') + '#' + b.strokeNum;
     const hit = _sagittalCache.get(key);
     if (hit) return hit;
+    /* Seed the session-wide winding lock (per-stream majority shoelace sign) once per
+     * invalidation cycle. Idempotent after the first call. */
+    _ensureSessionWindingLock();
     const p0 = getLiaPositionSample(b.start);
     const raw = [];
     for (let i = b.start; i <= b.end; i++) {
@@ -208,7 +307,29 @@ function _getStrokeSagittalTransform(b) {
     } else if (!decision.ambiguous && !_sagittalFirstPerStream.has(streamKey)) {
         _sagittalFirstPerStream.set(streamKey, finalSign);
     }
-    const out = { pcaAng, sign: finalSign };
+    /* Decide the Y-sign so this stroke's winding matches the session majority. A pure X-mirror
+     * is a reflection and flips shoelace area sign; applying a matching Y-mirror restores winding
+     * while keeping the forward-is-+X semantic (net transform becomes a 180deg rotation). */
+    const xSignedFull = _applySagittalSigns(rotFull, finalSign, 1);
+    const areaX = _signedArea2D(xSignedFull);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of xSignedFull) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    const bbArea = Math.max((maxX - minX) * (maxY - minY), 1e-9);
+    const areaAmbiguous = Math.abs(areaX) < bbArea * 0.01;
+    const lockedSign = _sagittalWindingPerStream.get(streamKey); // +1/-1 or undefined
+    let ySign = 1;
+    if (lockedSign && !areaAmbiguous) {
+        const areaSign = areaX >= 0 ? 1 : -1;
+        ySign = (areaSign === lockedSign) ? 1 : -1;
+    }
+    /* areaAmbiguous or no lock -> leave ySign = +1, which keeps existing behaviour for
+     * edge cases like single-stroke or all-flat sessions. */
+    const out = { pcaAng, sign: finalSign, ySign };
     _sagittalCache.set(key, out);
     return out;
 }
@@ -232,13 +353,16 @@ function sagittalFlipNeeded(rotPts) {
  * Transform used by side view for the stroke at `idx`.
  * - **rotX**: rotation around X applied to (z,y) so primary motion reads left→right in the plot
  * - **flipZ**: sign flip applied after rotation to remove PCA 180° ambiguity
+ * - **flipY**: winding-lock sign flip that forces the stroke's 2D loop to rotate in the
+ *   session's majority direction; 3D "lock side" camera must apply the same flip to stay
+ *   in lockstep with the 2D canvas.
  */
 function getSideViewTransformForIndex(idx) {
-    if (!processedData || !processedData.length) return { rotX: 0, flipZ: false };
+    if (!processedData || !processedData.length) return { rotX: 0, flipZ: false, flipY: false };
     const b = strokeBoundsForIndex(idx);
-    if (b.strokeNum <= 0) return { rotX: 0, flipZ: false };
-    const { pcaAng, sign } = _getStrokeSagittalTransform(b);
-    return { rotX: -pcaAng, flipZ: sign < 0 };
+    if (b.strokeNum <= 0) return { rotX: 0, flipZ: false, flipY: false };
+    const { pcaAng, sign, ySign } = _getStrokeSagittalTransform(b);
+    return { rotX: -pcaAng, flipZ: sign < 0, flipY: ySign < 0 };
 }
 
 function clearSideViewCanvas() {
@@ -309,7 +433,8 @@ function exportSideViewCoordinates() {
             });
         }
         const tf = _getStrokeSagittalTransform(seg);
-        const pts = _applySagittalSign(rotatePts2D(rawPts, -tf.pcaAng), tf.sign);
+        const pts = _applySagittalSigns(rotatePts2D(rawPts, -tf.pcaAng), tf.sign, tf.ySign);
+        const area = _signedArea2D(pts);
         return {
             stroke_num: seg.strokeNum,
             stream_key: seg.streamKey,
@@ -317,6 +442,9 @@ function exportSideViewCoordinates() {
             end_index: seg.end,
             pca_angle_rad: tf.pcaAng,
             sagittal_sign: tf.sign,
+            y_sign: tf.ySign,
+            signed_area: area,
+            winding: area >= 0 ? 'ccw' : 'cw',
             points: pts.map((p, localIdx) => {
                 const d = processedData[p.i] || {};
                 return {
@@ -340,13 +468,18 @@ function exportSideViewCoordinates() {
     }
     const safeLabel = String(sessionLabel).replace(/[^a-zA-Z0-9_.-]+/g, '_');
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    /* Surface the per-stream winding that was enforced (set by _ensureSessionWindingLock during
+     * the strokes map above) so consumers can tell which direction the export was locked to. */
+    const windingLock = {};
+    _sagittalWindingPerStream.forEach((s, sk) => { windingLock[sk] = s >= 0 ? 'ccw' : 'cw'; });
     const payload = {
-        format: 'goldenform_side_view_2d_v1',
+        format: 'goldenform_side_view_2d_v2',
         exported_at: new Date().toISOString(),
         session: {
             label: sessionLabel,
             sample_count: processedData.length,
-            stroke_count: strokes.length
+            stroke_count: strokes.length,
+            winding_lock: windingLock
         },
         strokes: strokes
     };
@@ -417,12 +550,12 @@ function drawSideViewViz(idx) {
     }
 
     /* Single cached decision per stroke -- partial playback polylines reuse the same
-     * pcaAng + sign, so the canvas cannot mirror on X mid-stroke even though the
-     * polyline is growing sample-by-sample. Also keeps the "other band" dashed path in
-     * the same sagittal frame as the solid path. */
-    const { pcaAng, sign } = _getStrokeSagittalTransform(b);
-    const strokePtsRot = _applySagittalSign(rotatePts2D(strokePtsRaw, -pcaAng), sign);
-    const otherPtsRot = _applySagittalSign(rotatePts2D(otherPathPts, -pcaAng), sign);
+     * pcaAng + xSign + ySign, so the canvas cannot mirror mid-stroke even though the polyline
+     * is growing sample-by-sample. ySign forces every stroke's loop winding (CCW vs CW) to
+     * match the session majority so strokes all rotate in the same direction. */
+    const { pcaAng, sign, ySign } = _getStrokeSagittalTransform(b);
+    const strokePtsRot = _applySagittalSigns(rotatePts2D(strokePtsRaw, -pcaAng), sign, ySign);
+    const otherPtsRot = _applySagittalSigns(rotatePts2D(otherPathPts, -pcaAng), sign, ySign);
     const allPts = [...strokePtsRot, ...otherPtsRot];
 
     const upto = Math.min(idx, b.end);
@@ -431,7 +564,7 @@ function drawSideViewViz(idx) {
         const p = getLiaPositionSample(i);
         pathPtsRaw.push({ x: p.pz - p0.pz, y: p.py - p0.py, i });
     }
-    const pathPts = _applySagittalSign(rotatePts2D(pathPtsRaw, -pcaAng), sign);
+    const pathPts = _applySagittalSigns(rotatePts2D(pathPtsRaw, -pcaAng), sign, ySign);
 
     let minX = 0, maxX = 0.01, minY = 0, maxY = 0.01;
     for (const p of allPts) {

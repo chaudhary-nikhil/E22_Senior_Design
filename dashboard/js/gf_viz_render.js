@@ -57,7 +57,7 @@ function renderFrame(idx) {
     const lockSide = !!(lockEl && lockEl.checked);
     const sv = (lockSide && typeof getSideViewTransformForIndex === 'function')
         ? getSideViewTransformForIndex(idx)
-        : { rotX: 0, flipZ: false };
+        : { rotX: 0, flipZ: false, flipY: false };
     function sideViewXform(v) {
         if (!lockSide || !v) return v;
         const y = v.y, z = v.z;
@@ -66,7 +66,9 @@ function renderFrame(idx) {
         const z2 = z * c - y * s;
         const y2 = z * s + y * c;
         const out = v.clone();
-        out.y = y2;
+        /* flipY mirrors the winding-lock Y flip applied to the 2D canvas so the 3D "lock side"
+         * camera stays in lockstep when a stroke's loop was inverted to match session winding. */
+        out.y = (sv.flipY ? -y2 : y2);
         out.z = (sv.flipZ ? -z2 : z2);
         return out;
     }
